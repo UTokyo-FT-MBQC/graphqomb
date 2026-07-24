@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Stim Import Mixed TICK Blocks**: `stim_circuit_to_pattern()` now accepts unitary gates and Pauli measurements inside the same TICK block. Single-qubit Cliffords ahead of a measurement fold into the measurement basis when the measured qubit's lifetime ends there; any remaining mixed block (including MPP and CZ combinations) is split into internal unitary and measurement layers that preserve per-qubit instruction order and measurement-record order, each advancing the temporal Z coordinate by one layer.
+- **Stim Import Qubit Reuse After Measurement**: A Stim qubit may now be used again after a direct single-qubit measurement (including repeated measurement in one TICK block, such as `M 0 0`). The importer issues a fresh internal qubit index for the post-measurement wire, places its continuation node at the qubit's XY coordinates on the next Z layer, initializes it in the positive eigenstate of the measurement axis, and conditions it on the measurement outcome through the X/Z correction flows; the measured node becomes an internal measured node so its outcome propagates through the Pauli frame. `StimImportResult.qubit_to_stim` maps every internal qubit index, including continuation indices, back to its Stim qubit id. Reuse after an inverted measurement target (for example `M !0`) is rejected because negative-eigenstate initialization cannot be represented.
+- **Stim Parser Preserved Measurement Qubits**: `transpile()` and `optimize_j_cz()` accept `preserved_measurement_qubits`, a set of qubits whose post-measurement state must survive optimization; measurements on these qubits are never folded into a rewritten Pauli basis.
+
 ## [0.4.2] - 2026-07-23
 
 ### Added

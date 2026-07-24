@@ -6,9 +6,12 @@ import math
 from collections import deque
 from dataclasses import dataclass
 from functools import cache
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import stim
+
+if TYPE_CHECKING:
+    from collections.abc import Set as AbstractSet
 
 HS_STIM_GATE = "C_XNYZ"
 HZ_STIM_GATE = "SQRT_Y"
@@ -55,6 +58,7 @@ def transpile(
     circuit: stim.Circuit | str,
     *,
     optimize: bool = False,
+    preserved_measurement_qubits: AbstractSet[int] = frozenset(),
 ) -> stim.Circuit:
     """Transpile a Stim Clifford circuit into the Clifford J/CZ gate basis.
 
@@ -74,6 +78,11 @@ def transpile(
     optimize : `bool`, optional
         Remove redundant basis gates and simplify gates adjacent to
         R/RX/RY and M/MX/MY boundaries after transpilation.
+    preserved_measurement_qubits : ``collections.abc.Set[int]``, optional
+        Qubits whose post-measurement state must survive the optimized
+        circuit. Measurements on these qubits are never folded into a
+        rewritten Pauli basis, so single-qubit gates ahead of them stay
+        explicit.
 
     Returns
     -------
@@ -82,10 +91,16 @@ def transpile(
         boundaries, and preserved instructions.
     """
     transpiled = _transpile_block(_coerce_circuit(circuit), context="circuit")
-    return optimize_j_cz(transpiled) if optimize else transpiled
+    if optimize:
+        return optimize_j_cz(transpiled, preserved_measurement_qubits=preserved_measurement_qubits)
+    return transpiled
 
 
-def optimize_j_cz(circuit: stim.Circuit | str) -> stim.Circuit:
+def optimize_j_cz(
+    circuit: stim.Circuit | str,
+    *,
+    preserved_measurement_qubits: AbstractSet[int] = frozenset(),
+) -> stim.Circuit:
     """Remove redundant Clifford J and CZ gates.
 
     Every maximal run of single-qubit basis gates on one qubit is replaced by
@@ -99,6 +114,15 @@ def optimize_j_cz(circuit: stim.Circuit | str) -> stim.Circuit:
     simplification passes are intended for TICK-bounded blocks; unusually
     large barrier-free inputs can take superlinear time.
 
+    Parameters
+    ----------
+    circuit : ``stim.Circuit`` | `str`
+        A circuit in the Clifford J/CZ basis.
+    preserved_measurement_qubits : ``collections.abc.Set[int]``, optional
+        Qubits whose post-measurement state must survive the optimized
+        circuit. Measurements on these qubits are never folded into a
+        rewritten Pauli basis.
+
     Returns
     -------
     ``stim.Circuit``
@@ -108,6 +132,7 @@ def optimize_j_cz(circuit: stim.Circuit | str) -> stim.Circuit:
         _coerce_circuit(circuit),
         context="circuit",
         terminal_measurements=True,
+        preserved_measurement_qubits=preserved_measurement_qubits,
     )
 
 
@@ -148,6 +173,7 @@ def _optimize_circuit(
     *,
     context: str,
     terminal_measurements: bool,
+    preserved_measurement_qubits: AbstractSet[int] = frozenset(),
 ) -> stim.Circuit:
     result = stim.Circuit()
     pending: list[_AtomicGate] = []
@@ -158,11 +184,13 @@ def _optimize_circuit(
         optimized = _simplify_boundaries(
             pending,
             allow_terminal_measurement_fold=allow_terminal_measurement_fold,
+            preserved_measurement_qubits=preserved_measurement_qubits,
         )
         optimized = _cancel_redundant_gates(optimized)
         optimized = _simplify_boundaries(
             optimized,
             allow_terminal_measurement_fold=allow_terminal_measurement_fold,
+            preserved_measurement_qubits=preserved_measurement_qubits,
         )
         for gate in optimized:
             gate.append_to(result)
@@ -177,6 +205,7 @@ def _optimize_circuit(
                 instruction.body_copy(),
                 context=f"{location}, REPEAT body",
                 terminal_measurements=False,
+                preserved_measurement_qubits=preserved_measurement_qubits,
             )
             result.append(
                 stim.CircuitRepeatBlock(
@@ -286,6 +315,7 @@ def _simplify_boundaries(  # ruff:ignore[complex-structure, too-many-branches, t
     gates: list[_AtomicGate],
     *,
     allow_terminal_measurement_fold: bool,
+    preserved_measurement_qubits: AbstractSet[int] = frozenset(),
 ) -> list[_AtomicGate]:
     result = list(gates)
 
@@ -345,6 +375,7 @@ def _simplify_boundaries(  # ruff:ignore[complex-structure, too-many-branches, t
                 result,
                 measurement_index=measurement_index,
                 allow_end=allow_terminal_measurement_fold,
+                preserved_qubits=preserved_measurement_qubits,
             ):
                 continue
             positions = _local_word_before(result, measurement_index, qubit=measurement.targets[0])
@@ -514,8 +545,11 @@ def _measurement_state_is_discarded(
     *,
     measurement_index: int,
     allow_end: bool,
+    preserved_qubits: AbstractSet[int] = frozenset(),
 ) -> bool:
     qubit = gates[measurement_index].targets[0]
+    if qubit in preserved_qubits:
+        return False
     for candidate in gates[measurement_index + 1 :]:
         if qubit not in candidate.qubits:
             continue
