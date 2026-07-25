@@ -35,10 +35,13 @@ if TYPE_CHECKING:
     from graphqomb.pattern import Pattern
 
 
-# Stim canonicalizes Z-axis aliases when parsing circuits: RZ becomes R and
-# MZ becomes M before instructions reach the importer.
+# Stim canonicalizes Z-axis aliases when parsing circuits: RZ becomes R,
+# MZ becomes M, and MRZ becomes MR before instructions reach the importer.
 _RESET_AXES = {"R": Axis.Z, "RX": Axis.X, "RY": Axis.Y}
 _SINGLE_PAULI_MEASUREMENT_AXES = {"M": Axis.Z, "MX": Axis.X, "MY": Axis.Y}
+# Measure-reset gates measure and re-prepare along the same axis.
+_MEASURE_RESET_AXES = {"MR": Axis.Z, "MRX": Axis.X, "MRY": Axis.Y}
+_DIRECT_MEASUREMENT_AXES = {**_SINGLE_PAULI_MEASUREMENT_AXES, **_MEASURE_RESET_AXES}
 _PAIR_PAULI_MEASUREMENT_AXES = {"MXX": "X", "MYY": "Y", "MZZ": "Z"}
 _PAULI_PRODUCT_MEASUREMENT_GATES = frozenset({"MPP", *_PAIR_PAULI_MEASUREMENT_AXES})
 _FEEDBACK_AXES = {
@@ -125,6 +128,9 @@ class _DirectMeasurement:
     record_index: int
     axis: Axis
     sign: Sign
+    # True for measure-reset gates: the wire re-prepares the positive
+    # eigenstate of `axis` unconditionally instead of keeping the outcome.
+    resets: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,9 +228,13 @@ def stim_circuit_to_pattern(
     wire: a new node is placed at the qubit's XY coordinates on the next z
     layer, initialized in the positive eigenstate of the measurement axis, and
     the measurement outcome conditions the continuation through the pattern's
-    correction flows. Reuse after an inverted measurement target (``M !q``) is
-    not supported because negative-eigenstate initialization cannot be
-    represented. Reuse is decided on the normalized circuit: single-qubit
+    correction flows. Measure-reset gates (``MR``, ``MRX``, ``MRY``) work the
+    same way except that the reset re-prepares the positive eigenstate
+    unconditionally, so the continuation carries no outcome correction. Reuse
+    after an inverted plain measurement target (``M !q``) is not supported
+    because negative-eigenstate initialization cannot be represented; an
+    inverted measure-reset target may be reused since the reset discards the
+    outcome. Reuse is decided on the normalized circuit: single-qubit
     Cliffords after a measurement that cancel to the identity during per-block
     optimization do not count as later use, so the measured wire ends and the
     pattern has one output fewer than the raw instruction stream suggests.
@@ -304,7 +314,7 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
             raise TypeError(msg)
 
         gate_data = stim.gate_data(instruction.name)
-        if instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES:
+        if instruction.name in _DIRECT_MEASUREMENT_AXES:
             result.append(instruction.name, instruction.targets_copy())
         elif instruction.name in _PAULI_PRODUCT_MEASUREMENT_GATES:
             _append_ideal_pauli_measurements(result, instruction)
@@ -357,6 +367,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
     block_last_index = -1
     block_has_unitary = False
     block_has_single_measurement = False
+    block_has_measure_reset = False
     block_has_mpp = False
     block_has_feedback = False
     block_measured_stim_ids: set[int] = set()
@@ -365,6 +376,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
         nonlocal \
             block, \
             block_has_feedback, \
+            block_has_measure_reset, \
             block_has_mpp, \
             block_has_single_measurement, \
             block_has_unitary, \
@@ -377,6 +389,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
             has_unitary=block_has_unitary,
             has_measurement=block_has_single_measurement or block_has_mpp,
             has_mpp=block_has_mpp,
+            has_measure_reset=block_has_measure_reset,
             has_feedback=block_has_feedback,
             preserved_qubits=preserved_qubits,
             block_number=block_number,
@@ -388,6 +401,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
         block = stim.Circuit()
         block_has_unitary = False
         block_has_single_measurement = False
+        block_has_measure_reset = False
         block_has_mpp = False
         block_has_feedback = False
         block_measured_stim_ids = set()
@@ -397,7 +411,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
         stim_ids.update(instruction_qubits)
         is_unitary = _is_unitary_instruction(instruction)
         is_feedback = _is_feedback_instruction(instruction)
-        is_single_measurement = instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
+        is_single_measurement = instruction.name in _DIRECT_MEASUREMENT_AXES
         if instruction.name in _RESET_AXES:
             reset_after_use = used_qubits & instruction_qubits
             if reset_after_use:
@@ -418,6 +432,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
             block_last_index = index
             block_has_unitary |= is_unitary
             block_has_single_measurement |= is_single_measurement
+            block_has_measure_reset |= instruction.name in _MEASURE_RESET_AXES
             block_has_mpp |= instruction.name == "MPP"
             block_has_feedback |= is_feedback
             if is_single_measurement:
@@ -433,6 +448,7 @@ def _normalize_block(  # ruff:ignore[too-many-arguments]
     has_unitary: bool,
     has_measurement: bool,
     has_mpp: bool,
+    has_measure_reset: bool,
     has_feedback: bool,
     preserved_qubits: set[int],
     block_number: int,
@@ -445,12 +461,13 @@ def _normalize_block(  # ruff:ignore[too-many-arguments]
         Block parts to be emitted in order, separated by internal TICKs.
     """
     if not has_unitary and not has_feedback:
-        return _split_mixed_block(block) if has_measurement else [block]
-    if not (has_measurement or has_feedback):
+        return _split_mixed_block(block) if has_measurement or has_measure_reset else [block]
+    if not (has_measurement or has_measure_reset or has_feedback):
         return [_transpile_tick_block(block, block_number=block_number)]
-    if has_mpp or has_feedback:
-        # MPP and record-controlled instructions cannot pass through the J/CZ
-        # optimizer, so split first and transpile only the purely unitary parts.
+    if has_mpp or has_measure_reset or has_feedback:
+        # MPP, measure-reset, and record-controlled instructions cannot pass
+        # through the J/CZ optimizer, so split first and transpile only the
+        # purely unitary parts.
         return [
             _transpile_tick_block(part, block_number=block_number)
             if any(
@@ -490,7 +507,7 @@ def _is_quantum_operation(instruction: stim.CircuitInstruction) -> bool:
         _is_unitary_instruction(instruction)
         or _is_feedback_instruction(instruction)
         or instruction.name in _RESET_AXES
-        or instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
+        or instruction.name in _DIRECT_MEASUREMENT_AXES
         or instruction.name == "MPP"
     )
 
@@ -523,7 +540,7 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
 
     for instruction in _atomized_block_instructions(block):
         name = instruction.name
-        is_measurement = name == "MPP" or name in _SINGLE_PAULI_MEASUREMENT_AXES
+        is_measurement = name == "MPP" or name in _DIRECT_MEASUREMENT_AXES
         is_feedback = _is_feedback_instruction(instruction)
         is_quantum = _is_quantum_operation(instruction)
         if is_measurement:
@@ -564,7 +581,7 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
         if is_quantum:
             for qubit in _tracked_qubits(instruction):
                 last_part_of_qubit[qubit] = part_index
-                last_touch_is_single_measurement[qubit] = name in _SINGLE_PAULI_MEASUREMENT_AXES
+                last_touch_is_single_measurement[qubit] = name in _DIRECT_MEASUREMENT_AXES
         if is_record_ordered:
             record_floor = part_index
 
@@ -627,7 +644,7 @@ def _atomized_block_instructions(block: stim.Circuit) -> Iterator[stim.CircuitIn
         if not isinstance(instruction, stim.CircuitInstruction):
             msg = "Flattened Stim circuit unexpectedly contains a repeat block."
             raise TypeError(msg)
-        if instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES and instruction.num_measurements > 1:
+        if instruction.name in _DIRECT_MEASUREMENT_AXES and instruction.num_measurements > 1:
             gate_args = instruction.gate_args_copy()
             for target in instruction.targets_copy():
                 yield stim.CircuitInstruction(instruction.name, [target], gate_args, tag=instruction.tag)
@@ -711,7 +728,7 @@ class _CircuitAnalyzer:
         self.current_block.append(analyzed)
 
         is_unitary = _is_unitary_instruction(instruction)
-        is_pauli_measurement = instruction.name == "MPP" or instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
+        is_pauli_measurement = instruction.name == "MPP" or instruction.name in _DIRECT_MEASUREMENT_AXES
         self._validate_block_separation(
             is_unitary=is_unitary,
             is_pauli_measurement=is_pauli_measurement,
@@ -720,7 +737,7 @@ class _CircuitAnalyzer:
         if reset_axis is not None:
             self.input_initialization_axes.update(dict.fromkeys(instruction_qubits, reset_axis))
 
-        if instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES:
+        if instruction.name in _DIRECT_MEASUREMENT_AXES:
             self.direct_measurements.extend(_direct_measurements_from_instruction(analyzed))
 
     def _validate_block_separation(self, *, is_unitary: bool, is_pauli_measurement: bool) -> None:
@@ -748,7 +765,7 @@ def _validate_supported_instruction(instruction: stim.CircuitInstruction) -> Non
         _is_unitary_instruction(instruction)
         or _is_feedback_instruction(instruction)
         or instruction.name in _RESET_AXES
-        or instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
+        or instruction.name in _DIRECT_MEASUREMENT_AXES
         or instruction.name == "MPP"
     ):
         return
@@ -812,7 +829,8 @@ def _direct_measurements_from_instruction(
 
     measurements: list[_DirectMeasurement] = []
     seen_qubits: set[int] = set()
-    axis = _SINGLE_PAULI_MEASUREMENT_AXES[instruction.name]
+    axis = _DIRECT_MEASUREMENT_AXES[instruction.name]
+    resets = instruction.name in _MEASURE_RESET_AXES
     for target, record_index in zip(targets, analyzed.record_indices, strict=True):
         stim_id = plain_qubit_target(target, instruction.name)
         if stim_id in seen_qubits:
@@ -820,7 +838,7 @@ def _direct_measurements_from_instruction(
             raise ValueError(msg)
         seen_qubits.add(stim_id)
         sign = Sign.MINUS if target.is_inverted_result_target else Sign.PLUS
-        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign))
+        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign, resets=resets))
     return measurements
 
 
@@ -870,9 +888,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
     future_use = _stim_ids_used_after_block(blocks)
 
     for block_index, block in enumerate(blocks):
-        direct_items = tuple(
-            analyzed for analyzed in block if analyzed.instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
-        )
+        direct_items = tuple(analyzed for analyzed in block if analyzed.instruction.name in _DIRECT_MEASUREMENT_AXES)
         directly_measured_stim_ids = {stim_id for analyzed in direct_items for stim_id in analyzed.qubit_ids}
         reused_measurements = tuple(
             measurement
@@ -985,9 +1001,11 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
 
     Each reused measurement binds an internal measured node onto the qubit's
     current wire end and opens a continuation wire on a freshly issued qubit
-    index. The continuation node reuses the qubit's XY coordinates at ``z`` and
-    is initialized in the positive eigenstate of the measurement axis; the
-    correction flows condition it on the measurement outcome.
+    index. The continuation node reuses the qubit's XY coordinates at ``z``
+    and is initialized in the positive eigenstate of the measurement axis.
+    After a plain measurement the correction flows condition the continuation
+    on the outcome; after a measure-reset gate the re-prepared eigenstate is
+    outcome-independent, so no flow entry is added.
 
     Returns
     -------
@@ -997,7 +1015,8 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
     Raises
     ------
     ValueError
-        If a reused measurement has an inverted target.
+        If a reused plain measurement has an inverted target. (An inverted
+        measure-reset target is fine: the reset discards the outcome.)
     """
     if graph is None:
         graph = GraphState()
@@ -1006,7 +1025,7 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
     record_nodes: dict[int, int] = {}
 
     for measurement in reused_measurements:
-        if measurement.sign is Sign.MINUS:
+        if measurement.sign is Sign.MINUS and not measurement.resets:
             msg = (
                 f"Stim qubit {measurement.stim_id} is reused after an inverted single-qubit measurement; "
                 "inverted measurement targets are only supported when they end the qubit's lifetime."
@@ -1021,7 +1040,11 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
         continuation_node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
         graph.register_input(continuation_node, new_qubit, init_axis=measurement.axis)
         graph.register_output(continuation_node, new_qubit)
-        if measurement.axis == Axis.Z:
+        if measurement.resets:
+            # A measure-reset gate re-prepares the positive eigenstate no
+            # matter the outcome, so the continuation needs no correction.
+            pass
+        elif measurement.axis == Axis.Z:
             # The conditional X re-preparing |m> acts before later entangling
             # CZs, so it needs the derived odd-neighbor Z propagation that a
             # regular xflow entry receives.
