@@ -49,6 +49,7 @@ _FEEDBACK_AXES = {
     ("XCZ", 1): Axis.X,
     ("YCZ", 1): Axis.Y,
 }
+_CONTROLLED_PAULI_GATES = frozenset(name for name, _position in _FEEDBACK_AXES)
 
 
 @dataclass(frozen=True)
@@ -139,8 +140,8 @@ class _CircuitAnalysis:
 @dataclass(frozen=True)
 class _FragmentBuildResult:
     fragments: list[_Fragment]
-    qubit_by_stim: dict[int, int]
-    stim_by_qubit: dict[int, int]
+    stim_to_qubit: dict[int, int]
+    qubit_to_stim: dict[int, int]
 
 
 def stim_file_to_pattern(
@@ -223,7 +224,10 @@ def stim_circuit_to_pattern(
     the measurement outcome conditions the continuation through the pattern's
     correction flows. Reuse after an inverted measurement target (``M !q``) is
     not supported because negative-eigenstate initialization cannot be
-    represented.
+    represented. Reuse is decided on the normalized circuit: single-qubit
+    Cliffords after a measurement that cancel to the identity during per-block
+    optimization do not count as later use, so the measured wire ends and the
+    pattern has one output fewer than the raw instruction stream suggests.
 
     Returns
     -------
@@ -264,7 +268,7 @@ def stim_circuit_to_pattern(
     fragment = _apply_single_measurements(
         fragment,
         analysis.direct_measurements,
-        final_qubit_by_stim=build.qubit_by_stim,
+        final_stim_to_qubit=build.stim_to_qubit,
     )
     parity_check_groups, logical_observables = _measurement_annotations_from_analysis(
         analysis,
@@ -284,7 +288,7 @@ def stim_circuit_to_pattern(
     return StimImportResult(
         pattern=pattern,
         stim_to_qubit=stim_to_qubit,
-        qubit_to_stim=build.stim_by_qubit,
+        qubit_to_stim=build.qubit_to_stim,
         mpp_extractions=fragment.mpp_extractions,
     )
 
@@ -497,9 +501,12 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
     r"""Split one TICK block into unitary-only, measurement-only, and feedback-only parts.
 
     Instructions are greedily placed into the earliest compatible part.
-    Per-qubit instruction order is preserved, a single-qubit measurement always
-    ends up in a strictly later part than any earlier touch of the same qubit,
-    and record-producing or record-consuming instructions (including
+    Per-qubit instruction order is preserved: an instruction never lands in an
+    earlier part than a previous touch of its qubit, and a single-qubit
+    measurement is pushed strictly past a preceding single-qubit measurement
+    of the same qubit. (A preceding MPP touch may share the measurement part;
+    fragment construction still applies the direct measurement after the MPP.)
+    Record-producing and record-consuming instructions (including
     record-controlled feedback) keep their relative order so ``rec[-k]``
     targets stay valid.
 
@@ -570,18 +577,46 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
     return parts
 
 
+def _defused_feedback_instructions(instruction: stim.CircuitInstruction) -> Iterator[stim.CircuitInstruction]:
+    """Yield a controlled-Pauli instruction split per target group when it carries feedback.
+
+    Stim fuses adjacent same-name instructions, so ``CZ rec[-1] 0`` next to a
+    plain ``CZ 0 1`` arrives as one instruction mixing record-controlled and
+    unitary target groups. Splitting per group lets the feedback groups take
+    the feedback import path while the plain groups stay unitary gates.
+
+    Yields
+    ------
+    ``stim.CircuitInstruction``
+        The original instruction, or one instruction per target group.
+    """
+    if instruction.name in _CONTROLLED_PAULI_GATES and _is_feedback_instruction(instruction):
+        groups = instruction.target_groups()
+        if len(groups) > 1:
+            gate_args = instruction.gate_args_copy()
+            for group in groups:
+                yield stim.CircuitInstruction(instruction.name, list(group), gate_args, tag=instruction.tag)
+            return
+    yield instruction
+
+
 def _atomized_block_instructions(block: stim.Circuit) -> Iterator[stim.CircuitInstruction]:
-    """Yield block instructions with single-qubit measurements split per target.
+    """Yield block instructions split into independently placeable units.
 
     Stim fuses adjacent same-name instructions, so a repeated measurement of
-    one qubit can arrive as a single multi-target instruction; each target is
-    one measurement record and must be placed independently.
+    one qubit can arrive as a single multi-target instruction (each target is
+    one measurement record and must be placed independently), and a
+    record-controlled ``CZ rec[-1] 0`` next to a plain ``CZ 0 1`` arrives as
+    one instruction mixing feedback and unitary target groups. The split
+    places each unit in its own part, and parts are emitted TICK-separated,
+    so the units are not re-fused downstream.
 
     Yields
     ------
     ``stim.CircuitInstruction``
         Original instructions, with single-qubit measurement instructions
-        emitted once per target.
+        emitted once per target and feedback-carrying controlled-Pauli
+        instructions emitted once per target group.
 
     Raises
     ------
@@ -597,7 +632,7 @@ def _atomized_block_instructions(block: stim.Circuit) -> Iterator[stim.CircuitIn
             for target in instruction.targets_copy():
                 yield stim.CircuitInstruction(instruction.name, [target], gate_args, tag=instruction.tag)
         else:
-            yield instruction
+            yield from _defused_feedback_instructions(instruction)
 
 
 class _CircuitAnalyzer:
@@ -829,9 +864,9 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
 ) -> _FragmentBuildResult:
     fragments = [_identity_fragment(context)]
     z_base = 0
-    qubit_by_stim = dict(context.stim_to_qubit)
-    stim_by_qubit = {qubit: stim_id for stim_id, qubit in qubit_by_stim.items()}
-    live_stim_ids = set(qubit_by_stim)
+    stim_to_qubit = dict(context.stim_to_qubit)
+    qubit_to_stim = {qubit: stim_id for stim_id, qubit in stim_to_qubit.items()}
+    live_stim_ids = set(stim_to_qubit)
     future_use = _stim_ids_used_after_block(blocks)
 
     for block_index, block in enumerate(blocks):
@@ -854,8 +889,8 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                 unitary_instructions,
                 live_stim_ids=live_stim_ids,
                 z_base=z_base,
-                qubit_by_stim=qubit_by_stim,
-                stim_by_qubit=stim_by_qubit,
+                stim_to_qubit=stim_to_qubit,
+                qubit_to_stim=qubit_to_stim,
                 context=context,
             )
             fragments.append(fragment)
@@ -870,7 +905,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                         mpp_items,
                         z_base=z_base,
                         io_stim_ids=(live_stim_ids - directly_measured_stim_ids) | mpp_stim_ids,
-                        qubit_by_stim=qubit_by_stim,
+                        stim_to_qubit=stim_to_qubit,
                         context=context,
                     )
                 )
@@ -881,8 +916,8 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                         _reuse_fragment(
                             reused_measurements,
                             z=z_base,
-                            qubit_by_stim=qubit_by_stim,
-                            stim_by_qubit=stim_by_qubit,
+                            stim_to_qubit=stim_to_qubit,
+                            qubit_to_stim=qubit_to_stim,
                             context=context,
                         )
                     )
@@ -890,7 +925,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                 fragments.append(
                     _feedback_fragment(
                         feedback_corrections,
-                        qubit_by_stim=qubit_by_stim,
+                        stim_to_qubit=stim_to_qubit,
                     )
                 )
             elif directly_measured_stim_ids:
@@ -902,7 +937,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                         graph,
                         continuing_stim_ids,
                         z=z_base,
-                        qubit_by_stim=qubit_by_stim,
+                        stim_to_qubit=stim_to_qubit,
                         context=context,
                     )
                     fragments.append(
@@ -910,8 +945,8 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                             reused_measurements,
                             z=z_base,
                             graph=graph,
-                            qubit_by_stim=qubit_by_stim,
-                            stim_by_qubit=stim_by_qubit,
+                            stim_to_qubit=stim_to_qubit,
+                            qubit_to_stim=qubit_to_stim,
                             context=context,
                         )
                     )
@@ -921,8 +956,8 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
 
     return _FragmentBuildResult(
         fragments=fragments,
-        qubit_by_stim=qubit_by_stim,
-        stim_by_qubit=stim_by_qubit,
+        stim_to_qubit=stim_to_qubit,
+        qubit_to_stim=qubit_to_stim,
     )
 
 
@@ -941,8 +976,8 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
     reused_measurements: Sequence[_DirectMeasurement],
     *,
     z: float,
-    qubit_by_stim: dict[int, int],
-    stim_by_qubit: dict[int, int],
+    stim_to_qubit: dict[int, int],
+    qubit_to_stim: dict[int, int],
     context: _ImportContext,
     graph: GraphState | None = None,
 ) -> _Fragment:
@@ -977,8 +1012,8 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
                 "inverted measurement targets are only supported when they end the qubit's lifetime."
             )
             raise ValueError(msg)
-        old_qubit = qubit_by_stim[measurement.stim_id]
-        new_qubit = len(stim_by_qubit)
+        old_qubit = stim_to_qubit[measurement.stim_id]
+        new_qubit = len(qubit_to_stim)
         measured_node = graph.add_node()
         graph.register_input(measured_node, old_qubit)
         graph.assign_meas_basis(measured_node, AxisMeasBasis(measurement.axis, measurement.sign))
@@ -996,8 +1031,8 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
             # commutes with later CZs and stays a bare zflow entry.
             zflow[measured_node] = {continuation_node}
         record_nodes[measurement.record_index] = measured_node
-        qubit_by_stim[measurement.stim_id] = new_qubit
-        stim_by_qubit[new_qubit] = measurement.stim_id
+        stim_to_qubit[measurement.stim_id] = new_qubit
+        qubit_to_stim[new_qubit] = measurement.stim_id
 
     return _Fragment(graph=graph, xflow=xflow, record_nodes=record_nodes, zflow=zflow)
 
@@ -1005,7 +1040,7 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
 def _feedback_fragment(
     corrections: Sequence[_FeedbackCorrection],
     *,
-    qubit_by_stim: Mapping[int, int],
+    stim_to_qubit: Mapping[int, int],
 ) -> _Fragment:
     graph = GraphState()
     node_by_stim_id: dict[int, int] = {}
@@ -1013,7 +1048,7 @@ def _feedback_fragment(
         if correction.stim_id in node_by_stim_id:
             continue
         node = graph.add_node()
-        qubit = qubit_by_stim[correction.stim_id]
+        qubit = stim_to_qubit[correction.stim_id]
         graph.register_input(node, qubit)
         graph.register_output(node, qubit)
         node_by_stim_id[correction.stim_id] = node
@@ -1056,13 +1091,13 @@ def _unitary_fragment(  # ruff:ignore[too-many-arguments]
     *,
     live_stim_ids: set[int],
     z_base: int,
-    qubit_by_stim: Mapping[int, int],
-    stim_by_qubit: Mapping[int, int],
+    stim_to_qubit: Mapping[int, int],
+    qubit_to_stim: Mapping[int, int],
     context: _ImportContext,
 ) -> tuple[_Fragment, int]:
     ordered_stim_ids = sorted(live_stim_ids)
     stim_to_local = {stim_id: local_index for local_index, stim_id in enumerate(ordered_stim_ids)}
-    local_to_global = {local_index: qubit_by_stim[stim_id] for stim_id, local_index in stim_to_local.items()}
+    local_to_global = {local_index: stim_to_qubit[stim_id] for stim_id, local_index in stim_to_local.items()}
     circuit = Circuit(len(ordered_stim_ids))
     for instruction in block:
         _append_unitary_instruction(circuit, instruction, stim_to_local)
@@ -1074,7 +1109,7 @@ def _unitary_fragment(  # ruff:ignore[too-many-arguments]
         graph,
         xflow,
         z_base=z_base,
-        stim_by_qubit=stim_by_qubit,
+        qubit_to_stim=qubit_to_stim,
         context=context,
     )
     return (
@@ -1092,7 +1127,7 @@ def _apply_unitary_coordinates(
     xflow: Mapping[int, set[int]],
     *,
     z_base: int,
-    stim_by_qubit: Mapping[int, int],
+    qubit_to_stim: Mapping[int, int],
     context: _ImportContext,
 ) -> int:
     output_node_by_qubit = {qubit: node for node, qubit in graph.output_node_indices.items()}
@@ -1123,7 +1158,7 @@ def _apply_unitary_coordinates(
     max_chain_depth = max((len(chain) - 1 for chain in chains.values()), default=0)
     z_span = max(1, max_chain_depth)
     for qubit, chain in chains.items():
-        coord = context.coordinate_by_stim_id.get(stim_by_qubit[qubit])
+        coord = context.coordinate_by_stim_id.get(qubit_to_stim[qubit])
         if coord is None:
             continue
         depth = len(chain) - 1
@@ -1180,7 +1215,7 @@ def _mpp_fragment(
     *,
     z_base: int,
     io_stim_ids: set[int],
-    qubit_by_stim: Mapping[int, int],
+    stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> _Fragment:
     supports = tuple(
@@ -1200,7 +1235,7 @@ def _mpp_fragment(
         record_indices=record_indices,
         z_base=z_base,
         io_stim_ids=io_stim_ids,
-        qubit_by_stim=qubit_by_stim,
+        stim_to_qubit=stim_to_qubit,
         context=context,
     )
     return _Fragment(
@@ -1226,10 +1261,10 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     record_indices: Sequence[int],
     z_base: int,
     io_stim_ids: set[int],
-    qubit_by_stim: Mapping[int, int],
+    stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> _Fragment:
-    qubit_indices = {column: qubit_by_stim[stim_id] for column, stim_id in extraction.column_to_stim.items()}
+    qubit_indices = {column: stim_to_qubit[stim_id] for column, stim_id in extraction.column_to_stim.items()}
     result = build_graph_state(
         extraction.code,
         z_base=z_base,
@@ -1242,7 +1277,7 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
         result.graph,
         io_stim_ids - active_stim_ids,
         z=z_base + 2,
-        qubit_by_stim=qubit_by_stim,
+        stim_to_qubit=stim_to_qubit,
         context=context,
     )
     xflow = _mpp_flow(result)
@@ -1261,13 +1296,13 @@ def _add_relocated_io_nodes(
     stim_ids: set[int],
     *,
     z: int,
-    qubit_by_stim: Mapping[int, int],
+    stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> None:
     for stim_id in sorted(stim_ids):
         coord = context.coordinate_by_stim_id.get(stim_id)
         node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
-        qubit = qubit_by_stim[stim_id]
+        qubit = stim_to_qubit[stim_id]
         graph.register_input(node, qubit)
         graph.register_output(node, qubit)
 
@@ -1294,7 +1329,7 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
         graph, node_map1, node_map2 = compose(current.graph, fragment.graph)
         current = _Fragment(
             graph=graph,
-            xflow=_remap_flow(current.xflow, node_map1) | _remap_flow(fragment.xflow, node_map2),
+            xflow=_merge_flows(_remap_flow(current.xflow, node_map1), _remap_flow(fragment.xflow, node_map2)),
             record_nodes=_remap_record_nodes(current.record_nodes, node_map1)
             | _remap_record_nodes(fragment.record_nodes, node_map2),
             feedback_targets=(
@@ -1302,16 +1337,34 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
                 *_capture_feedback_targets(fragment.feedback_targets, node_map2, graph),
             ),
             mpp_extractions=(*current.mpp_extractions, *fragment.mpp_extractions),
-            zflow=_remap_flow(current.zflow, node_map1) | _remap_flow(fragment.zflow, node_map2),
+            zflow=_merge_flows(_remap_flow(current.zflow, node_map1), _remap_flow(fragment.zflow, node_map2)),
         )
     return current
+
+
+def _merge_flows(flow1: Mapping[int, set[int]], flow2: Mapping[int, set[int]]) -> dict[int, set[int]]:
+    r"""Combine two correction flows by XOR-ing target sets that share a source.
+
+    Flow sources are measured nodes private to one fragment, so today the two
+    maps never collide; XOR keeps a future collision Pauli-correct instead of
+    silently dropping one side, as a plain dict union would.
+
+    Returns
+    -------
+    `dict`\[`int`, `set`\[`int`\]\]
+        Merged flow.
+    """
+    merged = {node: set(targets) for node, targets in flow1.items()}
+    for node, targets in flow2.items():
+        merged.setdefault(node, set()).symmetric_difference_update(targets)
+    return merged
 
 
 def _apply_single_measurements(
     fragment: _Fragment,
     direct_measurements: Sequence[_DirectMeasurement],
     *,
-    final_qubit_by_stim: Mapping[int, int],
+    final_stim_to_qubit: Mapping[int, int],
 ) -> _Fragment:
     output_node_by_qubit = {qubit: node for node, qubit in fragment.graph.output_node_indices.items()}
     record_nodes = dict(fragment.record_nodes)
@@ -1320,7 +1373,7 @@ def _apply_single_measurements(
         if measurement.record_index in record_nodes:
             # Reused measurements were bound to internal nodes during fragment construction.
             continue
-        node = output_node_by_qubit[final_qubit_by_stim[measurement.stim_id]]
+        node = output_node_by_qubit[final_stim_to_qubit[measurement.stim_id]]
         fragment.graph.assign_meas_basis(node, AxisMeasBasis(measurement.axis, measurement.sign))
         record_nodes[measurement.record_index] = node
 

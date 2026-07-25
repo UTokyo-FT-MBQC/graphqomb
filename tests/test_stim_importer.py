@@ -253,9 +253,13 @@ def test_stim_text_to_pattern_splits_adjacent_feedback_and_unitary_operations() 
         assert simulator.results[target] == simulator.results[source]
 
 
-def test_stim_text_to_pattern_rejects_mixed_quantum_and_feedback_pairs() -> None:
-    with pytest.raises(ValueError, match="exactly one measurement record"):
-        stim_text_to_pattern("M 0\nTICK\nCX rec[-1] 1 2 3")
+def test_stim_text_to_pattern_accepts_feedback_fused_with_quantum_pairs() -> None:
+    """``CX rec[-1] 1`` fused with a plain ``CX 2 3`` splits into feedback and unitary parts."""
+    result = stim_text_to_pattern("M 0\nTICK\nCX rec[-1] 1 2 3")
+
+    assert set(result.pattern.output_node_indices.values()) == {0, 1, 2, 3}
+    simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+    simulator.simulate(rng=np.random.default_rng(3))
 
 
 def test_stim_text_to_pattern_rejects_feedback_before_any_measurement_record() -> None:
@@ -1186,21 +1190,34 @@ def _random_wire_circuit(rng: np.random.Generator) -> str:
 
 
 def _postselected_stim_state(text: str, outcomes: list[bool]) -> NDArray[np.complex128]:
+    circuit = stim.Circuit(text)
     simulator = stim.TableauSimulator()
+    simulator.set_num_qubits(circuit.num_qubits)
     record_index = 0
-    for instruction in stim.Circuit(text):
-        if instruction.name in {"M", "MX", "MY"}:
+    for instruction in circuit:
+        name = instruction.name
+        if name in {"M", "MX", "MY"}:
             postselect = {
                 "M": simulator.postselect_z,
                 "MX": simulator.postselect_x,
                 "MY": simulator.postselect_y,
-            }[instruction.name]
-            for _ in range(instruction.num_measurements):
-                postselect(0, desired_value=bool(outcomes[record_index]))
+            }[name]
+            for target in instruction.targets_copy():
+                postselect(target.qubit_value, desired_value=bool(outcomes[record_index]))
                 record_index += 1
-        elif instruction.name != "TICK":
+        elif name in {"CX", "CZ"} and any(t.is_measurement_record_target for t in instruction.targets_copy()):
+            targets = instruction.targets_copy()
+            for control, target in zip(targets[::2], targets[1::2], strict=True):
+                if control.is_measurement_record_target:
+                    if outcomes[record_index + control.value]:
+                        apply_pauli = simulator.x if name == "CX" else simulator.z
+                        apply_pauli(target.qubit_value)
+                else:
+                    simulator.do(stim.Circuit(f"{name} {control.qubit_value} {target.qubit_value}"))
+        elif name != "TICK":
             simulator.do(stim.Circuit(str(instruction)))
     assert record_index == len(outcomes)
+    simulator.set_num_qubits(circuit.num_qubits)
     return np.asarray(simulator.state_vector(endian="big"), dtype=np.complex128)
 
 
@@ -1226,6 +1243,85 @@ def test_stim_text_to_pattern_matches_stim_for_random_reuse_circuits() -> None:
             reference = _postselected_stim_state(text, outcomes)
             overlap = abs(np.vdot(reference, simulator.state.state().flatten()))
             assert np.isclose(overlap, 1.0, atol=1e-8), text
+
+
+def test_stim_text_to_pattern_feedback_resets_reused_wire_deterministically() -> None:
+    """``M 0`` then ``CX rec[-1] 0`` leaves the reused wire in |0> for every outcome."""
+    for seed in range(8):
+        result = stim_text_to_pattern("M 0\nTICK\nCX rec[-1] 0")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        expected = np.asarray([1.0, 0.0], dtype=np.complex128)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_defuses_feedback_fused_with_unitary_gates() -> None:
+    """Adjacent ``CZ rec[-1] 0`` and ``CZ 0 1`` arrive stim-fused as one instruction."""
+    for seed in range(8):
+        result = stim_text_to_pattern("M 0\nTICK\nCZ rec[-1] 0\nCZ 0 1")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        outcome = int(next(iter(simulator.results.values())))
+        reused_wire = np.zeros(2, dtype=np.complex128)
+        reused_wire[outcome] = 1.0
+        partner_wire = np.asarray([1.0, (-1.0) ** outcome], dtype=np.complex128) / np.sqrt(2)
+        expected = np.kron(partner_wire, reused_wire)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def _random_two_qubit_circuit(rng: np.random.Generator) -> str:
+    lines: list[str] = []
+    for _ in range(int(rng.integers(3, 7))):
+        roll = rng.random()
+        if roll < 0.4:
+            lines.append(f"{rng.choice(_DIFFERENTIAL_GATES)} {int(rng.integers(2))}")
+        elif roll < 0.6:
+            lines.append("CZ 0 1")
+        elif roll < 0.85:
+            lines.append(f"{rng.choice(_DIFFERENTIAL_MEASUREMENTS)} {int(rng.integers(2))}")
+            if rng.random() < 0.4:
+                lines.append(f"C{rng.choice(['X', 'Z'])} rec[-1] {int(rng.integers(2))}")
+        else:
+            lines.append("TICK")
+    lines.extend(f"{rng.choice(_DIFFERENTIAL_GATES)} {qubit}" for qubit in range(2))
+    return "\n".join(lines)
+
+
+def test_stim_text_to_pattern_matches_stim_for_random_two_qubit_reuse_circuits() -> None:
+    """Differential test with entanglement, reuse, and record-controlled feedback.
+
+    Random two-qubit circuits mix CZ, Clifford gates, single-qubit
+    measurements with reuse, and ``rec``-controlled feedback. The final
+    pattern state must match stim's state postselected on the same
+    measurement record. Trials where trailing Cliffords cancel to the
+    identity terminate a wire instead of reusing it; those are skipped, and
+    the counter asserts the skips stay rare.
+    """
+    rng = np.random.default_rng(20260725)
+    compared = 0
+    for _ in range(20):
+        text = "RX 0\nRX 1\nTICK\n" + _random_two_qubit_circuit(rng)
+        total_records = stim.Circuit(text).num_measurements
+        markers = "\n".join(f"DETECTOR rec[{index - total_records}]" for index in range(total_records))
+        for sim_seed in range(2):
+            result = stim_text_to_pattern(text + "\n" + markers)
+            internal_order = sorted(set(result.pattern.output_node_indices.values()))
+            stim_order = [result.qubit_to_stim[qubit] for qubit in internal_order]
+            if sorted(stim_order) != [0, 1]:
+                break
+            simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+            simulator.simulate(rng=np.random.default_rng(sim_seed))
+
+            record_nodes = [next(iter(group)) for group in result.pattern.pauli_frame.parity_check_group]
+            outcomes = [simulator.results[node] for node in record_nodes]
+            reference = _postselected_stim_state(text, outcomes)
+            reference = np.transpose(reference.reshape(2, 2), axes=stim_order).flatten()
+            overlap = abs(np.vdot(reference, simulator.state.state().flatten()))
+            assert np.isclose(overlap, 1.0, atol=1e-8), text
+            compared += 1
+    assert compared >= 30
 
 
 def test_stim_text_to_pattern_allows_disjoint_qubit_after_single_measurement() -> None:
