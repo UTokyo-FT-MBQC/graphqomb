@@ -41,6 +41,14 @@ _RESET_AXES = {"R": Axis.Z, "RX": Axis.X, "RY": Axis.Y}
 _SINGLE_PAULI_MEASUREMENT_AXES = {"M": Axis.Z, "MX": Axis.X, "MY": Axis.Y}
 _PAIR_PAULI_MEASUREMENT_AXES = {"MXX": "X", "MYY": "Y", "MZZ": "Z"}
 _PAULI_PRODUCT_MEASUREMENT_GATES = frozenset({"MPP", *_PAIR_PAULI_MEASUREMENT_AXES})
+_FEEDBACK_AXES = {
+    ("CX", 0): Axis.X,
+    ("CY", 0): Axis.Y,
+    ("CZ", 0): Axis.Z,
+    ("CZ", 1): Axis.Z,
+    ("XCZ", 1): Axis.X,
+    ("YCZ", 1): Axis.Y,
+}
 
 
 @dataclass(frozen=True)
@@ -65,6 +73,7 @@ class _Fragment:
     graph: GraphState
     xflow: dict[int, set[int]]
     record_nodes: dict[int, int]
+    feedback_targets: tuple[_FeedbackTarget, ...] = ()
     mpp_extractions: tuple[StimMppExtraction, ...] = ()
     zflow: dict[int, set[int]] = field(default_factory=dict)
 
@@ -91,6 +100,22 @@ class _AnalyzedInstruction:
     instruction: stim.CircuitInstruction
     record_indices: tuple[int, ...]
     qubit_ids: frozenset[int]
+    feedback_corrections: tuple[_FeedbackCorrection, ...]
+
+
+@dataclass(frozen=True)
+class _FeedbackCorrection:
+    record_index: int
+    stim_id: int
+    axis: Axis
+
+
+@dataclass(frozen=True)
+class _FeedbackTarget:
+    record_index: int
+    node: int
+    axis: Axis
+    past_neighbors: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -178,13 +203,18 @@ def stim_circuit_to_pattern(
     target qubit. Adjacent Clifford gates are folded into those initial Pauli
     states when possible. Stim noise instructions and measurement-error
     probabilities are omitted because circuit-level noise is outside the
-    GraphQOMB import model.
+    GraphQOMB import model. Measurement-record-controlled Pauli gates are
+    imported as X/Z correction-flow entries at their circuit positions; an X or
+    Y feedback additionally contributes Z corrections on the neighbors its
+    target becomes entangled with after the feedback position, so deferred
+    frame-based application matches the circuit-position semantics.
 
     Unitary gates may share a TICK block with Pauli measurements. Single-qubit
     Cliffords ahead of a measurement are folded into the measurement basis
     when the measured qubit is never used again; any remaining mixed block is
-    split into internal unitary and measurement layers that preserve the
-    original instruction order, each advancing the z coordinate by one layer.
+    split into internal unitary, measurement, and feedback layers that
+    preserve the original instruction order, each advancing the z coordinate
+    by one layer.
 
     A Stim qubit may be used again after a direct single-qubit measurement.
     The importer issues a fresh internal qubit index for the post-measurement
@@ -209,8 +239,7 @@ def stim_circuit_to_pattern(
         msg = "coord_dims must be 2 or 3."
         raise ValueError(msg)
 
-    flat_circuit = circuit.flattened()
-    idealized = _idealize_circuit(flat_circuit)
+    idealized = _idealize_circuit(circuit.flattened())
     normalized_circuit, stim_ids = _normalize_import_circuit(idealized.circuit)
     analysis = _CircuitAnalyzer().analyze(normalized_circuit)
     if analysis.measurement_count == 0 and (
@@ -242,11 +271,13 @@ def stim_circuit_to_pattern(
         record_nodes=fragment.record_nodes,
         zero_record_indices=idealized.zero_record_indices,
     )
-    zflow = {node: odd_neighbors(targets, fragment.graph) for node, targets in fragment.xflow.items()} | fragment.zflow
+    flows = _flows_with_feedback(
+        fragment,
+        zero_record_indices=idealized.zero_record_indices,
+    )
     pattern = qompile(
         fragment.graph,
-        fragment.xflow,
-        zflow,
+        *flows,
         parity_check_group=parity_check_groups,
         logical_observables=logical_observables,
     )
@@ -323,10 +354,17 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
     block_has_unitary = False
     block_has_single_measurement = False
     block_has_mpp = False
+    block_has_feedback = False
     block_measured_stim_ids: set[int] = set()
 
     def flush_block() -> None:
-        nonlocal block, block_has_mpp, block_has_single_measurement, block_has_unitary, block_measured_stim_ids
+        nonlocal \
+            block, \
+            block_has_feedback, \
+            block_has_mpp, \
+            block_has_single_measurement, \
+            block_has_unitary, \
+            block_measured_stim_ids
         preserved_qubits = {
             stim_id for stim_id in block_measured_stim_ids if last_quantum_use.get(stim_id, -1) > block_last_index
         }
@@ -335,6 +373,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
             has_unitary=block_has_unitary,
             has_measurement=block_has_single_measurement or block_has_mpp,
             has_mpp=block_has_mpp,
+            has_feedback=block_has_feedback,
             preserved_qubits=preserved_qubits,
             block_number=block_number,
         )
@@ -346,12 +385,14 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
         block_has_unitary = False
         block_has_single_measurement = False
         block_has_mpp = False
+        block_has_feedback = False
         block_measured_stim_ids = set()
 
     for index, instruction in enumerate(instructions):
         instruction_qubits = _tracked_qubits(instruction)
         stim_ids.update(instruction_qubits)
         is_unitary = _is_unitary_instruction(instruction)
+        is_feedback = _is_feedback_instruction(instruction)
         is_single_measurement = instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
         if instruction.name in _RESET_AXES:
             reset_after_use = used_qubits & instruction_qubits
@@ -361,7 +402,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
                     "after another quantum operation; only initial resets are supported."
                 )
                 raise ValueError(msg)
-        elif is_unitary or instruction.name == "MPP" or is_single_measurement:
+        elif is_unitary or is_feedback or instruction.name == "MPP" or is_single_measurement:
             used_qubits.update(instruction_qubits)
 
         if instruction.name == "TICK":
@@ -374,6 +415,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
             block_has_unitary |= is_unitary
             block_has_single_measurement |= is_single_measurement
             block_has_mpp |= instruction.name == "MPP"
+            block_has_feedback |= is_feedback
             if is_single_measurement:
                 block_measured_stim_ids.update(instruction_qubits)
 
@@ -387,23 +429,24 @@ def _normalize_block(  # ruff:ignore[too-many-arguments]
     has_unitary: bool,
     has_measurement: bool,
     has_mpp: bool,
+    has_feedback: bool,
     preserved_qubits: set[int],
     block_number: int,
 ) -> list[stim.Circuit]:
-    r"""Normalize one TICK block into unitary-only and measurement-only parts.
+    r"""Normalize one TICK block into unitary-only, measurement-only, and feedback-only parts.
 
     Returns
     -------
     `list`\[``stim.Circuit``\]
         Block parts to be emitted in order, separated by internal TICKs.
     """
-    if not has_unitary:
+    if not has_unitary and not has_feedback:
         return _split_mixed_block(block) if has_measurement else [block]
-    if not has_measurement:
+    if not (has_measurement or has_feedback):
         return [_transpile_tick_block(block, block_number=block_number)]
-    if has_mpp:
-        # MPP instructions cannot pass through the J/CZ optimizer, so split
-        # first and transpile only the purely unitary parts.
+    if has_mpp or has_feedback:
+        # MPP and record-controlled instructions cannot pass through the J/CZ
+        # optimizer, so split first and transpile only the purely unitary parts.
         return [
             _transpile_tick_block(part, block_number=block_number)
             if any(
@@ -441,6 +484,7 @@ def _transpile_tick_block(
 def _is_quantum_operation(instruction: stim.CircuitInstruction) -> bool:
     return (
         _is_unitary_instruction(instruction)
+        or _is_feedback_instruction(instruction)
         or instruction.name in _RESET_AXES
         or instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
         or instruction.name == "MPP"
@@ -450,20 +494,21 @@ def _is_quantum_operation(instruction: stim.CircuitInstruction) -> bool:
 def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too-many-locals]
     block: stim.Circuit,
 ) -> list[stim.Circuit]:
-    r"""Split one TICK block into alternating unitary-only and measurement-only parts.
+    r"""Split one TICK block into unitary-only, measurement-only, and feedback-only parts.
 
     Instructions are greedily placed into the earliest compatible part.
     Per-qubit instruction order is preserved, a single-qubit measurement always
     ends up in a strictly later part than any earlier touch of the same qubit,
-    and record-producing or record-consuming instructions keep their relative
-    order so ``rec[-k]`` targets stay valid.
+    and record-producing or record-consuming instructions (including
+    record-controlled feedback) keep their relative order so ``rec[-k]``
+    targets stay valid.
 
     Returns
     -------
     `list`\[``stim.Circuit``\]
         Block parts to be emitted in order, separated by internal TICKs.
     """
-    part_is_measurement: list[bool] = []
+    part_kinds: list[str] = []
     part_instructions: list[list[stim.CircuitInstruction]] = []
     last_part_of_qubit: dict[int, int] = {}
     last_touch_is_single_measurement: dict[int, bool] = {}
@@ -472,19 +517,25 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
     for instruction in _atomized_block_instructions(block):
         name = instruction.name
         is_measurement = name == "MPP" or name in _SINGLE_PAULI_MEASUREMENT_AXES
+        is_feedback = _is_feedback_instruction(instruction)
         is_quantum = _is_quantum_operation(instruction)
         if is_measurement:
-            allowed_types: tuple[bool, ...] = (True,)
+            kind = "measurement"
+            allowed_kinds: tuple[str, ...] = ("measurement",)
+        elif is_feedback:
+            kind = "feedback"
+            allowed_kinds = ("feedback",)
         elif _is_unitary_instruction(instruction):
-            allowed_types = (False,)
+            kind = "unitary"
+            allowed_kinds = ("unitary",)
         else:
-            allowed_types = (False, True)
-        is_record_ordered = instruction.num_measurements > 0 or name in {
-            "DETECTOR",
-            "MPAD",
-            "OBSERVABLE_INCLUDE",
-            "SHIFT_COORDS",
-        }
+            kind = "unitary"
+            allowed_kinds = ("unitary", "measurement", "feedback")
+        is_record_ordered = (
+            instruction.num_measurements > 0
+            or is_feedback
+            or name in {"DETECTOR", "MPAD", "OBSERVABLE_INCLUDE", "SHIFT_COORDS"}
+        )
 
         lower = record_floor if is_record_ordered else 0
         if is_quantum:
@@ -496,10 +547,10 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
                 lower = max(lower, last_part + bump)
 
         part_index = lower
-        while part_index < len(part_is_measurement) and part_is_measurement[part_index] not in allowed_types:
+        while part_index < len(part_kinds) and part_kinds[part_index] not in allowed_kinds:
             part_index += 1
-        if part_index == len(part_is_measurement):
-            part_is_measurement.append(is_measurement)
+        if part_index == len(part_kinds):
+            part_kinds.append(kind)
             part_instructions.append([])
         part_instructions[part_index].append(instruction)
 
@@ -612,7 +663,16 @@ class _CircuitAnalyzer:
     def _record_operation(self, instruction: stim.CircuitInstruction, instruction_qubits: set[int]) -> None:
         _validate_supported_instruction(instruction)
         record_indices = tuple(range(self.measurement_count, self.measurement_count + instruction.num_measurements))
-        analyzed = _AnalyzedInstruction(instruction, record_indices, frozenset(instruction_qubits))
+        feedback_corrections = _feedback_corrections_from_instruction(
+            instruction,
+            measurement_count=self.measurement_count,
+        )
+        analyzed = _AnalyzedInstruction(
+            instruction,
+            record_indices,
+            frozenset(instruction_qubits),
+            feedback_corrections,
+        )
         self.current_block.append(analyzed)
 
         is_unitary = _is_unitary_instruction(instruction)
@@ -651,6 +711,7 @@ class _CircuitAnalyzer:
 def _validate_supported_instruction(instruction: stim.CircuitInstruction) -> None:
     if (
         _is_unitary_instruction(instruction)
+        or _is_feedback_instruction(instruction)
         or instruction.name in _RESET_AXES
         or instruction.name in _SINGLE_PAULI_MEASUREMENT_AXES
         or instruction.name == "MPP"
@@ -661,7 +722,48 @@ def _validate_supported_instruction(instruction: stim.CircuitInstruction) -> Non
 
 
 def _is_unitary_instruction(instruction: stim.CircuitInstruction) -> bool:
-    return bool(stim.gate_data(instruction.name).is_unitary)
+    return bool(stim.gate_data(instruction.name).is_unitary and not _is_feedback_instruction(instruction))
+
+
+def _is_feedback_instruction(instruction: stim.CircuitInstruction) -> bool:
+    return bool(
+        stim.gate_data(instruction.name).is_unitary
+        and any(target.is_measurement_record_target for target in instruction.targets_copy())
+    )
+
+
+def _feedback_corrections_from_instruction(
+    instruction: stim.CircuitInstruction,
+    *,
+    measurement_count: int,
+) -> tuple[_FeedbackCorrection, ...]:
+    if not _is_feedback_instruction(instruction):
+        return ()
+
+    corrections: list[_FeedbackCorrection] = []
+    expected_group_size = 2
+    for group in instruction.target_groups():
+        record_positions = [index for index, target in enumerate(group) if target.is_measurement_record_target]
+        if len(group) != expected_group_size or len(record_positions) != 1:
+            msg = (
+                f"{instruction.name} feedback groups must contain exactly one measurement record and one qubit target."
+            )
+            raise ValueError(msg)
+        record_position = record_positions[0]
+        axis = _FEEDBACK_AXES.get((instruction.name, record_position))
+        if axis is None:
+            msg = f"{instruction.name} does not support a measurement record target at position {record_position}."
+            raise ValueError(msg)
+
+        target_position = 1 - record_position
+        stim_id = plain_qubit_target(group[target_position], instruction.name)
+        record_indices = record_targets_to_absolute_indices(
+            (group[record_position],),
+            measurement_count=measurement_count,
+            instruction_name=instruction.name,
+        )
+        corrections.append(_FeedbackCorrection(next(iter(record_indices)), stim_id, axis))
+    return tuple(corrections)
 
 
 def _direct_measurements_from_instruction(
@@ -746,6 +848,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
         unitary_instructions = tuple(
             analyzed.instruction for analyzed in block if _is_unitary_instruction(analyzed.instruction)
         )
+        feedback_corrections = tuple(correction for analyzed in block for correction in analyzed.feedback_corrections)
         if unitary_instructions:
             fragment, z_base = _unitary_fragment(
                 unitary_instructions,
@@ -783,6 +886,13 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                             context=context,
                         )
                     )
+            elif feedback_corrections:
+                fragments.append(
+                    _feedback_fragment(
+                        feedback_corrections,
+                        qubit_by_stim=qubit_by_stim,
+                    )
+                )
             elif directly_measured_stim_ids:
                 continuing_stim_ids = live_stim_ids - directly_measured_stim_ids
                 if continuing_stim_ids or reused_measurements:
@@ -890,6 +1000,37 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
         stim_by_qubit[new_qubit] = measurement.stim_id
 
     return _Fragment(graph=graph, xflow=xflow, record_nodes=record_nodes, zflow=zflow)
+
+
+def _feedback_fragment(
+    corrections: Sequence[_FeedbackCorrection],
+    *,
+    qubit_by_stim: Mapping[int, int],
+) -> _Fragment:
+    graph = GraphState()
+    node_by_stim_id: dict[int, int] = {}
+    for correction in corrections:
+        if correction.stim_id in node_by_stim_id:
+            continue
+        node = graph.add_node()
+        qubit = qubit_by_stim[correction.stim_id]
+        graph.register_input(node, qubit)
+        graph.register_output(node, qubit)
+        node_by_stim_id[correction.stim_id] = node
+
+    return _Fragment(
+        graph=graph,
+        xflow={},
+        record_nodes={},
+        feedback_targets=tuple(
+            _FeedbackTarget(
+                record_index=correction.record_index,
+                node=node_by_stim_id[correction.stim_id],
+                axis=correction.axis,
+            )
+            for correction in corrections
+        ),
+    )
 
 
 def _identity_fragment(context: _ImportContext) -> _Fragment:
@@ -1156,6 +1297,10 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
             xflow=_remap_flow(current.xflow, node_map1) | _remap_flow(fragment.xflow, node_map2),
             record_nodes=_remap_record_nodes(current.record_nodes, node_map1)
             | _remap_record_nodes(fragment.record_nodes, node_map2),
+            feedback_targets=(
+                *_remap_feedback_targets(current.feedback_targets, node_map1),
+                *_capture_feedback_targets(fragment.feedback_targets, node_map2, graph),
+            ),
             mpp_extractions=(*current.mpp_extractions, *fragment.mpp_extractions),
             zflow=_remap_flow(current.zflow, node_map1) | _remap_flow(fragment.zflow, node_map2),
         )
@@ -1183,9 +1328,42 @@ def _apply_single_measurements(
         graph=fragment.graph,
         xflow=fragment.xflow,
         record_nodes=record_nodes,
+        feedback_targets=fragment.feedback_targets,
         mpp_extractions=fragment.mpp_extractions,
         zflow=fragment.zflow,
     )
+
+
+def _flows_with_feedback(
+    fragment: _Fragment,
+    *,
+    zero_record_indices: frozenset[int],
+) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    xflow = {node: set(targets) for node, targets in fragment.xflow.items()}
+    zflow = {node: odd_neighbors(targets, fragment.graph) for node, targets in fragment.xflow.items()}
+    for node, targets in fragment.zflow.items():
+        # Explicit entries carry the post-measurement continuation corrections.
+        zflow.setdefault(node, set()).symmetric_difference_update(targets)
+
+    for feedback in fragment.feedback_targets:
+        source_nodes = _record_indices_to_nodes(
+            frozenset({feedback.record_index}),
+            fragment.record_nodes,
+            zero_record_indices=zero_record_indices,
+        )
+        if not source_nodes:
+            continue
+        source = next(iter(source_nodes))
+        if feedback.axis in {Axis.X, Axis.Y}:
+            xflow.setdefault(source, set()).symmetric_difference_update({feedback.node})
+            # Deferring the X to the target's measurement pushes it through the
+            # CZ edges created after the feedback position, leaving Z there.
+            deferred_z = fragment.graph.neighbors(feedback.node) - feedback.past_neighbors
+            if deferred_z:
+                zflow.setdefault(source, set()).symmetric_difference_update(deferred_z)
+        if feedback.axis in {Axis.Z, Axis.Y}:
+            zflow.setdefault(source, set()).symmetric_difference_update({feedback.node})
+    return xflow, zflow
 
 
 def _measurement_annotations_from_analysis(
@@ -1235,3 +1413,36 @@ def _remap_flow(flow: Mapping[int, set[int]], node_map: Mapping[int, int]) -> di
 
 def _remap_record_nodes(record_nodes: Mapping[int, int], node_map: Mapping[int, int]) -> dict[int, int]:
     return {record_index: node_map[node] for record_index, node in record_nodes.items()}
+
+
+def _remap_feedback_targets(
+    feedback_targets: Sequence[_FeedbackTarget],
+    node_map: Mapping[int, int],
+) -> tuple[_FeedbackTarget, ...]:
+    return tuple(
+        _FeedbackTarget(
+            record_index=feedback.record_index,
+            node=node_map[feedback.node],
+            axis=feedback.axis,
+            past_neighbors=frozenset(node_map[node] for node in feedback.past_neighbors),
+        )
+        for feedback in feedback_targets
+    )
+
+
+def _capture_feedback_targets(
+    feedback_targets: Sequence[_FeedbackTarget],
+    node_map: Mapping[int, int],
+    graph: GraphState,
+) -> tuple[_FeedbackTarget, ...]:
+    # A feedback fragment has no internal edges, so right after composition the
+    # target's neighbors are exactly those entangled before the feedback position.
+    return tuple(
+        _FeedbackTarget(
+            record_index=feedback.record_index,
+            node=node_map[feedback.node],
+            axis=feedback.axis,
+            past_neighbors=frozenset(graph.neighbors(node_map[feedback.node])),
+        )
+        for feedback in feedback_targets
+    )

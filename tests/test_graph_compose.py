@@ -139,6 +139,31 @@ def test_compose_qindex_conflict() -> None:
         compose(graph1, graph2)
 
 
+def test_compose_rejects_connection_through_measured_output() -> None:
+    """Test compose function raises error when a connected output is measured."""
+    graph1: GraphState = create_simple_graph([0], [1])
+    measured_output = next(node for node, q_index in graph1.output_node_indices.items() if q_index == 1)
+    graph1.assign_meas_basis(measured_output, PlannerMeasBasis(Plane.XY, 0.0))
+
+    graph2: GraphState = create_simple_graph([1], [2])
+
+    with pytest.raises(ValueError, match="measured output qubit indices"):
+        compose(graph1, graph2)
+
+
+def test_compose_allows_measured_output_outside_connection() -> None:
+    """Test compose function keeps measured outputs that are not connected."""
+    graph1: GraphState = create_simple_graph([0, 2], [1, 3])
+    measured_output = next(node for node, q_index in graph1.output_node_indices.items() if q_index == 3)
+    graph1.assign_meas_basis(measured_output, PlannerMeasBasis(Plane.XY, 0.0))
+
+    graph2: GraphState = create_simple_graph([1], [4])
+
+    composed, node_map1, _ = compose(graph1, graph2)
+
+    assert node_map1[measured_output] in composed.meas_bases
+
+
 def test_compose_preserves_measurement_bases() -> None:
     """Test that measurement bases are preserved during composition."""
     graph1: GraphState = GraphState()

@@ -30,7 +30,8 @@ The lowered pattern combines:
 
 Most scheduled work is serialized as prepare, entangle, and measure commands separated by ``TICK`` slice boundaries.
 Pauli corrections are retained in the :class:`graphqomb.pauli_frame.PauliFrame` rather than emitted as ``X``/``Z`` commands, so the executable command stream is limited to ``N``, ``E``, ``M``, and ``TICK``.
-The pattern simulator materializes pending output-frame corrections when returning an output statevector or an explicit output measurement result.
+Output nodes with an assigned measurement basis are projective readouts of the output register: they are scheduled and measured inside the timeline like any other node, and their results participate in feedforward.
+Outputs without a basis remain quantum, and the pattern simulator materializes their pending frame corrections when returning an output statevector.
 
 Feedforward and causality
 -------------------------

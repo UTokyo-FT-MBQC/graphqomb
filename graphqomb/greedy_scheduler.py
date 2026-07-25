@@ -17,6 +17,7 @@ import itertools
 from typing import TYPE_CHECKING
 
 from graphqomb.feedforward import TOPO_ORDER_CYCLE_ERROR_MSG, inverse_dag_from_dag, topo_order_from_inv_dag
+from graphqomb.graphstate import unmeasured_output_nodes
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,9 +65,9 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
         If the scheduling cannot proceed due to cyclic dependencies
         or if the max_qubit_count constraint is too tight to allow any progress.
     """
-    unmeasured = graph.nodes - graph.output_node_indices.keys()
+    unmeasured_outputs = unmeasured_output_nodes(graph)
+    unmeasured = graph.nodes - unmeasured_outputs
     input_nodes = set(graph.input_node_indices.keys())
-    output_nodes = set(graph.output_node_indices.keys())
 
     inv_dag = inverse_dag_from_dag(dag, graph.nodes)
 
@@ -91,7 +92,7 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
         raise RuntimeError(msg)
 
     # Compute criticality for prioritizing preparations
-    criticality = _compute_criticality(dag, output_nodes)
+    criticality = _compute_criticality(dag, unmeasured_outputs)
 
     current_time = 0
 
@@ -296,7 +297,7 @@ def _phase2_prepare_nodes_with_slack(  # ruff:ignore[too-many-arguments]
 
 def _compute_criticality(
     dag: Mapping[int, AbstractSet[int]],
-    output_nodes: AbstractSet[int],
+    unmeasured_outputs: AbstractSet[int],
 ) -> dict[int, int]:
     # Compute criticality (remaining DAG depth) for each node.
     # Nodes with higher criticality should be prioritized for unblocking.
@@ -310,8 +311,8 @@ def _compute_criticality(
         children_crits = [criticality.get(c, 0) for c in dag.get(node, ())]
         criticality[node] = 1 + max(children_crits, default=0)
 
-    # Output nodes have criticality 0 (they don't need to be measured)
-    for node in output_nodes:
+    # Unmeasured output nodes have criticality 0 (they don't need to be measured)
+    for node in unmeasured_outputs:
         criticality[node] = 0
 
     return criticality
@@ -397,7 +398,7 @@ def greedy_minimize_space(  # ruff:ignore[too-many-locals]
     prepare_time: dict[int, int] = {}
     measure_time: dict[int, int] = {}
 
-    unmeasured = graph.nodes - graph.output_node_indices.keys()
+    unmeasured = graph.nodes - unmeasured_output_nodes(graph)
 
     inv_dag = inverse_dag_from_dag(dag, graph.nodes)
     topo_order = topo_order_from_inv_dag(inv_dag)  # from parents to children

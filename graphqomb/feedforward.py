@@ -21,7 +21,7 @@ from typing import Any, TypeGuard
 import typing_extensions
 
 from graphqomb.common import Axis, Plane, determine_pauli_axis
-from graphqomb.graphstate import BaseGraphState, odd_neighbors
+from graphqomb.graphstate import BaseGraphState, odd_neighbors, unmeasured_output_nodes
 
 TOPO_ORDER_CYCLE_ERROR_MSG = "No nodes can be measured; possible cyclic dependency or incomplete preparation."
 
@@ -85,8 +85,8 @@ def dag_from_flow(
         If the flowlike object is not a Flow or GFlow
     """  # ruff:ignore[line-too-long]
     dag: dict[int, set[int]] = {}
-    output_nodes = set(graph.output_node_indices)
-    non_output_nodes = graph.nodes - output_nodes
+    unmeasured_outputs = unmeasured_output_nodes(graph)
+    measured_nodes = graph.nodes - unmeasured_outputs
     if _is_flow(xflow):
         xflow = {node: {xflow[node]} for node in xflow}
     elif _is_gflow(xflow):
@@ -104,10 +104,10 @@ def dag_from_flow(
     else:
         msg = "Invalid zflow object"
         raise TypeError(msg)
-    for node in non_output_nodes:
+    for node in measured_nodes:
         target_nodes = (xflow.get(node, set()) | zflow.get(node, set())) - {node}  # remove self-loops
         dag[node] = target_nodes
-    for output in output_nodes:
+    for output in unmeasured_outputs:
         dag[output] = set()
 
     return dag

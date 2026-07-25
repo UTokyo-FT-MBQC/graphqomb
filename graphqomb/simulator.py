@@ -243,8 +243,8 @@ class PatternSimulator:
         if cmd.node in self.__pattern.output_node_indices:
             qindex = self.__pattern.output_node_indices[cmd.node]
             self.output_results[qindex] = result
-            return
 
+        # Measured outputs participate in feedforward like any other node.
         if result:
             self.__pattern.pauli_frame.meas_flip(cmd.node)
 

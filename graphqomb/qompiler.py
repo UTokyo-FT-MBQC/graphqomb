@@ -138,8 +138,6 @@ def _qompile(
         # Insert TICK between time slices
         commands.append(TICK())
 
-    commands.extend(M(node, meas_bases[node]) for node in graph.output_node_indices if node in meas_bases)
-
     # Collect input node coordinates
     input_coords = {node: graph_coords[node] for node in graph.input_node_indices if node in graph_coords}
 

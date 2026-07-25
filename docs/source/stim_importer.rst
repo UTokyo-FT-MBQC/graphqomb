@@ -68,23 +68,58 @@ unsigned ``MPP`` products. Inverted targets in ``MXX``, ``MYY``, ``MZZ``, and
 ``MPP`` are rejected because GraphQOMB does not currently retain the
 corresponding parity offset.
 
-All ``MPP`` instructions within one ``TICK`` block are represented by one
-combined extraction and are validated to commute. Anticommuting products in
-the same block are rejected. Within a combined block, local stabilizer
-interactions are ordered ``Z -> Y -> X`` on each shared data qubit. If an odd
-number of shared-data-qubit pairs reverse the order of the same two
-stabilizers, the graph-state builder adds the required CZ edge between their
-ancillas. This rule is applied automatically for both Type I and Type II
-foliation.
+Classical Pauli feedback
+------------------------
 
-Only data-wire nodes contribute to the X-correction flow; MPP ancilla nodes do
-not produce X corrections. After composing all graph fragments, the importer
-derives the Z-correction flow from the odd neighborhood of the complete
-X-correction flow. Both correction maps are passed directly to ``qompile()``
-without Pauli simplification or an importer-specific fallback. Non-commuting
-measurements must be separated by ``TICK`` in the source circuit. Each unit has
-a distinct unmeasured output layer, which is composed with the next unitary or
-measurement fragment by qubit index. Pass
+Stim measurement-record controls are imported as explicit Pauli-frame
+corrections. ``CX rec[-k] q``/``CNOT rec[-k] q`` adds ``q`` to the
+controlling measurement node's X-correction flow, ``CZ rec[-k] q`` adds it to
+the Z-correction flow, and ``CY rec[-k] q`` adds it to both. The equivalent
+reverse-target spellings ``XCZ q rec[-k]`` and ``YCZ q rec[-k]`` are also
+supported, as is the symmetric ``CZ q rec[-k]`` form. Batched target pairs in
+one Stim instruction are supported when every pair is a feedback pair. Mixing
+quantum and feedback pairs in one instruction remains unsupported; use
+separate instructions.
+
+A feedback instruction is a graph-fragment boundary, so its correction targets
+the data-lane node at that exact circuit position. Repeating the same
+record-controlled Pauli correction cancels by parity. A feedback record must
+refer to an earlier imported measurement; records idealized to zero produce no
+correction.
+
+Frame corrections are applied at their target's measurement, after every graph
+edge on the target exists. An X or Y feedback therefore also XORs Z
+corrections onto the neighbors the target becomes entangled with after the
+feedback position, which is what pushing the deferred X through those later CZ
+edges leaves behind. Neighbors entangled before the feedback position receive
+no compensation, and Z feedback commutes with CZ so it needs none.
+
+A feedback record may come from an ``MPP`` ancilla or from a direct
+single-qubit measurement. Direct measurements are imported as measured output
+nodes, which are scheduled like ordinary measurements, so the controlling
+readout is always measured before any node that depends on its correction.
+
+All ``MPP`` instructions within each feedback-free portion of one ``TICK``
+block are represented by one combined extraction and are validated to commute.
+Anticommuting products in the same portion are rejected. Within a combined
+block, local stabilizer interactions are ordered ``Z -> Y -> X`` on each
+shared data qubit. If an odd number of shared-data-qubit pairs reverse the
+order of the same two stabilizers, the graph-state builder adds the required CZ
+edge between their ancillas. This rule is applied automatically for both Type
+I and Type II foliation.
+
+Only data-wire nodes contribute to the graph-generated X-correction flow; MPP
+ancilla nodes do not produce those corrections. After composing all graph
+fragments, the importer first derives the Z-correction flow from the odd
+neighborhood of this graph-generated X flow. It then XORs Stim's explicit
+classical X/Y/Z feedback into the two correction maps, including the
+deferred-X compensation described above; a feedback entry never adopts the
+full odd-neighbor rule, only the neighbors entangled after its position.
+Both completed maps are passed directly to ``qompile()`` without Pauli
+simplification or an importer-specific fallback. Non-commuting measurements
+must be separated by ``TICK`` in the source circuit. Each unit has a distinct
+unmeasured output layer, which is composed with the next unitary or measurement
+fragment by qubit index. Pass
 ``y_foliation=YFoliation.TYPE_II`` to any of the three import entry points to use
 the three-layer Y-measurement construction; Type I is the default.
 

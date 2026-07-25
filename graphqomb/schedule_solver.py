@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 
 from ortools.sat.python import cp_model
 
+from graphqomb.graphstate import unmeasured_output_nodes
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Set as AbstractSet
@@ -62,13 +64,13 @@ def _add_constraints(
             if node in node2meas and child in node2meas:
                 model.add(node2meas[node] < node2meas[child])
 
-    # A non-input, non-output node must be prepared before it is measured.
+    # A non-input, measured node must be prepared before it is measured.
     for node in graph.nodes:
         if node in node2prep and node in node2meas:
             model.add(node2prep[node] < node2meas[node])
 
     # Edge constraints
-    for node in graph.nodes - set(graph.output_node_indices):
+    for node in node2meas:
         for neighbor in graph.neighbors(node):
             if neighbor in graph.input_node_indices:
                 if node in graph.input_node_indices:
@@ -123,18 +125,18 @@ def _compute_alive_nodes_at_time(
             ctx.model.add(p <= t).only_enforce_if(a_pre)
             ctx.model.add(p > t).only_enforce_if(a_pre.negated())
 
-        a_meas = ctx.model.new_bool_var(f"alive_meas_{node}_{t}")
-        if node in ctx.graph.output_node_indices:
-            ctx.model.add(a_meas == 0)
+        measured_before_t = ctx.model.new_bool_var(f"measured_before_{node}_{t}")
+        if node not in node2meas:
+            ctx.model.add(measured_before_t == 0)
         else:
             q = node2meas[node]
-            ctx.model.add(q <= t).only_enforce_if(a_meas)
-            ctx.model.add(q > t).only_enforce_if(a_meas.negated())
+            ctx.model.add(q < t).only_enforce_if(measured_before_t)
+            ctx.model.add(q >= t).only_enforce_if(measured_before_t.negated())
 
         alive = ctx.model.new_bool_var(f"alive_{node}_{t}")
         ctx.model.add_implication(alive, a_pre)
-        ctx.model.add_implication(alive, a_meas.negated())
-        ctx.model.add(a_pre - a_meas <= alive)
+        ctx.model.add_implication(alive, measured_before_t.negated())
+        ctx.model.add(a_pre - measured_before_t <= alive)
         alive_at_t.append(alive)
 
     return alive_at_t
@@ -148,7 +150,7 @@ def _set_minimize_space_objective(
 ) -> None:
     """Set objective to minimize the maximum number of qubits used at any time."""
     max_space = ctx.model.new_int_var(0, len(ctx.graph.nodes), "max_space")
-    for t in range(max_time):
+    for t in range(max_time + 1):
         alive_at_t = _compute_alive_nodes_at_time(ctx, node2prep, node2meas, t)
         ctx.model.add(max_space >= sum(alive_at_t))
     ctx.model.minimize(max_space)
@@ -164,7 +166,7 @@ def _set_minimize_time_objective(
     """Set objective to minimize the total execution time."""
     # Add space constraint if max_qubit_count is specified
     if max_qubit_count is not None:
-        for t in range(max_time):
+        for t in range(max_time + 1):
             alive_at_t = _compute_alive_nodes_at_time(ctx, node2prep, node2meas, t)
             ctx.model.add(sum(alive_at_t) <= max_qubit_count)
 
@@ -211,12 +213,13 @@ def solve_schedule(
     max_time = config.max_time if config.max_time is not None else 2 * len(graph.nodes)
 
     # Create variables
+    unmeasured_outputs = unmeasured_output_nodes(graph)
     node2prep: dict[int, cp_model.IntVar] = {}
     node2meas: dict[int, cp_model.IntVar] = {}
     for node in graph.nodes:
         if node not in graph.input_node_indices:
             node2prep[node] = model.new_int_var(0, max_time, f"prep_{node}")
-        if node not in graph.output_node_indices:
+        if node not in unmeasured_outputs:
             node2meas[node] = model.new_int_var(0, max_time, f"meas_{node}")
 
     # Add constraints

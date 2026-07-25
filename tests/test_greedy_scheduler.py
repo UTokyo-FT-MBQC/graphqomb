@@ -2,6 +2,7 @@
 
 import pytest
 
+from graphqomb.common import Plane, PlannerMeasBasis
 from graphqomb.graphstate import GraphState
 from graphqomb.greedy_scheduler import (
     greedy_minimize_space,
@@ -729,3 +730,34 @@ def test_greedy_minimize_space_prepares_remaining_tail_nodes() -> None:
     assert n1 in prepare_time
     assert n2 in prepare_time
     assert prepare_time[n2] >= prepare_time[n1]
+
+
+@pytest.mark.parametrize("strategy", [Strategy.MINIMIZE_TIME, Strategy.MINIMIZE_SPACE])
+@pytest.mark.parametrize("use_greedy", [True, False])
+def test_solve_schedule_orders_measured_output_after_dependencies(strategy: Strategy, use_greedy: bool) -> None:
+    """Measured outputs must be scheduled like ordinary measurements, after their flow parents."""
+    graph = GraphState()
+    node0 = graph.add_node()
+    node1 = graph.add_node()
+    node2 = graph.add_node()
+    graph.add_edge(node0, node1)
+    graph.add_edge(node1, node2)
+    qindex = 0
+    graph.register_input(node0, qindex)
+    graph.register_output(node2, qindex)
+    graph.assign_meas_basis(node0, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(node1, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(node2, PlannerMeasBasis(Plane.XY, 0.0))
+
+    flow = {node0: {node1}, node1: {node2}}
+    scheduler = Scheduler(graph, flow)
+
+    assert scheduler.solve_schedule(ScheduleConfig(strategy, use_greedy=use_greedy))
+    scheduler.validate_schedule()
+
+    measure_time = scheduler.measure_time
+    time0, time1, time2 = measure_time[node0], measure_time[node1], measure_time[node2]
+    assert time0 is not None
+    assert time1 is not None
+    assert time2 is not None
+    assert time0 < time1 < time2

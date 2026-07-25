@@ -9,6 +9,7 @@ This module provides:
 - `compose`: Function to compose two graph states sequentially.
 - `bipartite_edges`: Function to create a complete bipartite graph between two sets of nodes.
 - `odd_neighbors`: Function to get odd neighbors of a node.
+- `unmeasured_output_nodes`: Function to get output nodes without a measurement basis.
 
 """
 
@@ -1035,6 +1036,7 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
     ValueError
         1. If the graph states are not in canonical form.
         2. If there are qindex conflicts (same qindex used in both graphs but not for connection).
+        3. If a connected qindex refers to a measured output of graph1.
     """
     graph1.check_canonical_form()
     graph2.check_canonical_form()
@@ -1054,6 +1056,17 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
             f"Qindex conflicts detected: {conflicting_q_indices}. "
             "These indices are used in both graphs but cannot be connected."
         )
+        raise ValueError(msg)
+
+    # A measured output is a projective readout: the wire is consumed and
+    # cannot be continued by a following graph.
+    measured_connection_q_indices = sorted(
+        q_index
+        for node, q_index in graph1.output_node_indices.items()
+        if q_index in target_q_indices and node in graph1.meas_bases
+    )
+    if measured_connection_q_indices:
+        msg = f"Cannot compose through measured output qubit indices: {measured_connection_q_indices}."
         raise ValueError(msg)
 
     composed_graph = GraphState()
@@ -1197,3 +1210,23 @@ def odd_neighbors(nodes: AbstractSet[int], graphstate: BaseGraphState) -> set[in
         set of odd neighbors
     """
     return functools.reduce(operator.xor, (graphstate.neighbors(node) for node in nodes), set())  # pyright: ignore[reportUnknownArgumentType]
+
+
+def unmeasured_output_nodes(graphstate: BaseGraphState) -> set[int]:
+    r"""Return the output nodes without an assigned measurement basis.
+
+    Output nodes with a measurement basis are projective readouts of the output
+    register: they are scheduled and measured like any other node, while the
+    returned unmeasured outputs remain quantum.
+
+    Parameters
+    ----------
+    graphstate : `BaseGraphState`
+        graph state
+
+    Returns
+    -------
+    `set`\[`int`\]
+        set of output nodes without a measurement basis
+    """
+    return graphstate.output_node_indices.keys() - graphstate.meas_bases.keys()

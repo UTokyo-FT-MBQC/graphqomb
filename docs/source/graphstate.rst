@@ -24,6 +24,7 @@ Functions
 .. autofunction:: graphqomb.graphstate.compose
 .. autofunction:: graphqomb.graphstate.bipartite_edges
 .. autofunction:: graphqomb.graphstate.odd_neighbors
+.. autofunction:: graphqomb.graphstate.unmeasured_output_nodes
 
 Auxiliary Classes
 ------------------

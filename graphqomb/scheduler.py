@@ -12,6 +12,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, NamedTuple
 
 from graphqomb.feedforward import dag_from_flow
+from graphqomb.graphstate import unmeasured_output_nodes
 from graphqomb.greedy_scheduler import greedy_minimize_space, greedy_minimize_time
 from graphqomb.schedule_solver import ScheduleConfig, Strategy, solve_schedule
 
@@ -152,7 +153,7 @@ class Scheduler:
         self.graph = graph
         self.dag = dag_from_flow(graph, xflow, zflow)
         self.prepare_time = dict.fromkeys(graph.nodes - graph.input_node_indices.keys())
-        self.measure_time = dict.fromkeys(graph.nodes - graph.output_node_indices.keys())
+        self.measure_time = dict.fromkeys(graph.nodes - unmeasured_output_nodes(graph))
         # Initialize entangle_time for all edges
         self.entangle_time = dict.fromkeys(graph.edges)
 
@@ -235,7 +236,7 @@ class Scheduler:
             node: prepare_time.get(node, None) for node in self.graph.nodes - self.graph.input_node_indices.keys()
         }
         self.measure_time = {
-            node: measure_time.get(node, None) for node in self.graph.nodes - self.graph.output_node_indices.keys()
+            node: measure_time.get(node, None) for node in self.graph.nodes - unmeasured_output_nodes(self.graph)
         }
         if entangle_time is not None:
             resolved_entangle_time: dict[tuple[int, int], int | None] = {}
@@ -261,7 +262,7 @@ class Scheduler:
             or if node sets do not match expected sets.
         """
         input_nodes = self.graph.input_node_indices.keys()
-        output_nodes = self.graph.output_node_indices.keys()
+        unmeasured_outputs = unmeasured_output_nodes(self.graph)
         nodes = self.graph.nodes
 
         # Input nodes should not be in prepare_time
@@ -270,15 +271,15 @@ class Scheduler:
             msg = f"Input nodes {sorted(invalid_prep)} should not be in prepare_time"
             raise ValueError(msg)
 
-        # Output nodes should not be in measure_time
-        invalid_meas = output_nodes & self.measure_time.keys()
+        # Outputs without a measurement basis should not be in measure_time
+        invalid_meas = unmeasured_outputs & self.measure_time.keys()
         if invalid_meas:
-            msg = f"Output nodes {sorted(invalid_meas)} should not be in measure_time"
+            msg = f"Unmeasured output nodes {sorted(invalid_meas)} should not be in measure_time"
             raise ValueError(msg)
 
         # Check expected node sets
         expected_prep_nodes = nodes - input_nodes
-        expected_meas_nodes = nodes - output_nodes
+        expected_meas_nodes = nodes - unmeasured_outputs
 
         if self.prepare_time.keys() != expected_prep_nodes:
             missing = expected_prep_nodes - self.prepare_time.keys()
@@ -489,9 +490,9 @@ class Scheduler:
 
         Checks:
         - Input nodes are not prepared (assumed to be prepared before time 0)
-        - Output nodes are not measured
+        - Outputs without a measurement basis are not measured
         - All non-input nodes have a preparation time
-        - All non-output nodes have a measurement time
+        - All nodes with a measurement basis have a measurement time
         - Measurement order respects DAG dependencies
         - Within same time slice, measurements happen before preparations
         - Entanglement times respect causality constraints (if entanglement is scheduled):
@@ -556,7 +557,7 @@ class Scheduler:
             node: prepare_time.get(node, None) for node in self.graph.nodes - self.graph.input_node_indices.keys()
         }
         meas_time = {
-            node: measure_time.get(node, None) for node in self.graph.nodes - self.graph.output_node_indices.keys()
+            node: measure_time.get(node, None) for node in self.graph.nodes - unmeasured_output_nodes(self.graph)
         }
 
         self.prepare_time = prep_time

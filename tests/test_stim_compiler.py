@@ -710,7 +710,7 @@ def test_stim_compile_respects_manual_entangle_time() -> None:
 
     scheduler.manual_schedule(
         prepare_time={mid_node: 0, out_node: 0},
-        measure_time={in_node: 3, mid_node: 4},
+        measure_time={in_node: 3, mid_node: 4, out_node: 5},
         # Intentionally provide edges in reversed order to ensure they are still accepted.
         entangle_time={
             (mid_node, in_node): 2,
