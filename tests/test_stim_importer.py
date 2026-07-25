@@ -23,6 +23,8 @@ stim = pytest.importorskip("stim")
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from numpy.typing import NDArray
+
 
 def test_stim_text_to_pattern_imports_unitary_clifford_block() -> None:
     result = stim_text_to_pattern(
@@ -1183,7 +1185,7 @@ def _random_wire_circuit(rng: np.random.Generator) -> str:
     return "\n".join(lines)
 
 
-def _postselected_stim_state(text: str, outcomes: list[bool]) -> np.ndarray:
+def _postselected_stim_state(text: str, outcomes: list[bool]) -> NDArray[np.complex128]:
     simulator = stim.TableauSimulator()
     record_index = 0
     for instruction in stim.Circuit(text):
