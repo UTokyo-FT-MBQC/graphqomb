@@ -147,12 +147,12 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, verify: bool = True) -> MppRe
     flattened = _coerce_circuit(circuit).flattened()
     rewriter = _Rewriter(num_qubits=flattened.num_qubits, verify=verify)
     for instruction in flattened:
-        if isinstance(instruction, stim.CircuitRepeatBlock):  # pragma: no cover - removed by flattened()
+        if isinstance(instruction, stim.CircuitRepeatBlock):
             msg = "REPEAT blocks must be flattened before rewriting."
             raise UnsupportedSyndromeCircuitError(msg)
         rewriter.process(instruction)
     result = rewriter.finish()
-    if result.circuit.num_measurements != flattened.num_measurements:  # pragma: no cover - internal invariant
+    if result.circuit.num_measurements != flattened.num_measurements:
         msg = "MPP rewrite changed the measurement count; this is a bug."
         raise RuntimeError(msg)
     return result
@@ -561,14 +561,14 @@ def _single_qubit_observable(
 
 
 def _pair_observable(group: Sequence[stim.GateTarget], basis: str, name: str, num_qubits: int) -> _SourceObservable:
-    if len(group) != _PAIR_GROUP_SIZE:  # pragma: no cover - stim enforces pairing
+    if len(group) != _PAIR_GROUP_SIZE:
         msg = f"{name} expects qubit pairs."
         raise UnsupportedSyndromeCircuitError(msg)
     observable = stim.PauliString(num_qubits)
     sign = 1
     for target in group:
         qubit = _plain_qubit(target, name)
-        if observable[qubit] != 0:  # pragma: no cover - stim rejects duplicate pair targets
+        if observable[qubit] != 0:
             msg = f"{name} pairs the same qubit {qubit} with itself."
             raise UnsupportedSyndromeCircuitError(msg)
         observable[qubit] = basis
