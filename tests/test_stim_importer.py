@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -21,6 +22,8 @@ stim = pytest.importorskip("stim")
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from numpy.typing import NDArray
 
 
 def test_stim_text_to_pattern_imports_unitary_clifford_block() -> None:
@@ -250,9 +253,13 @@ def test_stim_text_to_pattern_splits_adjacent_feedback_and_unitary_operations() 
         assert simulator.results[target] == simulator.results[source]
 
 
-def test_stim_text_to_pattern_rejects_mixed_quantum_and_feedback_pairs() -> None:
-    with pytest.raises(ValueError, match="exactly one measurement record"):
-        stim_text_to_pattern("M 0\nTICK\nCX rec[-1] 1 2 3")
+def test_stim_text_to_pattern_accepts_feedback_fused_with_quantum_pairs() -> None:
+    """``CX rec[-1] 1`` fused with a plain ``CX 2 3`` splits into feedback and unitary parts."""
+    result = stim_text_to_pattern("M 0\nTICK\nCX rec[-1] 1 2 3")
+
+    assert set(result.pattern.output_node_indices.values()) == {0, 1, 2, 3}
+    simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+    simulator.simulate(rng=np.random.default_rng(3))
 
 
 def test_stim_text_to_pattern_rejects_feedback_before_any_measurement_record() -> None:
@@ -890,10 +897,64 @@ def test_stim_text_to_pattern_accepts_annotation_only_tick_block() -> None:
     assert len(result.pattern.pauli_frame.parity_check_group) == 1
 
 
-@pytest.mark.parametrize("measurement", ["MPP X0", "M 0", "MX 0", "MY 0", "MXX 0 1"])
-def test_stim_text_to_pattern_rejects_mixed_measurement_and_unitary_block(measurement: str) -> None:
-    with pytest.raises(ValueError, match="separated from unitary gate instructions by TICK"):
-        stim_text_to_pattern(f"H 0\n{measurement}\n")
+@pytest.mark.parametrize(
+    ("text", "expected_axis", "expected_sign"),
+    [
+        ("H 0\nM 0", Axis.X, Sign.PLUS),
+        ("H 0\nMX 0", Axis.Z, Sign.PLUS),
+        ("H 0\nMY 0", Axis.Y, Sign.MINUS),
+    ],
+)
+def test_stim_text_to_pattern_folds_clifford_into_same_tick_measurement(
+    text: str,
+    expected_axis: Axis,
+    expected_sign: Sign,
+) -> None:
+    result = stim_text_to_pattern(text)
+    graph = result.pattern.pauli_frame.graphstate
+    measurements = [command for command in result.pattern.commands if isinstance(command, M)]
+
+    assert graph.number_of_nodes() == 1
+    assert len(measurements) == 1
+    assert isinstance(measurements[0].meas_basis, AxisMeasBasis)
+    assert measurements[0].meas_basis.axis == expected_axis
+    assert measurements[0].meas_basis.sign == expected_sign
+
+
+def test_stim_text_to_pattern_splits_mixed_tick_block_across_qubits() -> None:
+    result = stim_text_to_pattern("H 1\nM 0")
+    measurements = [command for command in result.pattern.commands if isinstance(command, M)]
+    measured_axes = [
+        command.meas_basis.axis for command in measurements if isinstance(command.meas_basis, AxisMeasBasis)
+    ]
+
+    assert set(result.pattern.output_node_indices.values()) == {0, 1}
+    assert Axis.Z in measured_axes
+    simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+    simulator.simulate(rng=np.random.default_rng(3))
+    assert np.isclose(abs(np.vdot([1.0, 0.0], simulator.state.state())), 1.0, atol=1e-9)
+
+
+@pytest.mark.parametrize("measurement", ["MPP X0", "MXX 0 1"])
+def test_stim_text_to_pattern_accepts_clifford_with_pauli_product_in_one_tick(measurement: str) -> None:
+    result = stim_text_to_pattern(f"H 0\n{measurement}\nDETECTOR rec[-1]")
+
+    assert len(result.mpp_extractions) == 1
+    assert len(result.pattern.pauli_frame.parity_check_group) == 1
+
+
+def test_stim_text_to_pattern_orders_clifford_before_same_tick_pauli_product() -> None:
+    pattern = stim_text_to_pattern("H 0\nMPP Z0\nDETECTOR rec[-1]").pattern
+    compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
+
+    compiled.detector_error_model()
+
+
+def test_stim_text_to_pattern_orders_clifford_before_same_tick_measurement_with_detector() -> None:
+    pattern = stim_text_to_pattern("H 0\nM 0\nDETECTOR rec[-1]").pattern
+    compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
+
+    compiled.detector_error_model()
 
 
 @pytest.mark.parametrize(
@@ -970,12 +1031,6 @@ def test_stim_text_to_pattern_rejects_reset_after_quantum_operation(instruction:
         stim_text_to_pattern(f"H 0\n{instruction} 0")
 
 
-@pytest.mark.parametrize("instruction", ["MR 0", "MRX 0", "MRY 0"])
-def test_stim_text_to_pattern_defers_measurement_reset_instructions(instruction: str) -> None:
-    with pytest.raises(ValueError, match="Unsupported Stim instruction"):
-        stim_text_to_pattern(instruction)
-
-
 def test_stim_text_to_pattern_rejects_duplicate_qubit_coordinates() -> None:
     with pytest.raises(ValueError, match="distinct XY projections"):
         stim_text_to_pattern("QUBIT_COORDS(0, 0) 0\nQUBIT_COORDS(0, 0) 1\nCZ 0 1")
@@ -989,14 +1044,354 @@ def test_stim_text_to_pattern_rejects_coordinates_sharing_an_xy_projection() -> 
         )
 
 
-def test_stim_text_to_pattern_rejects_qubit_reuse_after_single_measurement() -> None:
-    with pytest.raises(ValueError, match="terminate those qubit lifetimes"):
-        stim_text_to_pattern("M 0\nTICK\nMPP X0")
+def test_stim_text_to_pattern_issues_new_qubit_index_for_reused_qubit() -> None:
+    result = stim_text_to_pattern("M 0\nTICK\nH 0")
+
+    assert result.stim_to_qubit == {0: 0}
+    assert result.qubit_to_stim == {0: 0, 1: 0}
+    assert set(result.pattern.output_node_indices.values()) == {1}
 
 
-def test_stim_text_to_pattern_rejects_unitary_reuse_after_single_measurement() -> None:
-    with pytest.raises(ValueError, match="terminate those qubit lifetimes"):
-        stim_text_to_pattern("M 0\nTICK\nH 0")
+def test_stim_text_to_pattern_continues_reused_wire_in_post_measurement_state() -> None:
+    for seed in range(8):
+        result = stim_text_to_pattern("M 0\nTICK\nH 0")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        outcome = next(iter(simulator.results.values()))
+        expected = np.asarray([1.0, (-1.0) ** outcome], dtype=np.complex128) / np.sqrt(2)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_places_reused_wire_at_same_xy_and_new_z() -> None:
+    result = stim_text_to_pattern("QUBIT_COORDS(1, 2) 0\nM 0\nTICK\nH 0")
+    graph = result.pattern.pauli_frame.graphstate
+    coordinates = sorted(graph.coordinates.values(), key=operator.itemgetter(2))
+
+    assert len(coordinates) == graph.number_of_nodes()
+    assert all(coordinate[:2] == (1.0, 2.0) for coordinate in coordinates)
+    assert coordinates[0] == (1.0, 2.0, 0.0)
+    assert all(coordinate[2] > 0.0 for coordinate in coordinates[1:])
+
+
+@pytest.mark.parametrize(
+    ("measurement", "expected_axis"),
+    [("M", Axis.Z), ("MX", Axis.X), ("MY", Axis.Y)],
+)
+def test_stim_text_to_pattern_repeated_measurement_outcomes_agree(
+    measurement: str,
+    expected_axis: Axis,
+) -> None:
+    for seed in range(8):
+        result = stim_text_to_pattern(f"{measurement} 0\nTICK\n{measurement} 0")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        assert len(simulator.results) == 2
+        assert len(set(simulator.results.values())) == 1
+
+    graph = stim_text_to_pattern(f"{measurement} 0\nTICK\n{measurement} 0").pattern.pauli_frame.graphstate
+    continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
+    assert graph.input_initialization_axes[continuation_node] == expected_axis
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "M 0\nTICK\nM 0\nDETECTOR rec[-1] rec[-2]",
+        "MX 0\nTICK\nMX 0\nDETECTOR rec[-1] rec[-2]",
+        "MY 0\nTICK\nMY 0\nDETECTOR rec[-1] rec[-2]",
+        "M 0\nTICK\nH 0\nTICK\nMX 0\nDETECTOR rec[-1] rec[-2]",
+        "MX 0\nTICK\nH 0\nTICK\nM 0\nDETECTOR rec[-1] rec[-2]",
+        "MY 0\nTICK\nSQRT_Y 0\nTICK\nMY 0\nDETECTOR rec[-1] rec[-2]",
+        "M 0\nTICK\nM 0\nTICK\nM 0\nDETECTOR rec[-1] rec[-3]",
+        "M 0\nTICK\nMPP Z0\nDETECTOR rec[-1] rec[-2]",
+        "M 0\nTICK\nM 0\nOBSERVABLE_INCLUDE(0) rec[-1] rec[-2]",
+    ],
+)
+def test_stim_text_to_pattern_preserves_deterministic_annotations_across_reuse(text: str) -> None:
+    pattern = stim_text_to_pattern(text).pattern
+    compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
+
+    compiled.detector_error_model()
+
+
+def test_stim_text_to_pattern_allows_pauli_product_after_single_measurement() -> None:
+    result = stim_text_to_pattern("M 0\nTICK\nMPP X0")
+
+    assert len(result.mpp_extractions) == 1
+    assert result.qubit_to_stim == {0: 0, 1: 0}
+    simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+    simulator.simulate(rng=np.random.default_rng(3))
+
+
+def test_stim_text_to_pattern_entangles_reused_wire_after_measurement() -> None:
+    for seed in range(8):
+        result = stim_text_to_pattern("M 0\nTICK\nCZ 0 1")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        outcome = int(next(iter(simulator.results.values())))
+        reused_wire = np.zeros(2, dtype=np.complex128)
+        reused_wire[outcome] = 1.0
+        partner_wire = np.asarray([1.0, (-1.0) ** outcome], dtype=np.complex128) / np.sqrt(2)
+        expected = np.kron(partner_wire, reused_wire)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_keeps_measured_state_when_qubit_is_reused() -> None:
+    result = stim_text_to_pattern("H 0\nM 0\nTICK\nH 0\nTICK\nMX 0\nDETECTOR rec[-1] rec[-2]")
+    graph = result.pattern.pauli_frame.graphstate
+    measured_axes = [basis.axis for basis in graph.meas_bases.values() if isinstance(basis, AxisMeasBasis)]
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
+
+    assert Axis.Z in measured_axes
+    compiled.detector_error_model()
+
+
+def test_stim_text_to_pattern_rejects_reuse_after_inverted_measurement() -> None:
+    with pytest.raises(ValueError, match="inverted single-qubit measurement"):
+        stim_text_to_pattern("M !0\nTICK\nH 0")
+
+
+@pytest.mark.parametrize(
+    ("measurement", "reset_axis"),
+    [("MR", Axis.Z), ("MRX", Axis.X), ("MRY", Axis.Y)],
+)
+def test_stim_text_to_pattern_reuses_qubit_after_measure_reset(measurement: str, reset_axis: Axis) -> None:
+    result = stim_text_to_pattern(f"{measurement} 0\nTICK\nH 0")
+    graph = result.pattern.pauli_frame.graphstate
+
+    assert result.qubit_to_stim == {0: 0, 1: 0}
+    continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
+    assert graph.input_initialization_axes[continuation_node] == reset_axis
+
+
+def test_stim_text_to_pattern_measure_reset_continuation_is_outcome_independent() -> None:
+    """``MR 0`` re-prepares |0>, so the reused wire ends in H|0> = |+> for every outcome."""
+    for seed in range(8):
+        result = stim_text_to_pattern("H 0\nTICK\nMR 0\nTICK\nH 0")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        expected = np.asarray([1.0, 1.0], dtype=np.complex128) / np.sqrt(2)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MR 0\nTICK\nM 0\nDETECTOR rec[-1]",
+        "MRX 0\nTICK\nMX 0\nDETECTOR rec[-1]",
+        "MRY 0\nTICK\nMY 0\nDETECTOR rec[-1]",
+        "MRZ 0\nTICK\nMR 0\nDETECTOR rec[-1]",
+        "MR !0\nTICK\nM 0\nDETECTOR rec[-1]",
+    ],
+)
+def test_stim_text_to_pattern_measurement_after_measure_reset_is_deterministic(text: str) -> None:
+    pattern = stim_text_to_pattern(text).pattern
+    compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
+
+    compiled.detector_error_model()
+
+
+def test_stim_text_to_pattern_accepts_clifford_with_measure_reset_in_one_tick() -> None:
+    """``H 0`` and ``MR 0`` in one TICK split into parts; the reset still re-prepares |0>."""
+    for seed in range(8):
+        result = stim_text_to_pattern("H 0\nMR 0\nH 0")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        expected = np.asarray([1.0, 1.0], dtype=np.complex128) / np.sqrt(2)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_measure_reset_entangled_partner_keeps_outcome() -> None:
+    """MR on one half of a CZ pair: partner keeps the collapsed state, reused wire restarts at |0>."""
+    for seed in range(8):
+        result = stim_text_to_pattern("CZ 0 1\nTICK\nMR 0\nTICK\nH 0\nDETECTOR rec[-1]")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        record_node = next(iter(result.pattern.pauli_frame.parity_check_group[0]))
+        outcome = int(simulator.results[record_node])
+        reused_wire = np.asarray([1.0, 1.0], dtype=np.complex128) / np.sqrt(2)
+        partner_wire = np.asarray([1.0, (-1.0) ** outcome], dtype=np.complex128) / np.sqrt(2)
+        expected = np.kron(partner_wire, reused_wire)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_terminal_measure_reset_matches_plain_measurement() -> None:
+    result = stim_text_to_pattern("MR 0")
+    graph = result.pattern.pauli_frame.graphstate
+    measurements = [command for command in result.pattern.commands if isinstance(command, M)]
+
+    assert graph.number_of_nodes() == 1
+    assert len(measurements) == 1
+
+
+@pytest.mark.parametrize("text", ["M 0 0", "M 0\nM 0"])
+def test_stim_text_to_pattern_sequences_repeated_measurement_in_one_tick(text: str) -> None:
+    for seed in range(4):
+        result = stim_text_to_pattern(text)
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        assert len(simulator.results) == 2
+        assert len(set(simulator.results.values())) == 1
+
+
+_DIFFERENTIAL_GATES = ("H", "S", "S_DAG", "X", "Z", "SQRT_Y", "C_XYZ")
+_DIFFERENTIAL_MEASUREMENTS = ("M", "MX", "MY", "MR", "MRX", "MRY")
+_POSTSELECT_AXES = {"M": "z", "MX": "x", "MY": "y", "MR": "z", "MRX": "x", "MRY": "y"}
+_RESET_AFTER_MEASURE = {"MR": "R", "MRX": "RX", "MRY": "RY"}
+
+
+def _random_wire_circuit(rng: np.random.Generator) -> str:
+    lines: list[str] = []
+    for _ in range(int(rng.integers(1, 4))):
+        for _ in range(int(rng.integers(0, 3))):
+            lines.append(f"{rng.choice(_DIFFERENTIAL_GATES)} 0")
+            if rng.random() < 0.4:
+                lines.append("TICK")
+        lines.append(f"{rng.choice(_DIFFERENTIAL_MEASUREMENTS)} 0")
+        if rng.random() < 0.6:
+            lines.append("TICK")
+    lines.append(f"{rng.choice(_DIFFERENTIAL_GATES)} 0")
+    return "\n".join(lines)
+
+
+def _postselected_stim_state(text: str, outcomes: list[bool]) -> NDArray[np.complex128]:
+    circuit = stim.Circuit(text)
+    simulator = stim.TableauSimulator()
+    simulator.set_num_qubits(circuit.num_qubits)
+    record_index = 0
+    for instruction in circuit:
+        name = instruction.name
+        if name in _POSTSELECT_AXES:
+            postselect = getattr(simulator, f"postselect_{_POSTSELECT_AXES[name]}")
+            for target in instruction.targets_copy():
+                postselect(target.qubit_value, desired_value=bool(outcomes[record_index]))
+                record_index += 1
+                if name in _RESET_AFTER_MEASURE:
+                    simulator.do(stim.Circuit(f"{_RESET_AFTER_MEASURE[name]} {target.qubit_value}"))
+        elif name in {"CX", "CZ"} and any(t.is_measurement_record_target for t in instruction.targets_copy()):
+            targets = instruction.targets_copy()
+            for control, target in zip(targets[::2], targets[1::2], strict=True):
+                if control.is_measurement_record_target:
+                    if outcomes[record_index + control.value]:
+                        apply_pauli = simulator.x if name == "CX" else simulator.z
+                        apply_pauli(target.qubit_value)
+                else:
+                    simulator.do(stim.Circuit(f"{name} {control.qubit_value} {target.qubit_value}"))
+        elif name != "TICK":
+            simulator.do(stim.Circuit(str(instruction)))
+    assert record_index == len(outcomes)
+    simulator.set_num_qubits(circuit.num_qubits)
+    return np.asarray(simulator.state_vector(endian="big"), dtype=np.complex128)
+
+
+def test_stim_text_to_pattern_matches_stim_for_random_reuse_circuits() -> None:
+    """Differential test against stim, postselected on the sampled outcomes.
+
+    Random single-wire circuits mix Clifford gates and measurements inside
+    shared TICK blocks and keep using the qubit after measurements. The final
+    pattern state must match stim's state for the same measurement record.
+    """
+    rng = np.random.default_rng(20260724)
+    for _ in range(25):
+        text = "RX 0\nTICK\n" + _random_wire_circuit(rng)
+        total_records = stim.Circuit(text).num_measurements
+        markers = "\n".join(f"DETECTOR rec[{index - total_records}]" for index in range(total_records))
+        for sim_seed in range(2):
+            result = stim_text_to_pattern(text + "\n" + markers)
+            simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+            simulator.simulate(rng=np.random.default_rng(sim_seed))
+
+            record_nodes = [next(iter(group)) for group in result.pattern.pauli_frame.parity_check_group]
+            outcomes = [simulator.results[node] for node in record_nodes]
+            reference = _postselected_stim_state(text, outcomes)
+            overlap = abs(np.vdot(reference, simulator.state.state().flatten()))
+            assert np.isclose(overlap, 1.0, atol=1e-8), text
+
+
+def test_stim_text_to_pattern_feedback_resets_reused_wire_deterministically() -> None:
+    """``M 0`` then ``CX rec[-1] 0`` leaves the reused wire in |0> for every outcome."""
+    for seed in range(8):
+        result = stim_text_to_pattern("M 0\nTICK\nCX rec[-1] 0")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        expected = np.asarray([1.0, 0.0], dtype=np.complex128)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_defuses_feedback_fused_with_unitary_gates() -> None:
+    """Adjacent ``CZ rec[-1] 0`` and ``CZ 0 1`` arrive stim-fused as one instruction."""
+    for seed in range(8):
+        result = stim_text_to_pattern("M 0\nTICK\nCZ rec[-1] 0\nCZ 0 1")
+        simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        outcome = int(next(iter(simulator.results.values())))
+        reused_wire = np.zeros(2, dtype=np.complex128)
+        reused_wire[outcome] = 1.0
+        partner_wire = np.asarray([1.0, (-1.0) ** outcome], dtype=np.complex128) / np.sqrt(2)
+        expected = np.kron(partner_wire, reused_wire)
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
+def _random_two_qubit_circuit(rng: np.random.Generator) -> str:
+    lines: list[str] = []
+    for _ in range(int(rng.integers(3, 7))):
+        roll = rng.random()
+        if roll < 0.4:
+            lines.append(f"{rng.choice(_DIFFERENTIAL_GATES)} {int(rng.integers(2))}")
+        elif roll < 0.6:
+            lines.append("CZ 0 1")
+        elif roll < 0.85:
+            lines.append(f"{rng.choice(_DIFFERENTIAL_MEASUREMENTS)} {int(rng.integers(2))}")
+            if rng.random() < 0.4:
+                lines.append(f"C{rng.choice(['X', 'Z'])} rec[-1] {int(rng.integers(2))}")
+        else:
+            lines.append("TICK")
+    lines.extend(f"{rng.choice(_DIFFERENTIAL_GATES)} {qubit}" for qubit in range(2))
+    return "\n".join(lines)
+
+
+def test_stim_text_to_pattern_matches_stim_for_random_two_qubit_reuse_circuits() -> None:
+    """Differential test with entanglement, reuse, and record-controlled feedback.
+
+    Random two-qubit circuits mix CZ, Clifford gates, single-qubit
+    measurements with reuse, and ``rec``-controlled feedback. The final
+    pattern state must match stim's state postselected on the same
+    measurement record. Trials where trailing Cliffords cancel to the
+    identity terminate a wire instead of reusing it; those are skipped, and
+    the counter asserts the skips stay rare.
+    """
+    rng = np.random.default_rng(20260725)
+    compared = 0
+    for _ in range(20):
+        text = "RX 0\nRX 1\nTICK\n" + _random_two_qubit_circuit(rng)
+        total_records = stim.Circuit(text).num_measurements
+        markers = "\n".join(f"DETECTOR rec[{index - total_records}]" for index in range(total_records))
+        for sim_seed in range(2):
+            result = stim_text_to_pattern(text + "\n" + markers)
+            internal_order = sorted(set(result.pattern.output_node_indices.values()))
+            stim_order = [result.qubit_to_stim[qubit] for qubit in internal_order]
+            if sorted(stim_order) != [0, 1]:
+                break
+            simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
+            simulator.simulate(rng=np.random.default_rng(sim_seed))
+
+            record_nodes = [next(iter(group)) for group in result.pattern.pauli_frame.parity_check_group]
+            outcomes = [simulator.results[node] for node in record_nodes]
+            reference = _postselected_stim_state(text, outcomes)
+            reference = np.transpose(reference.reshape(2, 2), axes=stim_order).flatten()
+            overlap = abs(np.vdot(reference, simulator.state.state().flatten()))
+            assert np.isclose(overlap, 1.0, atol=1e-8), text
+            compared += 1
+    assert compared >= 30
 
 
 def test_stim_text_to_pattern_allows_disjoint_qubit_after_single_measurement() -> None:
