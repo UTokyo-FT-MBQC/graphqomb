@@ -271,6 +271,20 @@ def test_optimizer_uses_axis_relative_boundary_normal_forms(source: str, expecte
     assert optimize_j_cz(source) == stim.Circuit(expected)
 
 
+def test_optimizer_preserved_measurement_qubits_block_terminal_folds() -> None:
+    source = stim.Circuit("H 0\nM 0\nH 1\nM 1")
+
+    optimized = optimize_j_cz(source, preserved_measurement_qubits={0})
+
+    assert optimized == stim.Circuit("H 0\nM 0\nMX 1")
+
+
+def test_transpile_optimize_respects_preserved_measurement_qubits() -> None:
+    circuit = transpile("H 0\nM 0", optimize=True, preserved_measurement_qubits={0})
+
+    assert circuit == stim.Circuit("H 0\nM 0")
+
+
 def test_optimizer_emits_shortest_single_qubit_words() -> None:
     """Every J word must optimize to a shortest word with the same Clifford action."""
     words = [word for length in range(5) for word in product(J_GATES, repeat=length)]
