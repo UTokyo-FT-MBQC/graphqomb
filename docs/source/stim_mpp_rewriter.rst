@@ -21,6 +21,12 @@ copied verbatim and keep their relative record indices. ``MR`` splits into an
 ``MPP`` product followed by a reset. ``REPEAT`` blocks are flattened first,
 which bakes ``SHIFT_COORDS`` offsets into detector coordinates.
 
+Existing ``MPP`` products pass through verbatim, including valid repeated
+factors such as ``X0*X1*X0``. Their sidecar mapping contains the reduced Pauli
+product. When initialized-ancilla substitution reduces an inferred product to
+``+I`` or ``-I``, the rewrite emits ``MPAD 0`` or ``MPAD 1`` respectively so
+the deterministic measurement record is preserved.
+
 .. code-block:: python
 
    from graphqomb.stim_mpp_rewriter import rewrite_to_mpp

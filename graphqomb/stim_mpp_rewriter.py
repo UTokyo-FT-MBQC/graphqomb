@@ -395,9 +395,6 @@ class _Segment:
                 continue
             if _PAULI_CODES[prepared_basis] == pulled[qubit]:
                 pulled[qubit] = 0
-        if not pulled.pauli_indices():
-            msg = "A measurement pulls back to the identity on unprepared qubits; nothing is measured."
-            raise UnsupportedSyndromeCircuitError(msg)
         if pulled.sign not in {1, -1}:  # pragma: no cover - Hermitian Paulis stay Hermitian
             msg = f"Non-Hermitian inferred observable: {pulled}."
             raise UnsupportedSyndromeCircuitError(msg)
@@ -414,13 +411,7 @@ class _Segment:
             self.output.append(instruction)
             self._conv_verify.append(instruction)
         else:
-            targets: list[stim.GateTarget] = []
-            for product in products:
-                # The stim stub mistypes the return as a single GateTarget; the
-                # runtime returns a list of targets with combiners.
-                targets.extend(cast("list[stim.GateTarget]", stim.target_combined_paulis(product)))
-            for target_circuit in (self.output, self._conv_verify):
-                target_circuit.append("MPP", targets, [], tag=instruction.tag)
+            self._emit_inferred_products(products, tag=instruction.tag)
         if instruction.name in _MEASURE_RESET_GATES:
             basis, reset_gate = _MEASURE_RESET_GATES[instruction.name]
             qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
@@ -430,6 +421,30 @@ class _Segment:
             for qubit in qubits:
                 self._late_resets[qubit] = basis
                 self._measured_unreset.discard(qubit)
+
+    def _emit_inferred_products(self, products: Sequence[stim.PauliString], *, tag: str) -> None:
+        """Append inferred products, using MPAD for deterministic identities."""
+        product_has_support = [bool(product.pauli_indices()) for product in products]
+        target_circuits = (self.output, self._conv_verify)
+        if all(product_has_support):
+            targets: list[stim.GateTarget] = []
+            for product in products:
+                # The stim stub mistypes the return as a single GateTarget; the
+                # runtime returns a list of targets with combiners.
+                targets.extend(cast("list[stim.GateTarget]", stim.target_combined_paulis(product)))
+            for target_circuit in target_circuits:
+                target_circuit.append("MPP", targets, [], tag=tag)
+            return
+
+        for product, has_support in zip(products, product_has_support, strict=True):
+            if has_support:
+                product_targets = cast("list[stim.GateTarget]", stim.target_combined_paulis(product))
+                for target_circuit in target_circuits:
+                    target_circuit.append("MPP", product_targets, [], tag=tag)
+            else:
+                pad_bit = int(product.sign == -1)
+                for target_circuit in target_circuits:
+                    target_circuit.append("MPAD", [pad_bit], [], tag=tag)
 
     def verify(self) -> None:
         """Cross-check stabilizer-flow generators of the source and rewritten segment.
@@ -447,11 +462,18 @@ class _Segment:
         if padding:
             original.append("R", padding)
             converted.append("R", padding)
-        for flow in original.flow_generators():
+        original_flows = original.flow_generators()
+        converted_flows = converted.flow_generators()
+        # Stim currently returns a canonical sorted basis. Equality is a fast
+        # path only; the per-flow fallback remains authoritative if the chosen
+        # generator bases differ across equivalent circuits or Stim versions.
+        if original_flows == converted_flows:
+            return
+        for flow in original_flows:
             if not converted.has_flow(flow):
                 msg = _verification_message(self._segment_index, flow, "source flow missing from rewrite")
                 raise MppRewriteVerificationError(msg)
-        for flow in converted.flow_generators():
+        for flow in converted_flows:
             if not original.has_flow(flow):
                 msg = _verification_message(self._segment_index, flow, "rewritten flow missing from source")
                 raise MppRewriteVerificationError(msg)
@@ -537,18 +559,14 @@ def _pair_observable(group: Sequence[stim.GateTarget], basis: str, name: str, nu
 
 def _mpp_observable(group: Sequence[stim.GateTarget], num_qubits: int) -> _SourceObservable:
     observable = stim.PauliString(num_qubits)
-    sign = 1
     for target in group:
         qubit = _plain_qubit(target, "MPP")
         pauli = target.pauli_type
         if pauli not in _PAULI_CODES:
             msg = f"MPP contains a non-Pauli target on qubit {qubit}."
             raise UnsupportedSyndromeCircuitError(msg)
-        if observable[qubit] != 0:
-            msg = f"MPP product uses qubit {qubit} more than once."
-            raise UnsupportedSyndromeCircuitError(msg)
-        observable[qubit] = pauli
+        factor = stim.PauliString({qubit: _PAULI_CODES[pauli]})
         if target.is_inverted_result_target:
-            sign = -sign
-    observable.sign = sign
+            factor.sign = -1
+        observable *= factor
     return _SourceObservable(observable=observable, source_qubit=None)

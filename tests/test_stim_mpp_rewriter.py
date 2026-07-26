@@ -194,6 +194,23 @@ def test_mpp_instruction_passes_through_verbatim() -> None:
     assert result.checks[0].source_qubit is None
 
 
+def test_mpp_repeated_qubit_factors_are_reduced_in_mapping_and_pass_through() -> None:
+    source = stim.Circuit("MPP X0*X1*X0 X2*X2")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == source
+    assert [check.product for check in result.checks] == [
+        stim.PauliString("+_X_"),
+        stim.PauliString("+___"),
+    ]
+
+
+def test_mpp_repeated_qubit_factors_must_form_a_hermitian_product() -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError, match="Non-Hermitian"):
+        rewrite_to_mpp("MPP X0*Y0")
+
+
 def test_pair_measurement_passes_through_verbatim_without_body() -> None:
     result = rewrite_to_mpp("MZZ 0 1 2 3")
 
@@ -246,9 +263,74 @@ def test_classical_feedback_is_rejected() -> None:
         rewrite_to_mpp("M 0\nCX rec[-1] 1")
 
 
-def test_identity_measurement_is_rejected() -> None:
-    with pytest.raises(UnsupportedSyndromeCircuitError, match="identity"):
-        rewrite_to_mpp("R 4\nM 4")
+@pytest.mark.parametrize(
+    ("measurement", "expected_circuit", "expected_product"),
+    [
+        pytest.param("M 4", "R 4\nMPAD 0", "+_____", id="positive-identity"),
+        pytest.param("M !4", "R 4\nMPAD 1", "-_____", id="negative-identity"),
+    ],
+)
+def test_identity_measurement_becomes_mpad(
+    measurement: str,
+    expected_circuit: str,
+    expected_product: str,
+) -> None:
+    result = rewrite_to_mpp(f"R 4\n{measurement}")
+
+    assert result.circuit == stim.Circuit(expected_circuit)
+    assert result.checks[0].product == stim.PauliString(expected_product)
+
+
+def test_identity_measure_reset_preserves_tag_and_reset() -> None:
+    result = rewrite_to_mpp("R 4\nMR[empty-check] 4")
+
+    assert result.circuit == stim.Circuit("R 4\nMPAD[empty-check] 0\nR[empty-check] 4")
+    assert result.checks[0].product == stim.PauliString("+_____")
+
+
+def test_mixed_nontrivial_and_identity_measurements_preserve_record_order() -> None:
+    result = rewrite_to_mpp(
+        """
+        R 2 3
+        CX 0 2
+        M 2 3
+        """
+    )
+
+    assert result.circuit == stim.Circuit("R 2 3\nMPP Z0\nMPAD 0")
+    assert [check.measurement_index for check in result.checks] == [0, 1]
+    assert [check.product for check in result.checks] == [
+        stim.PauliString("+Z___"),
+        stim.PauliString("+____"),
+    ]
+
+
+def test_mpad_advances_following_check_mapping_index() -> None:
+    result = rewrite_to_mpp(
+        """
+        MPAD 0 1
+        R 4
+        CX 0 4
+        M 4
+        """
+    )
+
+    assert result.circuit == stim.Circuit("MPAD 0 1\nR 4\nMPP Z0")
+    assert result.circuit.num_measurements == 3
+    assert [check.measurement_index for check in result.checks] == [2]
+
+
+def test_matching_flow_generators_skip_per_flow_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_on_per_flow_verification(_circuit: stim.Circuit, _flow: stim.Flow, *, unsigned: bool = False) -> bool:
+        del unsigned
+        msg = "matching canonical generators should not invoke per-flow verification"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(stim.Circuit, "has_flow", fail_on_per_flow_verification)
+
+    result = rewrite_to_mpp("R 4\nCX 0 4 1 4\nM 4")
+
+    assert result.circuit == stim.Circuit("R 4\nMPP Z0*Z1")
 
 
 def test_reusing_unreset_measured_qubit_is_rejected() -> None:
