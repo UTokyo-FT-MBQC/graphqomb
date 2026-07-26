@@ -89,6 +89,20 @@ def test_inverted_ancilla_measurement_inverts_the_product() -> None:
     assert result.checks[0].product.sign == -1
 
 
+def test_inverted_mpp_target_sign_is_reduced_into_the_mapping() -> None:
+    result = rewrite_to_mpp("MPP !X0*X1")
+
+    assert result.circuit == stim.Circuit("MPP !X0*X1")
+    assert result.checks[0].product == stim.PauliString("-XX")
+
+
+def test_inverted_pair_measurement_target_inverts_the_product() -> None:
+    result = rewrite_to_mpp("MZZ !0 1")
+
+    assert result.circuit == stim.Circuit("MZZ !0 1")
+    assert result.checks[0].product == stim.PauliString("-ZZ")
+
+
 def test_round_one_data_resets_are_not_stripped_from_products() -> None:
     result = rewrite_to_mpp(
         """
@@ -140,6 +154,28 @@ def test_measure_reset_splits_into_mpp_and_reset() -> None:
     )
 
 
+def test_data_measurements_after_measure_reset_pass_through_verbatim() -> None:
+    result = rewrite_to_mpp(
+        """
+        R 2
+        CX 0 2 1 2
+        MR 2
+        DETECTOR rec[-1]
+        M 0 1
+        """
+    )
+
+    assert result.circuit == stim.Circuit("R 2\nMPP Z0*Z1\nR 2\nDETECTOR rec[-1]\nM 0 1")
+    assert [check.segment_index for check in result.checks] == [0, 1, 1]
+
+
+def test_consecutive_measure_resets_split_into_segments() -> None:
+    result = rewrite_to_mpp("MR 4\nDETECTOR rec[-1]\nMR 4")
+
+    assert result.circuit == stim.Circuit("MR 4\nDETECTOR rec[-1]\nMPAD 0\nR 4")
+    assert [check.segment_index for check in result.checks] == [0, 1]
+
+
 def test_detectors_and_observables_are_copied_verbatim() -> None:
     source = stim.Circuit(
         """
@@ -176,6 +212,18 @@ def test_generated_surface_code_memory_rewrites_and_verifies() -> None:
     middle_round = [check for check in result.checks if check.segment_index == 1]
     assert len(middle_round) == 8
     assert {len(check.product.pauli_indices()) for check in middle_round} == {2, 4}
+    # The final transversal data readout starts its own segment and stays a
+    # plain weight-1 Z measurement instead of dragging reset-ancilla factors.
+    final_segment = max(check.segment_index for check in result.checks)
+    data_checks = [check for check in result.checks if check.segment_index == final_segment]
+    assert len(data_checks) == 9
+    assert all(
+        check.source_qubit is not None
+        and check.product.sign == 1
+        and check.product.pauli_indices() == [check.source_qubit]
+        and check.product[check.source_qubit] == 3
+        for check in data_checks
+    )
 
 
 def test_generated_repetition_code_memory_rewrites_and_verifies() -> None:
@@ -346,6 +394,46 @@ def test_reusing_unreset_measured_qubit_is_rejected() -> None:
         )
 
 
+def test_remeasuring_a_late_reset_qubit_starts_a_new_segment() -> None:
+    result = rewrite_to_mpp(
+        """
+        R 4
+        CX 0 4
+        M 4
+        R 4
+        M 4
+        """
+    )
+
+    assert result.circuit == stim.Circuit("R 4\nMPP Z0\nR 4\nMPAD 0")
+    assert [check.segment_index for check in result.checks] == [0, 1]
+
+
+def test_remeasuring_a_dirty_qubit_in_a_product_is_rejected() -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError, match="never reset"):
+        rewrite_to_mpp(
+            """
+            R 4
+            CX 0 4
+            M 4
+            H 0
+            MZZ 4 1
+            """
+        )
+
+
+def test_reset_after_entangling_in_the_same_segment_is_rejected() -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError, match="after it was entangled"):
+        rewrite_to_mpp(
+            """
+            R 4
+            CX 0 4
+            R 4
+            M 4
+            """
+        )
+
+
 def test_residual_data_unitary_fails_verification() -> None:
     with pytest.raises(MppRewriteVerificationError):
         rewrite_to_mpp(
@@ -397,3 +485,10 @@ def test_rewrite_accepts_circuit_objects() -> None:
     source = stim.Circuit("R 4\nCX 0 4 1 4\nM 4")
 
     assert rewrite_to_mpp(source).circuit == stim.Circuit("R 4\nMPP Z0*Z1")
+
+
+def test_empty_circuit_rewrites_to_empty_circuit() -> None:
+    result = rewrite_to_mpp("")
+
+    assert result.circuit == stim.Circuit()
+    assert result.checks == ()

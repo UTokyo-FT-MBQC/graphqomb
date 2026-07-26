@@ -10,9 +10,13 @@ measurement in the rewritten circuit, so ``DETECTOR`` and
 The inference conjugates each final measurement Pauli backwards through the
 segment's Clifford body (``U† P U`` via :meth:`stim.PauliString.before`) and
 substitutes ``+1`` for stabilizers of freshly initialized, measured-out
-ancillas. Rewriting is structural: circuit-level noise is rejected, and the
-post-measurement state of measured-out ancillas is not preserved (they are
-left in their reset state instead of the measurement outcome's eigenstate).
+ancillas. A segment ends when a unitary follows its measurements, or when a
+measurement follows a reset issued after those measurements (including the
+implicit reset of ``MR``); trailing data measurements therefore start a fresh
+segment with an empty Clifford body and pass through verbatim. Rewriting is
+structural: circuit-level noise is rejected, and the post-measurement state of
+measured-out ancillas is not preserved (they are left in their reset state
+instead of the measurement outcome's eigenstate).
 
 By default each rewritten segment is verified against its source segment by
 cross-checking stabilizer-flow generators, with a reset appended to every
@@ -95,10 +99,17 @@ class _SourceObservable:
     source_qubit: int | None
 
 
+@dataclass(frozen=True)
+class _RewriteConfig:
+    num_qubits: int
+    verify: bool
+
+
 @dataclass
 class _SegmentBuffer:
     items: list[tuple[stim.CircuitInstruction, _InstructionKind]] = field(default_factory=list)
     seen_measurement: bool = False
+    seen_late_reset: bool = False
 
 
 def rewrite_to_mpp(circuit: stim.Circuit | str, *, verify: bool = True) -> MppRewriteResult:
@@ -193,8 +204,7 @@ class _Rewriter:
     """Streams flattened instructions, buffering and rewriting one segment at a time."""
 
     def __init__(self, *, num_qubits: int, verify: bool) -> None:
-        self._num_qubits = num_qubits
-        self._verify = verify
+        self._config = _RewriteConfig(num_qubits=num_qubits, verify=verify)
         self._output = stim.Circuit()
         self._checks: list[CheckMapping] = []
         self._measurement_index = 0
@@ -204,13 +214,25 @@ class _Rewriter:
         self._buffer = _SegmentBuffer()
 
     def process(self, instruction: stim.CircuitInstruction) -> None:
-        """Buffer one instruction, flushing the current segment at a boundary."""
+        """Buffer one instruction, flushing the current segment at a boundary.
+
+        A segment ends before a unitary that follows the segment's
+        measurements, or before a measurement that follows a reset issued
+        after those measurements (including the implicit reset of ``MR``).
+        """
         kind = _instruction_kind(instruction)
-        if kind == "unitary" and self._buffer.seen_measurement:
+        starts_new_segment = (kind == "unitary" and self._buffer.seen_measurement) or (
+            kind in {"measurement", "mpad"} and self._buffer.seen_late_reset
+        )
+        if starts_new_segment:
             self._flush_segment()
         self._buffer.items.append((instruction, kind))
         if kind in {"measurement", "mpad"}:
             self._buffer.seen_measurement = True
+            if instruction.name in _MEASURE_RESET_GATES:
+                self._buffer.seen_late_reset = True
+        elif kind == "reset" and self._buffer.seen_measurement:
+            self._buffer.seen_late_reset = True
 
     def finish(self) -> MppRewriteResult:
         """Flush the final segment and return the rewrite result.
@@ -227,7 +249,7 @@ class _Rewriter:
         if not self._buffer.items:
             return
         segment = _Segment(
-            num_qubits=self._num_qubits,
+            config=self._config,
             segment_index=self._segment_index,
             entry_prepared=dict(self._entry_prepared),
             dirty=set(self._dirty),
@@ -239,7 +261,7 @@ class _Rewriter:
         self._output += segment.output
         self._checks.extend(segment.checks)
         self._measurement_index = segment.measurement_index
-        if self._verify:
+        if self._config.verify:
             segment.verify()
         self._entry_prepared = segment.exit_prepared()
         self._dirty = segment.exit_dirty()
@@ -253,13 +275,13 @@ class _Segment:
     def __init__(
         self,
         *,
-        num_qubits: int,
+        config: _RewriteConfig,
         segment_index: int,
         entry_prepared: dict[int, str],
         dirty: set[int],
         measurement_index: int,
     ) -> None:
-        self._num_qubits = num_qubits
+        self._config = config
         self._segment_index = segment_index
         self._prepared = entry_prepared
         self._dirty = dirty
@@ -275,9 +297,10 @@ class _Segment:
         self._measured_unreset: set[int] = set()
         self._orig_verify = stim.Circuit()
         self._conv_verify = stim.Circuit()
-        for qubit, basis in sorted(entry_prepared.items()):
-            for target_circuit in (self._orig_verify, self._conv_verify):
-                target_circuit.append(_reset_gate_for_basis(basis), [qubit])
+        if config.verify:
+            for qubit, basis in sorted(entry_prepared.items()):
+                for target_circuit in (self._orig_verify, self._conv_verify):
+                    target_circuit.append(_reset_gate_for_basis(basis), [qubit])
 
     def process(self, instruction: stim.CircuitInstruction, kind: _InstructionKind) -> None:
         """Rewrite one buffered instruction of this segment."""
@@ -304,8 +327,14 @@ class _Segment:
 
     def _append_verbatim(self, instruction: stim.CircuitInstruction) -> None:
         self.output.append(instruction)
-        self._orig_verify.append(instruction)
-        self._conv_verify.append(instruction)
+        if self._config.verify:
+            self._orig_verify.append(instruction)
+            self._conv_verify.append(instruction)
+
+    def _rewrite_targets(self) -> tuple[stim.Circuit, ...]:
+        if self._config.verify:
+            return (self.output, self._conv_verify)
+        return (self.output,)
 
     def _process_mpad(self, instruction: stim.CircuitInstruction) -> None:
         self._append_verbatim(instruction)
@@ -338,14 +367,15 @@ class _Segment:
             )
             raise UnsupportedSyndromeCircuitError(msg)
         self._body.append(instruction)
-        self._orig_verify.append(instruction)
+        if self._config.verify:
+            self._orig_verify.append(instruction)
         self._body_touched |= touched
 
     def _process_measurement(self, instruction: stim.CircuitInstruction) -> None:
         if instruction.gate_args_copy():
             msg = f"Noisy measurement {instruction.name} with arguments is not supported."
             raise UnsupportedSyndromeCircuitError(msg)
-        sources = _measurement_observables(instruction, self._num_qubits)
+        sources = _measurement_observables(instruction, self._config.num_qubits)
         self._validate_measured_qubits(instruction, sources)
         self._seen_measurement = True
         products = [self._infer_product(source) for source in sources]
@@ -360,7 +390,8 @@ class _Segment:
             )
             self.measurement_index += 1
         self._emit_measurement(instruction, sources, products)
-        self._orig_verify.append(instruction)
+        if self._config.verify:
+            self._orig_verify.append(instruction)
 
     def _validate_measured_qubits(
         self, instruction: stim.CircuitInstruction, sources: Sequence[_SourceObservable]
@@ -373,19 +404,9 @@ class _Segment:
                 "post-state was never reset; correlated re-measurement is not supported."
             )
             raise UnsupportedSyndromeCircuitError(msg)
-        late_measured = sorted(qubits & self._late_resets.keys())
-        if late_measured:
-            msg = (
-                f"{instruction.name} measures qubit(s) {late_measured} that were reset after this "
-                "segment's measurements began."
-            )
-            raise UnsupportedSyndromeCircuitError(msg)
         self._measured_any |= qubits
         if instruction.name in _SINGLE_MEASUREMENT_BASES:
-            self._measured_out |= qubits
             self._measured_unreset |= qubits
-        elif instruction.name in _MEASURE_RESET_GATES:
-            self._measured_out |= qubits
 
     def _infer_product(self, source: _SourceObservable) -> stim.PauliString:
         pulled = source.observable.before(self._body) if len(self._body) else source.observable.copy()
@@ -395,7 +416,7 @@ class _Segment:
                 continue
             if _PAULI_CODES[prepared_basis] == pulled[qubit]:
                 pulled[qubit] = 0
-        if pulled.sign not in {1, -1}:  # pragma: no cover - Hermitian Paulis stay Hermitian
+        if pulled.sign not in {1, -1}:
             msg = f"Non-Hermitian inferred observable: {pulled}."
             raise UnsupportedSyndromeCircuitError(msg)
         return pulled
@@ -408,15 +429,15 @@ class _Segment:
     ) -> None:
         trivial = all(product == source.observable for product, source in zip(products, sources, strict=True))
         if trivial:
-            self.output.append(instruction)
-            self._conv_verify.append(instruction)
+            for target_circuit in self._rewrite_targets():
+                target_circuit.append(instruction)
         else:
             self._emit_inferred_products(products, tag=instruction.tag)
         if instruction.name in _MEASURE_RESET_GATES:
             basis, reset_gate = _MEASURE_RESET_GATES[instruction.name]
             qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
             if not trivial:
-                for target_circuit in (self.output, self._conv_verify):
+                for target_circuit in self._rewrite_targets():
                     target_circuit.append(reset_gate, qubits, [], tag=instruction.tag)
             for qubit in qubits:
                 self._late_resets[qubit] = basis
@@ -425,7 +446,7 @@ class _Segment:
     def _emit_inferred_products(self, products: Sequence[stim.PauliString], *, tag: str) -> None:
         """Append inferred products, using MPAD for deterministic identities."""
         product_has_support = [bool(product.pauli_indices()) for product in products]
-        target_circuits = (self.output, self._conv_verify)
+        target_circuits = self._rewrite_targets()
         if all(product_has_support):
             targets: list[stim.GateTarget] = []
             for product in products:
@@ -547,7 +568,7 @@ def _pair_observable(group: Sequence[stim.GateTarget], basis: str, name: str, nu
     sign = 1
     for target in group:
         qubit = _plain_qubit(target, name)
-        if observable[qubit] != 0:
+        if observable[qubit] != 0:  # pragma: no cover - stim rejects duplicate pair targets
             msg = f"{name} pairs the same qubit {qubit} with itself."
             raise UnsupportedSyndromeCircuitError(msg)
         observable[qubit] = basis

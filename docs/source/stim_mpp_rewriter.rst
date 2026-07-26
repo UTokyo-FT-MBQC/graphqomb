@@ -21,11 +21,19 @@ copied verbatim and keep their relative record indices. ``MR`` splits into an
 ``MPP`` product followed by a reset. ``REPEAT`` blocks are flattened first,
 which bakes ``SHIFT_COORDS`` offsets into detector coordinates.
 
+A segment ends when a unitary follows its measurements, or when a measurement
+follows a reset issued after those measurements (including the implicit reset
+of ``MR``). Trailing data measurements — such as the final transversal
+readout of ``stim.Circuit.generated`` memory circuits — therefore start a
+fresh segment with an empty Clifford body and pass through verbatim instead
+of dragging reset-ancilla Pauli factors into their products.
+
 Existing ``MPP`` products pass through verbatim, including valid repeated
 factors such as ``X0*X1*X0``. Their sidecar mapping contains the reduced Pauli
 product. When initialized-ancilla substitution reduces an inferred product to
 ``+I`` or ``-I``, the rewrite emits ``MPAD 0`` or ``MPAD 1`` respectively so
-the deterministic measurement record is preserved.
+the deterministic measurement record is preserved. Inverted source targets
+such as ``M !4`` produce signed ``MPP`` products.
 
 .. code-block:: python
 
@@ -55,8 +63,11 @@ cross-checking stabilizer-flow generators (with resets appended to measured-out
 ancillas in both copies), so residual data-qubit unitaries or unsupported
 flag-style structures raise
 :class:`graphqomb.stim_mpp_rewriter.MppRewriteVerificationError` instead of
-silently changing the circuit's semantics. Pass ``verify=False`` to skip this
-check.
+silently changing the circuit's semantics. Bodies that rotate data qubits
+beyond measuring the inferred products — for example the ``C_XYZ`` data
+rotations of ``stim.Circuit.generated("color_code:memory_xyz", ...)`` — are
+rejected this way, while the generated repetition-code and surface-code memory
+circuits rewrite cleanly. Pass ``verify=False`` to skip this check.
 
 API reference
 -------------
