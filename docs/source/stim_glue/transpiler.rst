@@ -1,5 +1,5 @@
-Stim Clifford parser
-====================
+Stim Clifford transpiler
+========================
 
 Install the optional Stim integration before importing this module:
 
@@ -7,7 +7,7 @@ Install the optional Stim integration before importing this module:
 
    uv add "graphqomb[stim]"
 
-The parser normalizes Stim Clifford circuits to GraphQOMB's unitary basis:
+The transpiler normalizes Stim Clifford circuits to GraphQOMB's unitary basis:
 the four Clifford ``J(angle)`` gates plus ``CZ``. Each single-qubit basis
 gate is one :class:`graphqomb.gates.J` primitive, i.e. one XY-plane Pauli
 measurement in MBQC (gate names use algebraic matrix order):
@@ -42,11 +42,11 @@ measurement in MBQC (gate names use algebraic matrix order):
 
    normalized = transpile("S_DAG 0\nCX 0 1", optimize=True)
 
-The parser supports all fixed one- and two-qubit Clifford gates exposed by
+The transpiler supports all fixed one- and two-qubit Clifford gates exposed by
 Stim, arbitrary-length ``SPP`` and ``SPP_DAG`` rotations, nested ``REPEAT``
 blocks, Pauli reset and measurement boundaries, and coordinate/TICK
 annotations. ``DETECTOR``, ``OBSERVABLE_INCLUDE``, and ``MPAD`` are preserved
-verbatim as optimization barriers; the standalone parser does not interpret
+verbatim as optimization barriers; the standalone transpiler does not interpret
 their measurement-record targets. Noise, non-Clifford instructions,
 measurement-reset instructions, MPP measurements, and classically controlled
 targets are rejected.

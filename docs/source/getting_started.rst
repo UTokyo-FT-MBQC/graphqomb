@@ -130,4 +130,4 @@ Where to go next
 - :doc:`architecture` explains the three-IR compiler model and the lowering semantics.
 - :doc:`gallery/scheduler_pattern_demo` compares space- and time-oriented scheduling strategies.
 - :doc:`gallery/entanglement_scheduling_demo` focuses on explicit entanglement timing and `TICK` slices.
-- :doc:`stim_compiler` documents the Stim export path for compatible patterns.
+- :doc:`stim_glue/compiler` documents the Stim export path for compatible patterns.
