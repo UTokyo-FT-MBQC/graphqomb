@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.sparse import csr_array, lil_array
 
-from graphqomb.common import Sign
+from graphqomb.common import Axis, Sign
 from graphqomb.qec.qeccode import Coordinate, StabilizerCode
 
 if TYPE_CHECKING:
@@ -18,6 +18,16 @@ if TYPE_CHECKING:
 
 
 PauliSupport = tuple[tuple[int, str], ...]
+
+# Stim canonicalizes Z-axis aliases when parsing circuits: RZ becomes R,
+# MZ becomes M, and MRZ becomes MR before instructions reach these tables.
+RESET_AXES: dict[str, Axis] = {"R": Axis.Z, "RX": Axis.X, "RY": Axis.Y}
+SINGLE_MEASUREMENT_AXES: dict[str, Axis] = {"M": Axis.Z, "MX": Axis.X, "MY": Axis.Y}
+# Measure-reset gates measure and re-prepare along the same axis.
+MEASURE_RESET_AXES: dict[str, Axis] = {"MR": Axis.Z, "MRX": Axis.X, "MRY": Axis.Y}
+DIRECT_MEASUREMENT_AXES: dict[str, Axis] = {**SINGLE_MEASUREMENT_AXES, **MEASURE_RESET_AXES}
+PAIR_MEASUREMENT_AXES: dict[str, Axis] = {"MXX": Axis.X, "MYY": Axis.Y, "MZZ": Axis.Z}
+RESET_GATES: dict[Axis, str] = {axis: name for name, axis in RESET_AXES.items()}
 
 
 @dataclass(frozen=True)
@@ -315,6 +325,10 @@ def pauli_products_commute(left: PauliSupport, right: PauliSupport) -> bool:
 
 def plain_qubit_target(target: stim.GateTarget, instruction_name: str) -> int:
     """Return a plain Stim qubit target.
+
+    Rejects Pauli-typed and inverted-result targets, which the importer cannot
+    represent. ``stim_mpp_rewriter._plain_qubit`` deliberately accepts those
+    because it only needs the qubit id an instruction acts on.
 
     Returns
     -------

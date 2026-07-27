@@ -59,7 +59,7 @@ original gate schedule, so hook-fault analysis must rely on the returned
 :class:`graphqomb.stim_mpp_rewriter.CheckMapping` sidecar and the source
 circuit.
 
-By default every rewritten segment is verified against its source segment by
+Every rewritten segment is verified against its source segment by
 cross-checking stabilizer-flow generators (with resets appended to measured-out
 ancillas in both copies). If initialized-ancilla substitution cannot preserve
 the segment, the rewriter retries with the exact pulled-back products. If the
@@ -67,9 +67,11 @@ result still cannot be represented and verified as ``MPP`` measurements plus a
 residual Clifford frame, it returns the original gate-level circuit with each
 reset lifetime assigned a fresh Stim qubit id. This fallback preserves gate
 order and measurement-record annotations while avoiding importer ambiguity
-from reusing the same Stim id after reset. Pass ``verify=False`` to skip the
-segment-flow cross-check; residual-frame synthesis can still select the
-gate-level fallback.
+from reusing the same Stim id after reset.
+
+The cross-check is not an optional assertion: it is the decision procedure that
+picks between the optimized rewrite, the unsubstituted retry, and the
+gate-level fallback, so it always runs.
 
 API reference
 -------------

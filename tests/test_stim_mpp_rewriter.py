@@ -506,6 +506,122 @@ def test_unsupported_residual_channel_falls_back_to_fresh_reset_lifetimes() -> N
     assert [check.source_qubit for check in result.checks] == [1, 2]
 
 
+def test_nonlocal_body_rewrites_via_channel_flows() -> None:
+    source = stim.Circuit(
+        """
+        R 0 1
+        SWAP 0 1
+        M 0
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit("R 0 1\nMPP Z1")
+    assert result.checks[0].product == stim.PauliString("+_Z")
+    assert result.circuit.flow_generators() == source.flow_generators()
+
+
+@pytest.mark.parametrize(
+    "residual",
+    ["H 0", "S 0", "SQRT_X 0", "H 1", "S 1"],
+)
+def test_nonlocal_body_with_residual_frame_stays_flow_equivalent(residual: str) -> None:
+    # A body that is not local on the surviving qubit is only representable
+    # when the residual Clifford frame can be synthesized from the segment's
+    # channel flows; otherwise the gate-level fallback must win. Either way the
+    # rewrite has to keep every stabilizer flow of its source.
+    source = stim.Circuit(f"R 0 1\nH 0\nSWAP 0 1\n{residual}\nM 0")
+
+    result = rewrite_to_mpp(source)
+
+    assert all(result.circuit.has_flow(flow) for flow in source.flow_generators())
+    assert all(source.has_flow(flow) for flow in result.circuit.flow_generators())
+
+
+def test_fallback_numbers_segments_like_the_optimized_rewrite() -> None:
+    # A measurement after a late reset opens a new segment. The gate-level
+    # fallback has to apply the same boundary rule as the streaming rewriter,
+    # otherwise `CheckMapping.segment_index` depends on which path was taken.
+    optimized = rewrite_to_mpp("R 0\nM 0\nR 0\nM 0")
+    # The leading segment has an unrepresentable residual frame, so the whole
+    # circuit takes the gate-level fallback while keeping the same boundary.
+    fallback = rewrite_to_mpp("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 0\nM 0")
+
+    assert fallback.circuit == stim.Circuit("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 2\nM 2")
+    assert [check.segment_index for check in optimized.checks] == [0, 1]
+    assert [check.segment_index for check in fallback.checks] == [0, 1]
+
+
+def test_fallback_preserves_mpad_bits_and_measurement_indices() -> None:
+    source = stim.Circuit(
+        """
+        R 1
+        H 1
+        CX 1 0
+        M 1
+        R 1
+        H 1
+        MPAD 0 1
+        M 1
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit(
+        """
+        R 1
+        H 1
+        CX 1 0
+        M 1
+        R 2
+        H 2
+        MPAD 0 1
+        M 2
+        """
+    )
+    assert [check.measurement_index for check in result.checks] == [0, 3]
+    assert [check.source_qubit for check in result.checks] == [1, 2]
+
+
+def test_fallback_remaps_signed_composite_measurements_to_fresh_lifetimes() -> None:
+    source = stim.Circuit(
+        """
+        QUBIT_COORDS(1, 2) 1
+        QUBIT_COORDS(3, 4) 2
+        R 1
+        H 1
+        CX 1 0
+        M 1
+        R 1
+        QUBIT_COORDS(1, 2) 1
+        H 1
+        MPP !X1*Y2*Z0
+        MXX !1 2
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit(
+        """
+        QUBIT_COORDS(1, 2) 1
+        QUBIT_COORDS(3, 4) 2
+        R 1
+        H 1
+        CX 1 0
+        M 1
+        R 3
+        H 3
+        MPP !X3*Y2*Z0
+        MXX !3 2
+        """
+    )
+    assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
+    assert [check.measurement_index for check in result.checks] == [0, 1, 2]
+
+
 def test_basis_mismatched_residual_on_measured_ancilla_is_kept_in_the_product() -> None:
     # The ancilla measurement pulls back to X on the Z-prepared, measured-out
     # qubit 5. The mismatched support cannot be substituted away, so it stays
