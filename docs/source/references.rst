@@ -21,12 +21,12 @@ Module reference
     pauli_frame
     qompiler
     scheduler
-    qec
-    stim_mpp
-    stim_mpp_rewriter
-    stim_parser
-    stim_importer
-    stim_compiler
+    qeccode
+    stim_glue/mpp
+    stim_glue/mpp_rewriter
+    stim_glue/transpiler
+    stim_glue/importer
+    stim_glue/compiler
     noise_model
     visualizer
     zx_util
