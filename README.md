@@ -1,12 +1,12 @@
 # GraphQOMB
 
-![License](https://img.shields.io/github/license/TeamGraphix/graphqomb)
+![License](https://img.shields.io/github/license/UTokyo-FT-MBQC/graphqomb)
 [![PyPI version](https://badge.fury.io/py/graphqomb.svg)](https://pypi.org/project/graphqomb/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/graphqomb.svg)](https://pypi.org/project/graphqomb/)
 [![Documentation Status](https://readthedocs.org/projects/graphqomb/badge/?version=latest)](https://graphqomb.readthedocs.io/en/latest/?badge=latest)
-[![codecov](https://codecov.io/gh/TeamGraphix/graphqomb/branch/master/graph/badge.svg)](https://codecov.io/gh/TeamGraphix/graphqomb)
-[![pytest](https://github.com/TeamGraphix/graphqomb/actions/workflows/pytest.yml/badge.svg)](https://github.com/TeamGraphix/graphqomb/actions/workflows/pytest.yml)
-[![typecheck](https://github.com/TeamGraphix/graphqomb/actions/workflows/typecheck.yml/badge.svg)](https://github.com/TeamGraphix/graphqomb/actions/workflows/typecheck.yml)
+[![codecov](https://codecov.io/gh/UTokyo-FT-MBQC/graphqomb/branch/main/graph/badge.svg)](https://codecov.io/gh/UTokyo-FT-MBQC/graphqomb)
+[![pytest](https://github.com/UTokyo-FT-MBQC/graphqomb/actions/workflows/pytest.yml/badge.svg)](https://github.com/UTokyo-FT-MBQC/graphqomb/actions/workflows/pytest.yml)
+[![typecheck](https://github.com/UTokyo-FT-MBQC/graphqomb/actions/workflows/typecheck.yml/badge.svg)](https://github.com/UTokyo-FT-MBQC/graphqomb/actions/workflows/typecheck.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 **GraphQOMB** (Qompiler for Measurement-Based Quantum Computing, pronounced _graphcomb_) is a compiler framework for measurement-based quantum computation (MBQC). It keeps the resource-state structure, classical feedforward, and execution schedule as separate first-class objects, then lowers them to an executable measurement pattern with a Pauli frame.
@@ -59,7 +59,7 @@ uv add "graphqomb[stim]"
 ### From Source
 
 ```bash
-git clone https://github.com/TeamGraphix/graphqomb.git
+git clone https://github.com/UTokyo-FT-MBQC/graphqomb.git
 cd graphqomb
 uv sync
 ```
@@ -180,7 +180,7 @@ If you use GraphQOMB in your research, please cite:
   title = {GraphQOMB: A Modular Graph State Qompiler for Measurement-Based Quantum Computation},
   author = {Masato Fukushima, Sora Shiratani, Yuki Watanabe, and Daichi Sasaki},
   year = {2025},
-  url = {https://github.com/TeamGraphix/graphqomb}
+  url = {https://github.com/UTokyo-FT-MBQC/graphqomb}
 }
 ```
 

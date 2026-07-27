@@ -75,11 +75,11 @@ stim = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/TeamGraphix/graphqomb"
+Homepage = "https://github.com/UTokyo-FT-MBQC/graphqomb"
 Documentation = "https://graphqomb.readthedocs.io/"
-Repository = "https://github.com/TeamGraphix/graphqomb"
-Changelog = "https://github.com/TeamGraphix/graphqomb/blob/master/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/TeamGraphix/graphqomb/issues"
+Repository = "https://github.com/UTokyo-FT-MBQC/graphqomb"
+Changelog = "https://github.com/UTokyo-FT-MBQC/graphqomb/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/UTokyo-FT-MBQC/graphqomb/issues"
 
 [tool.setuptools.package-data]
 graphqomb = ["py.typed"]

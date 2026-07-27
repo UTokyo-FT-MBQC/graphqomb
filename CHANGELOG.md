@@ -147,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Stim Compiler**: Detector and observable record indices now stay aligned when noise models emit heralded instructions that add measurement records
-- **Pattern Simulator**: Fixed adaptive measurement conjugation so non-Pauli measurements apply the missing angle sign flip from the Pauli frame during simulation ([#139](https://github.com/TeamGraphix/graphqomb/issues/139))
+- **Pattern Simulator**: Fixed adaptive measurement conjugation so non-Pauli measurements apply the missing angle sign flip from the Pauli frame during simulation ([#139](https://github.com/UTokyo-FT-MBQC/graphqomb/issues/139))
 - **Feedforward**: Fixed operator precedence bug in `dag_from_flow` where self-loops were only removed from `zflow` but not from `xflow`. The expression `xflow | zflow - {node}` was evaluated as `xflow | (zflow - {node})` due to `-` binding tighter than `|`. Corrected to `(xflow | zflow) - {node}`.
 
 ### Tests
@@ -185,7 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Integrated TICK command handling in PatternSimulator
   - Integrated TICK command processing in Stim compiler
 
-- **Edge Scheduler**: Automatic entanglement operation scheduling based on node preparation times ([#99](https://github.com/TeamGraphix/graphqomb/issues/99))
+- **Edge Scheduler**: Automatic entanglement operation scheduling based on node preparation times ([#99](https://github.com/UTokyo-FT-MBQC/graphqomb/issues/99))
   - Added `entangle_time` attribute to Scheduler for tracking entanglement operation timing
   - Added `auto_schedule_entanglement()` method to automatically schedule CZ gates when both nodes are prepared
   - Extended the `timeline` property to include entanglement operations
@@ -226,7 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Graph State**: Bulk initialization methods for GraphState ([#120](https://github.com/TeamGraphix/graphqomb/issues/120))
+- **Graph State**: Bulk initialization methods for GraphState ([#120](https://github.com/UTokyo-FT-MBQC/graphqomb/issues/120))
   - Added `from_graph()` class method for direct graph-based initialization
   - Added `from_base_graph_state()` class method for initialization from base GraphState objects
   - Improved initialization flexibility for diverse use cases
@@ -260,7 +260,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Stim Compiler**: Pattern to Stim circuit compiler with detector and observable support for fault-tolerant quantum computing ([#67](https://github.com/TeamGraphix/graphqomb/issues/67))
+- **Stim Compiler**: Pattern to Stim circuit compiler with detector and observable support for fault-tolerant quantum computing ([#67](https://github.com/UTokyo-FT-MBQC/graphqomb/issues/67))
   - Compile MBQC patterns into Stim format for error correction analysis
   - Support for detectors, observables, and error models
   - Configurable depolarization noise after Clifford gates and measurements
@@ -281,16 +281,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Core Infrastructure**: Initial repository setup with project structure, build system, and CI/CD workflows ([#12](https://github.com/TeamGraphix/graphqomb/pull/12))
-- **Mathematical Foundations**: Euler angle computations for quantum operations ([#24](https://github.com/TeamGraphix/graphqomb/pull/24))
-- **Graph State**: Graph state representation and manipulation ([#34](https://github.com/TeamGraphix/graphqomb/pull/34))
-- **Pattern Module**: MBQC pattern data structures and operations ([#47](https://github.com/TeamGraphix/graphqomb/pull/47))
-- **Feedforward System**: Feedforward strategy design and implementation for adaptive measurements ([#40](https://github.com/TeamGraphix/graphqomb/pull/40))
-- **Command Module**: Measurement command definitions ([#43](https://github.com/TeamGraphix/graphqomb/pull/43))
-- **Qompiler**: Pattern compiler with Pauli frame implementation ([#55](https://github.com/TeamGraphix/graphqomb/pull/55))
-- **Scheduler**: Prepare time and measurement time scheduling for efficient execution ([#74](https://github.com/TeamGraphix/graphqomb/pull/74))
-- **Circuit Framework**: Quantum gate definitions and circuit representation ([#73](https://github.com/TeamGraphix/graphqomb/pull/73))
-- **Simulation Backend**: Statevector simulator backend for quantum state evolution ([#62](https://github.com/TeamGraphix/graphqomb/pull/62))
-- **Pattern and Circuit Simulation**: Complete simulation support for both patterns and circuits ([#78](https://github.com/TeamGraphix/graphqomb/pull/78))
-- **Visualization**: Basic visualizer for graph states and patterns ([#83](https://github.com/TeamGraphix/graphqomb/pull/83))
+- **Core Infrastructure**: Initial repository setup with project structure, build system, and CI/CD workflows ([#12](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/12))
+- **Mathematical Foundations**: Euler angle computations for quantum operations ([#24](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/24))
+- **Graph State**: Graph state representation and manipulation ([#34](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/34))
+- **Pattern Module**: MBQC pattern data structures and operations ([#47](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/47))
+- **Feedforward System**: Feedforward strategy design and implementation for adaptive measurements ([#40](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/40))
+- **Command Module**: Measurement command definitions ([#43](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/43))
+- **Qompiler**: Pattern compiler with Pauli frame implementation ([#55](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/55))
+- **Scheduler**: Prepare time and measurement time scheduling for efficient execution ([#74](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/74))
+- **Circuit Framework**: Quantum gate definitions and circuit representation ([#73](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/73))
+- **Simulation Backend**: Statevector simulator backend for quantum state evolution ([#62](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/62))
+- **Pattern and Circuit Simulation**: Complete simulation support for both patterns and circuits ([#78](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/78))
+- **Visualization**: Basic visualizer for graph states and patterns ([#83](https://github.com/UTokyo-FT-MBQC/graphqomb/pull/83))
 - **Documentation**: Comprehensive documentation on Read the Docs (https://graphqomb.readthedocs.io/)
