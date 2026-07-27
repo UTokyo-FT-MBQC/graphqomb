@@ -24,7 +24,7 @@ from graphqomb.noise_model import (
 from graphqomb.qompiler import qompile
 from graphqomb.schedule_solver import ScheduleConfig, Strategy
 from graphqomb.scheduler import Scheduler
-from graphqomb.stim_compiler import stim_compile
+from graphqomb.stim_glue.compiler import stim_compile
 
 if TYPE_CHECKING:
     from graphqomb.pattern import Pattern

@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 
 import stim
 
-from graphqomb.qec._stim import (
+from graphqomb.stim_glue._parse import (
     PauliSupport,
     StimMppExtraction,
+    collect_record_annotations,
     extract_qubit_coordinates,
+    iter_instructions,
     mpp_targets_to_products,
-    observable_index,
-    record_targets_to_absolute_indices,
     stim_mpp_extraction_from_records,
 )
 
@@ -26,12 +26,6 @@ if TYPE_CHECKING:
 class _MppProductRecord:
     record_index: int
     support: PauliSupport
-
-
-@dataclass(frozen=True)
-class _StimRecordAnnotations:
-    detector_record_indices: tuple[frozenset[int], ...]
-    logical_observable_record_indices: dict[int, frozenset[int]]
 
 
 def stabilizer_code_from_stim_file(
@@ -98,13 +92,13 @@ def stabilizer_code_from_stim_text(
         layer_label = "file" if mpp_layer is None else f"layer {mpp_layer}"
         msg = f"MPP {layer_label} is empty."
         raise ValueError(msg)
-    annotations = _extract_stim_record_annotations(circuit)
+    annotations = collect_record_annotations(circuit)
     return stim_mpp_extraction_from_records(
         supports,
         tuple(product.record_index for product in selected_layer),
         coordinate_by_stim_id=coordinate_by_stim_id,
-        detector_record_indices=annotations.detector_record_indices,
-        logical_observable_record_indices=annotations.logical_observable_record_indices,
+        detector_record_indices=annotations.detectors,
+        logical_observable_record_indices=annotations.logical_observables,
     )
 
 
@@ -113,10 +107,7 @@ def _extract_mpp_layers(circuit: stim.Circuit) -> list[list[_MppProductRecord]]:
     current_layer: list[_MppProductRecord] | None = None
     measurement_count = 0
 
-    for instruction in circuit:
-        if not isinstance(instruction, stim.CircuitInstruction):
-            msg = "Flattened Stim circuit unexpectedly contains a repeat block."
-            raise TypeError(msg)
+    for instruction in iter_instructions(circuit):
         if instruction.name == "MPP":
             if current_layer is None:
                 current_layer = []
@@ -149,40 +140,3 @@ def _select_mpp_products(
         msg = f"Stim circuit has {len(layers)} MPP layer(s); cannot select layer {mpp_layer}."
         raise ValueError(msg)
     return list(layers[mpp_layer])
-
-
-def _extract_stim_record_annotations(circuit: stim.Circuit) -> _StimRecordAnnotations:
-    detector_record_indices: list[frozenset[int]] = []
-    logical_observable_record_indices: dict[int, set[int]] = {}
-    measurement_count = 0
-
-    for instruction in circuit:
-        if not isinstance(instruction, stim.CircuitInstruction):
-            msg = "Flattened Stim circuit unexpectedly contains a repeat block."
-            raise TypeError(msg)
-
-        if instruction.name == "DETECTOR":
-            record_indices = record_targets_to_absolute_indices(
-                instruction.targets_copy(),
-                measurement_count=measurement_count,
-                instruction_name=instruction.name,
-            )
-            detector_record_indices.append(record_indices)
-        elif instruction.name == "OBSERVABLE_INCLUDE":
-            logical_idx = observable_index(instruction)
-            record_indices = record_targets_to_absolute_indices(
-                instruction.targets_copy(),
-                measurement_count=measurement_count,
-                instruction_name=f"OBSERVABLE_INCLUDE({logical_idx})",
-            )
-            logical_observable_record_indices.setdefault(logical_idx, set()).symmetric_difference_update(record_indices)
-
-        measurement_count += instruction.num_measurements
-
-    return _StimRecordAnnotations(
-        detector_record_indices=tuple(detector_record_indices),
-        logical_observable_record_indices={
-            logical_idx: frozenset(records)
-            for logical_idx, records in sorted(logical_observable_record_indices.items())
-        },
-    )

@@ -37,7 +37,7 @@ such as ``M !4`` produce signed ``MPP`` products.
 
 .. code-block:: python
 
-   from graphqomb.stim_mpp_rewriter import rewrite_to_mpp
+   from graphqomb.stim_glue.mpp_rewriter import rewrite_to_mpp
 
    result = rewrite_to_mpp(
        """
@@ -56,7 +56,7 @@ supported, and optimized rewrites leave measured-out ancillas in their reset
 state rather than the measurement outcome's eigenstate. The optimized path
 preserves any residual Clifford frame on surviving qubits. It discards the
 original gate schedule, so hook-fault analysis must rely on the returned
-:class:`graphqomb.stim_mpp_rewriter.CheckMapping` sidecar and the source
+:class:`graphqomb.stim_glue.mpp_rewriter.CheckMapping` sidecar and the source
 circuit.
 
 Every rewritten segment is verified against its source segment by
@@ -76,6 +76,6 @@ gate-level fallback, so it always runs.
 API reference
 -------------
 
-.. automodule:: graphqomb.stim_mpp_rewriter
+.. automodule:: graphqomb.stim_glue.mpp_rewriter
    :members:
    :show-inheritance:

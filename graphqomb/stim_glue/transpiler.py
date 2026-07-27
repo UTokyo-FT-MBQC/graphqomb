@@ -1,4 +1,4 @@
-"""Core Clifford transpilation and basis-gate optimization logic."""
+"""Transpile Stim Clifford circuits into GraphQOMB's Clifford J/CZ basis."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 import stim
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Set as AbstractSet
 
 HS_STIM_GATE = "C_XNYZ"
@@ -311,148 +312,156 @@ def _cancel_one_cz_pair(gates: list[_AtomicGate]) -> list[_AtomicGate] | None:
     return None
 
 
-def _simplify_boundaries(  # ruff:ignore[complex-structure, too-many-branches, too-many-statements]
+def _simplify_boundaries(
     gates: list[_AtomicGate],
     *,
     allow_terminal_measurement_fold: bool,
     preserved_measurement_qubits: AbstractSet[int] = frozenset(),
 ) -> list[_AtomicGate]:
+    r"""Fold single-qubit gate words into R/RX/RY and M/MX/MY boundaries.
+
+    Rules are tried in priority order; each returns a rewritten gate list or
+    None when it finds nothing to change. After any rewrite the search
+    restarts from the first rule, until no rule applies.
+
+    Returns
+    -------
+    `list`\[`_AtomicGate`\]
+        The simplified gate list.
+    """
+    rules: tuple[Callable[[list[_AtomicGate]], list[_AtomicGate] | None], ...] = (
+        _discard_word_before_reset,
+        _fold_word_into_reset,
+        lambda gates: _fold_word_into_measurement(
+            gates,
+            allow_end=allow_terminal_measurement_fold,
+            preserved_qubits=preserved_measurement_qubits,
+        ),
+        _normalize_word_after_reset,
+        _normalize_word_before_measurement,
+    )
     result = list(gates)
-
-    while True:
+    changed = True
+    while changed:
         changed = False
-
-        # A reset discards prior single-qubit operations on the reset qubit.
-        for reset_index, reset in enumerate(result):
-            if reset.name not in _RESETS:
-                continue
-            positions = _local_word_before(result, reset_index, qubit=reset.targets[0])
-            if positions:
-                result = _replace_gate_positions(result, positions, ())
+        for rule in rules:
+            rewritten = rule(result)
+            if rewritten is not None:
+                result = rewritten
                 changed = True
                 break
-        if changed:
-            continue
+    return result
 
-        # Absorb a positive-axis state preparation into Stim's reset basis.
-        for reset_index, reset in enumerate(result):
-            if reset.name not in _RESETS:
-                continue
-            positions = _local_word_after(result, reset_index, qubit=reset.targets[0])
-            if not positions:
-                continue
-            word = tuple(result[index].name for index in positions)
-            state_key = _boundary_key(
-                word,
+
+def _discard_word_before_reset(gates: list[_AtomicGate]) -> list[_AtomicGate] | None:
+    # A reset discards prior single-qubit operations on the reset qubit.
+    for reset_index, reset in enumerate(gates):
+        if reset.name not in _RESETS:
+            continue
+        positions = _local_word_before(gates, reset_index, qubit=reset.targets[0])
+        if positions:
+            return _replace_gate_positions(gates, positions, ())
+    return None
+
+
+def _fold_word_into_reset(gates: list[_AtomicGate]) -> list[_AtomicGate] | None:
+    # Absorb a positive-axis state preparation into Stim's reset basis.
+    for reset_index, reset in enumerate(gates):
+        if reset.name not in _RESETS:
+            continue
+        positions = _local_word_after(gates, reset_index, qubit=reset.targets[0])
+        if not positions:
+            continue
+        word = tuple(gates[index].name for index in positions)
+        state_key = _boundary_key(word, boundary="state", axis=_RESET_AXES[reset.name])
+        reset_name: str | None = {"+Z": "R", "+X": "RX", "+Y": "RY"}.get(state_key)
+        if reset_name is None:
+            continue
+        replacement = _AtomicGate(reset_name, reset.targets, reset.tag, reset.gate_args)
+        return _replace_boundary_and_word(
+            gates,
+            boundary_index=reset_index,
+            word_positions=positions,
+            replacement=replacement,
+        )
+    return None
+
+
+def _fold_word_into_measurement(
+    gates: list[_AtomicGate],
+    *,
+    allow_end: bool,
+    preserved_qubits: AbstractSet[int],
+) -> list[_AtomicGate] | None:
+    # Absorb a signed measurement basis into M/MX/MY and target inversion.
+    for measurement_index, measurement in enumerate(gates):
+        if measurement.name not in _MEASUREMENTS:
+            continue
+        if not _measurement_state_is_discarded(
+            gates,
+            measurement_index=measurement_index,
+            allow_end=allow_end,
+            preserved_qubits=preserved_qubits,
+        ):
+            continue
+        positions = _local_word_before(gates, measurement_index, qubit=measurement.targets[0])
+        if not positions:
+            continue
+        word = tuple(gates[index].name for index in positions)
+        measurement_key = _boundary_key(word, boundary="measurement", axis=_MEASUREMENT_AXES[measurement.name])
+        measurement_name = {"Z": "M", "X": "MX", "Y": "MY"}[measurement_key[1]]
+        replacement = _AtomicGate(
+            measurement_name,
+            measurement.targets,
+            measurement.tag,
+            measurement.gate_args,
+            measurement.inverted ^ measurement_key.startswith("-"),
+        )
+        return _replace_boundary_and_word(
+            gates,
+            boundary_index=measurement_index,
+            word_positions=positions,
+            replacement=replacement,
+        )
+    return None
+
+
+def _normalize_word_after_reset(gates: list[_AtomicGate]) -> list[_AtomicGate] | None:
+    # After a reset, only the prepared stabilizer state matters.
+    for reset_index, reset in enumerate(gates):
+        if reset.name not in _RESETS:
+            continue
+        positions = _local_word_after(gates, reset_index, qubit=reset.targets[0])
+        if positions:
+            normalized = _normalize_boundary_positions(
+                gates,
+                positions,
+                qubit=reset.targets[0],
                 boundary="state",
                 axis=_RESET_AXES[reset.name],
             )
-            reset_name: str | None = {"+Z": "R", "+X": "RX", "+Y": "RY"}.get(state_key)
-            if reset_name is None:
-                continue
-            replacement = _AtomicGate(
-                reset_name,
-                reset.targets,
-                reset.tag,
-                reset.gate_args,
-            )
-            result = _replace_boundary_and_word(
-                result,
-                boundary_index=reset_index,
-                word_positions=positions,
-                replacement=replacement,
-            )
-            changed = True
-            break
-        if changed:
-            continue
+            if normalized is not None:
+                return normalized
+    return None
 
-        # Absorb a signed measurement basis into M/MX/MY and target inversion.
-        for measurement_index, measurement in enumerate(result):
-            if measurement.name not in _MEASUREMENTS:
-                continue
-            if not _measurement_state_is_discarded(
-                result,
-                measurement_index=measurement_index,
-                allow_end=allow_terminal_measurement_fold,
-                preserved_qubits=preserved_measurement_qubits,
-            ):
-                continue
-            positions = _local_word_before(result, measurement_index, qubit=measurement.targets[0])
-            if not positions:
-                continue
-            word = tuple(result[index].name for index in positions)
-            measurement_key = _boundary_key(
-                word,
+
+def _normalize_word_before_measurement(gates: list[_AtomicGate]) -> list[_AtomicGate] | None:
+    # Before a Pauli measurement, only the signed observable matters.
+    for measurement_index, measurement in enumerate(gates):
+        if measurement.name not in _MEASUREMENTS:
+            continue
+        positions = _local_word_before(gates, measurement_index, qubit=measurement.targets[0])
+        if positions:
+            normalized = _normalize_boundary_positions(
+                gates,
+                positions,
+                qubit=measurement.targets[0],
                 boundary="measurement",
                 axis=_MEASUREMENT_AXES[measurement.name],
             )
-            measurement_name: str = {
-                "+Z": "M",
-                "-Z": "M",
-                "+X": "MX",
-                "-X": "MX",
-                "+Y": "MY",
-                "-Y": "MY",
-            }[measurement_key]
-            replacement = _AtomicGate(
-                measurement_name,
-                measurement.targets,
-                measurement.tag,
-                measurement.gate_args,
-                measurement.inverted ^ measurement_key.startswith("-"),
-            )
-            result = _replace_boundary_and_word(
-                result,
-                boundary_index=measurement_index,
-                word_positions=positions,
-                replacement=replacement,
-            )
-            changed = True
-            break
-        if changed:
-            continue
-
-        # After a reset, only the prepared stabilizer state matters.
-        for reset_index, reset in enumerate(result):
-            if reset.name not in _RESETS:
-                continue
-            positions = _local_word_after(result, reset_index, qubit=reset.targets[0])
-            if positions:
-                normalized = _normalize_boundary_positions(
-                    result,
-                    positions,
-                    qubit=reset.targets[0],
-                    boundary="state",
-                    axis=_RESET_AXES[reset.name],
-                )
-                if normalized is not None:
-                    result = normalized
-                    changed = True
-                    break
-        if changed:
-            continue
-
-        # Before a Pauli measurement, only the signed observable matters.
-        for measurement_index, measurement in enumerate(result):
-            if measurement.name not in _MEASUREMENTS:
-                continue
-            positions = _local_word_before(result, measurement_index, qubit=measurement.targets[0])
-            if positions:
-                normalized = _normalize_boundary_positions(
-                    result,
-                    positions,
-                    qubit=measurement.targets[0],
-                    boundary="measurement",
-                    axis=_MEASUREMENT_AXES[measurement.name],
-                )
-                if normalized is not None:
-                    result = normalized
-                    changed = True
-                    break
-
-        if not changed:
-            return result
+            if normalized is not None:
+                return normalized
+    return None
 
 
 def _local_word_after(

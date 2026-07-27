@@ -13,7 +13,7 @@ and Pauli measurement blocks separated by ``TICK``. The supported Pauli
 measurement instructions are ``M``/``MZ``, ``MX``, ``MY``, ``MXX``, ``MYY``,
 ``MZZ``, and ``MPP``.
 
-Every unitary block is normalized by :mod:`graphqomb.stim_parser` to the four
+Every unitary block is normalized by :mod:`graphqomb.stim_glue.transpiler` to the four
 Clifford ``J(angle)`` gates (``H = J(0)``, ``HS = J(pi/2)``, ``HZ = J(pi)``,
 ``HS_DAG = J(-pi/2)``, corresponding to X+/Y+/X-/Y- measurements) plus ``CZ``
 before graph conversion. This accepts all fixed one- and two-qubit Clifford
@@ -153,8 +153,8 @@ that later ``DETECTOR`` and ``OBSERVABLE_INCLUDE`` references remain aligned.
 
 .. code-block:: python
 
-   from graphqomb.qec.qeccode import YFoliation
-   from graphqomb.stim_importer import stim_text_to_pattern
+   from graphqomb.qeccode import YFoliation
+   from graphqomb.stim_glue.importer import stim_text_to_pattern
 
    result = stim_text_to_pattern(
        """
@@ -171,6 +171,6 @@ that later ``DETECTOR`` and ``OBSERVABLE_INCLUDE`` references remain aligned.
 API reference
 -------------
 
-.. automodule:: graphqomb.stim_importer
+.. automodule:: graphqomb.stim_glue.importer
    :members:
    :show-inheritance:

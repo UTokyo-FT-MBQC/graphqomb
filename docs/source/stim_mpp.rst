@@ -8,7 +8,7 @@ Install the optional Stim integration before importing this module:
    uv add "graphqomb[stim]"
 
 The importer converts unsigned Stim ``MPP`` products into a
-:class:`graphqomb.qec.qeccode.StabilizerCode`. It does not retain stabilizer
+:class:`graphqomb.qeccode.StabilizerCode`. It does not retain stabilizer
 signs. Consequently, signed products written with an inverted Pauli target,
 such as ``MPP !X0*Z1``, raise :class:`ValueError` instead of silently losing
 the sign.
@@ -25,8 +25,8 @@ to Stim's coordinate semantics.
 
 .. code-block:: python
 
-   from graphqomb.qec.qeccode import build_graph_state
-   from graphqomb.qec.stim_mpp import stabilizer_code_from_stim_text
+   from graphqomb.qeccode import build_graph_state
+   from graphqomb.stim_glue.mpp import stabilizer_code_from_stim_text
 
    extraction = stabilizer_code_from_stim_text("MPP X0*Z2")
    graph_result = build_graph_state(extraction.code)
@@ -35,10 +35,10 @@ to Stim's coordinate semantics.
 API reference
 -------------
 
-.. autoclass:: graphqomb.qec.stim_mpp.StimMppExtraction
+.. autoclass:: graphqomb.stim_glue.mpp.StimMppExtraction
    :members:
    :show-inheritance:
 
-.. automodule:: graphqomb.qec.stim_mpp
+.. automodule:: graphqomb.stim_glue.mpp
    :members:
    :show-inheritance:

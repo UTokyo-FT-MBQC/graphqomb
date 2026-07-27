@@ -9,7 +9,7 @@ from itertools import product
 import pytest
 import stim
 
-from graphqomb.stim_parser import (
+from graphqomb.stim_glue.transpiler import (
     HS_DAG_STIM_GATE,
     HS_STIM_GATE,
     HZ_STIM_GATE,

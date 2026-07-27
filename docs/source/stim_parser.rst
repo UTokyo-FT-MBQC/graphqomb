@@ -38,7 +38,7 @@ measurement in MBQC (gate names use algebraic matrix order):
 
 .. code-block:: python
 
-   from graphqomb.stim_parser import transpile
+   from graphqomb.stim_glue.transpiler import transpile
 
    normalized = transpile("S_DAG 0\nCX 0 1", optimize=True)
 
@@ -68,6 +68,6 @@ handles MPP operations, and applies GraphQOMB's circuit-level noise policy.
 API reference
 -------------
 
-.. automodule:: graphqomb.stim_parser
+.. automodule:: graphqomb.stim_glue.transpiler
    :members:
    :show-inheritance:

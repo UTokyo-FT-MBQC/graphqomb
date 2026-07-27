@@ -1,6 +1,6 @@
 Stim Compiler
 =============
 
-.. automodule:: graphqomb.stim_compiler
+.. automodule:: graphqomb.stim_glue.compiler
    :members:
    :show-inheritance:

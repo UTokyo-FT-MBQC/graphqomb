@@ -9,7 +9,7 @@ import pytest
 from scipy.sparse import csr_array
 
 from graphqomb.common import Axis, AxisMeasBasis, Sign
-from graphqomb.qec.qeccode import StabilizerCode, YFoliation, build_graph_state
+from graphqomb.qeccode import StabilizerCode, YFoliation, build_graph_state
 
 
 def _matrix(data: list[list[int]]) -> csr_array[Any, tuple[int, int]]:

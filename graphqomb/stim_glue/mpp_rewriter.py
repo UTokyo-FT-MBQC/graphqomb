@@ -23,12 +23,13 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import stim
 
-from graphqomb.qec._stim import (
+from graphqomb.stim_glue._parse import (
     MEASURE_RESET_AXES,
     PAIR_MEASUREMENT_AXES,
     RESET_AXES,
     RESET_GATES,
     SINGLE_MEASUREMENT_AXES,
+    iter_instructions,
 )
 
 if TYPE_CHECKING:
@@ -223,21 +224,13 @@ def _split_reset_lifetimes(circuit: stim.Circuit) -> stim.Circuit:
     ``stim.Circuit``
         Equivalent circuit where every reset after prior quantum use starts a
         fresh wire. Old post-measurement wires remain unused.
-
-    Raises
-    ------
-    TypeError
-        If the input unexpectedly contains a repeat block.
     """
     result = stim.Circuit()
     next_qubit = circuit.num_qubits
     current_qubit = {qubit: qubit for qubit in range(circuit.num_qubits)}
     used_qubits: set[int] = set()
 
-    for instruction in circuit:
-        if isinstance(instruction, stim.CircuitRepeatBlock):  # pragma: no cover - caller flattens
-            msg = "REPEAT blocks must be flattened before splitting reset lifetimes."
-            raise TypeError(msg)
+    for instruction in iter_instructions(circuit):
         if instruction.name == "QUBIT_COORDS":
             coordinate_targets = [
                 mapped
@@ -307,20 +300,12 @@ def _check_mappings(circuit: stim.Circuit) -> tuple[CheckMapping, ...]:
     -------
     `tuple`\[`CheckMapping`, ...\]
         One mapping for each Pauli measurement record.
-
-    Raises
-    ------
-    TypeError
-        If the circuit unexpectedly contains a repeat block.
     """
     checks: list[CheckMapping] = []
     measurement_index = 0
     segment_index = 0
     bounds = _SegmentBounds()
-    for instruction in circuit:
-        if isinstance(instruction, stim.CircuitRepeatBlock):  # pragma: no cover - caller flattens
-            msg = "Fallback circuit unexpectedly contains a REPEAT block."
-            raise TypeError(msg)
+    for instruction in iter_instructions(circuit):
         kind = _instruction_kind(instruction)
         if bounds.starts_new_segment(instruction, kind):
             segment_index += 1
@@ -364,7 +349,7 @@ def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
 def _plain_qubit(target: stim.GateTarget, instruction_name: str) -> int:
     """Return the Stim qubit id a target acts on.
 
-    Unlike ``qec._stim.plain_qubit_target``, Pauli-typed and inverted-result
+    Unlike ``_parse.plain_qubit_target``, Pauli-typed and inverted-result
     targets are accepted: the rewriter only needs the qubit id here, and it
     reports unsupported targets as `UnsupportedSyndromeCircuitError`.
 
