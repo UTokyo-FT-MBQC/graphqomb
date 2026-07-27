@@ -40,9 +40,19 @@ Stim canonicalizes the Z-axis aliases internally, so the importer accepts both
 ``M`` and ``MZ`` for Z measurement and both ``R`` and ``RZ`` for Z reset. Stim
 export uses ``MZ`` for Z measurement and ``R`` for Z reset.
 
-Mid-circuit resets are rejected because GraphQOMB patterns do not currently
-represent multiple lifetimes for one logical qubit. Combined measurement-reset
-instructions (``MR``/``MRZ``, ``MRX``, and ``MRY``) remain unsupported.
+A mid-circuit reset starts a new wire on a fresh internal qubit index: the
+reset and every later operation on that Stim qubit continue on the new wire,
+which is initialized in the positive eigenstate of the reset axis at the
+qubit's XY coordinates on the next ``z`` layer. The reset discards the
+previous state, so the new wire carries no outcome conditioning; when several
+resets act on the qubit before its next quantum use, the last reset determines
+the axis. A replaced wire that was not consumed by a direct measurement
+remains a pattern output, which is channel-equivalent to the trace-out reset
+on every recorded measurement. Combined measurement-reset instructions
+(``MR``/``MRZ``, ``MRX``, and ``MRY``) are imported as a direct measurement
+whose continuation re-prepares the measured axis eigenstate unconditionally.
+``StimImportResult.qubit_to_stim`` maps every fresh index back to the original
+Stim qubit id.
 
 Single-qubit measurements assign an ``AxisMeasBasis`` directly to the measured
 data-lane endpoint without replacing that node or its coordinate. They do not
