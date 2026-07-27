@@ -19,7 +19,7 @@ from graphqomb.ptn_format import (
     loads,
 )
 from graphqomb.qompiler import qompile
-from graphqomb.stim_compiler import stim_compile
+from graphqomb.stim_glue.compiler import stim_compile
 
 if TYPE_CHECKING:
     from pathlib import Path

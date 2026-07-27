@@ -67,7 +67,7 @@ Create a simple depolarizing noise model:
 
 Use with stim_compile:
 
->>> from graphqomb.stim_compiler import stim_compile
+>>> from graphqomb.stim_glue import stim_compile
 >>> # pattern = ...  # your compiled pattern
 >>> # stim_str = stim_compile(pattern, noise_models=[DepolarizingNoise(0.001, 0.01)])
 

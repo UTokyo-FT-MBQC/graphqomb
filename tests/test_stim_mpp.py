@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from graphqomb.qec.qeccode import build_graph_state
-from graphqomb.qec.stim_mpp import stabilizer_code_from_stim_text
+from graphqomb.qeccode import build_graph_state
+from graphqomb.stim_glue.mpp import stabilizer_code_from_stim_text
 
 
 def test_stabilizer_code_from_stim_mpp_sets_x_z_and_y_support() -> None:

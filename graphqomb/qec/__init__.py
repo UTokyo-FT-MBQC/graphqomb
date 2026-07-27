@@ -1,1 +1,0 @@
-"""qec submodule."""

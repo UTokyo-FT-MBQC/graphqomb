@@ -1,7 +1,7 @@
 QEC graph-state builder
 =======================
 
-``graphqomb.qec.qeccode`` provides the stabilizer-code representation and the
+``graphqomb.qeccode`` provides the stabilizer-code representation and the
 Type I and Type II graph-state builders used by the QEC helper workflow.
 
 Coordinate tuples are retained without restricting their dimensionality. The
@@ -30,6 +30,6 @@ strict order and do not contribute. The builder tracks only the parity of the
 two directions and considers only stabilizer pairs that share a data qubit, so
 sparse codes do not require an all-pairs stabilizer scan.
 
-.. automodule:: graphqomb.qec.qeccode
+.. automodule:: graphqomb.qeccode
    :members:
    :show-inheritance:

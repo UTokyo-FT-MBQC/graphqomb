@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import stim
 
-from graphqomb.stim_mpp_rewriter import (
+from graphqomb.stim_glue.mpp_rewriter import (
     UnsupportedSyndromeCircuitError,
     rewrite_to_mpp,
 )

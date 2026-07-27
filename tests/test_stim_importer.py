@@ -12,11 +12,11 @@ from graphqomb.command import M
 from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import is_runnable
-from graphqomb.qec.qeccode import YFoliation
+from graphqomb.qeccode import YFoliation
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
-from graphqomb.stim_compiler import stim_compile
-from graphqomb.stim_importer import stim_circuit_to_pattern, stim_file_to_pattern, stim_text_to_pattern
+from graphqomb.stim_glue.compiler import stim_compile
+from graphqomb.stim_glue.importer import stim_circuit_to_pattern, stim_file_to_pattern, stim_text_to_pattern
 
 stim = pytest.importorskip("stim")
 

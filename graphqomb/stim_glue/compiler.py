@@ -138,26 +138,13 @@ class _StimCompiler:
         event = MeasureEvent(time=self._tick, node=self._node_info(node), axis=axis)
         ops = self._validate_ops_for_event(event, self._collect_noise_ops_from_models(lambda m: m.on_measure(event)))
 
-        # Separate MeasurementFlip from other noise ops
-        meas_flip_probs: list[float] = []
-        other_ops: list[NoiseOp] = []
+        # `_validate_ops_for_event` already checked that each MeasurementFlip
+        # targets this node; combine their flip probabilities by XOR.
+        other_ops = [op for op in ops if not isinstance(op, MeasurementFlip)]
+        meas_flip_p = 0.0
         for op in ops:
             if isinstance(op, MeasurementFlip):
-                if op.target != node:
-                    msg = (
-                        f"MeasurementFlip target mismatch: measurement on node {node}, "
-                        f"but flip targets node {op.target}"
-                    )
-                    raise ValueError(msg)
-                meas_flip_probs.append(op.p)
-            else:
-                other_ops.append(op)
-        if not meas_flip_probs:
-            meas_flip_p = 0.0
-        else:
-            meas_flip_p = 0.0
-            for p in meas_flip_probs:
-                meas_flip_p = meas_flip_p * (1 - p) + (1 - meas_flip_p) * p
+                meas_flip_p = meas_flip_p * (1 - op.p) + (1 - meas_flip_p) * op.p
 
         default_placement = default_noise_placement(event)
         self._rec_index += self._emit_noise_ops(other_ops, NoisePlacement.BEFORE, default_placement)

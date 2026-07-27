@@ -6,15 +6,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import stim
 from scipy.sparse import csr_array, lil_array
 
 from graphqomb.common import Axis, Sign
-from graphqomb.qec.qeccode import Coordinate, StabilizerCode
+from graphqomb.qeccode import Coordinate, StabilizerCode
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
-
-    import stim
+    from collections.abc import Iterator, Mapping, Sequence
 
 
 PauliSupport = tuple[tuple[int, str], ...]
@@ -142,6 +141,86 @@ def stim_mpp_extraction_from_records(
         logical_observable_rows=selected_logical_rows,
         detector_record_indices=tuple(selected_detector_records),
         logical_observable_record_indices=selected_logical_records,
+    )
+
+
+def iter_instructions(circuit: stim.Circuit) -> Iterator[stim.CircuitInstruction]:
+    """Yield the instructions of a flattened Stim circuit.
+
+    Yields
+    ------
+    ``stim.CircuitInstruction``
+        Each instruction in circuit order.
+
+    Raises
+    ------
+    TypeError
+        If the circuit contains a repeat block.
+    """
+    for instruction in circuit:
+        if not isinstance(instruction, stim.CircuitInstruction):
+            msg = "Flattened Stim circuit unexpectedly contains a repeat block."
+            raise TypeError(msg)
+        yield instruction
+
+
+@dataclass(frozen=True)
+class RecordAnnotations:
+    r"""Detector and logical-observable annotations resolved to absolute record indices.
+
+    Attributes
+    ----------
+    detectors : `tuple`\[`frozenset`\[`int`\], ...\]
+        One absolute record-index group per ``DETECTOR``, in circuit order.
+    logical_observables : `dict`\[`int`, `frozenset`\[`int`\]\]
+        Merged absolute record indices keyed by Stim observable index.
+    """
+
+    detectors: tuple[frozenset[int], ...]
+    logical_observables: dict[int, frozenset[int]]
+
+
+def collect_record_annotations(circuit: stim.Circuit) -> RecordAnnotations:
+    """Collect ``DETECTOR`` and ``OBSERVABLE_INCLUDE`` annotations from a flattened circuit.
+
+    Relative ``rec[-k]`` targets are resolved to absolute measurement-record
+    indices; repeated targets cancel by parity. ``OBSERVABLE_INCLUDE``
+    instructions sharing an observable index are merged the same way.
+
+    Returns
+    -------
+    RecordAnnotations
+        Resolved detector and logical-observable record indices.
+    """
+    detectors: list[frozenset[int]] = []
+    logical_observables: dict[int, set[int]] = {}
+    measurement_count = 0
+
+    for instruction in iter_instructions(circuit):
+        if instruction.name == "DETECTOR":
+            detectors.append(
+                record_targets_to_absolute_indices(
+                    instruction.targets_copy(),
+                    measurement_count=measurement_count,
+                    instruction_name=instruction.name,
+                )
+            )
+        elif instruction.name == "OBSERVABLE_INCLUDE":
+            logical_idx = observable_index(instruction)
+            logical_observables.setdefault(logical_idx, set()).symmetric_difference_update(
+                record_targets_to_absolute_indices(
+                    instruction.targets_copy(),
+                    measurement_count=measurement_count,
+                    instruction_name=f"OBSERVABLE_INCLUDE({logical_idx})",
+                )
+            )
+        measurement_count += instruction.num_measurements
+
+    return RecordAnnotations(
+        detectors=tuple(detectors),
+        logical_observables={
+            logical_idx: frozenset(records) for logical_idx, records in sorted(logical_observables.items())
+        },
     )
 
 
@@ -327,7 +406,7 @@ def plain_qubit_target(target: stim.GateTarget, instruction_name: str) -> int:
     """Return a plain Stim qubit target.
 
     Rejects Pauli-typed and inverted-result targets, which the importer cannot
-    represent. ``stim_mpp_rewriter._plain_qubit`` deliberately accepts those
+    represent. ``mpp_rewriter._plain_qubit`` deliberately accepts those
     because it only needs the qubit id an instruction acts on.
 
     Returns
