@@ -59,9 +59,10 @@ class StimImportResult:
 
     ``stim_to_qubit`` maps each Stim qubit id to the qubit index of its
     initial (input-side) wire. When a Stim qubit is used again after a direct
-    single-qubit measurement, the importer issues a fresh internal qubit index
-    for the post-measurement wire; ``qubit_to_stim`` maps every internal qubit
-    index, including those continuation indices, back to its Stim qubit id.
+    single-qubit measurement or re-initialized by a mid-circuit reset, the
+    importer issues a fresh internal qubit index for the new wire;
+    ``qubit_to_stim`` maps every internal qubit index, including those
+    continuation indices, back to its Stim qubit id.
     """
 
     pattern: Pattern
@@ -89,12 +90,19 @@ class _ImportContext:
     logical_observable_record_indices: Mapping[int, frozenset[int]]
     schedule_strategy: CircuitScheduleStrategy
     y_foliation: YFoliation
+    split_wire_ids: frozenset[int]
 
 
 @dataclass(frozen=True)
 class _IdealizedCircuit:
     circuit: stim.Circuit
     zero_record_indices: frozenset[int]
+
+
+@dataclass(frozen=True)
+class _ResetLifetimeSplit:
+    circuit: stim.Circuit
+    split_to_original: dict[int, int]
 
 
 @dataclass(frozen=True)
@@ -235,6 +243,17 @@ def stim_circuit_to_pattern(
     optimization do not count as later use, so the measured wire ends and the
     pattern has one output fewer than the raw instruction stream suggests.
 
+    A qubit may also be re-initialized with an explicit mid-circuit ``R``,
+    ``RX``, or ``RY``. The importer splits each reset-started lifetime onto a
+    fresh internal qubit index: the new wire starts at the qubit's XY
+    coordinates on the next z layer in the positive eigenstate of the reset
+    axis, with no outcome conditioning because the reset discards the previous
+    state. A wire that was not consumed by a direct measurement before the
+    reset remains a pattern output; leaving it coherent and untouched is
+    channel-equivalent to Stim's trace-out reset on every recorded
+    measurement. ``qubit_to_stim`` maps the fresh indices back to the original
+    Stim qubit id.
+
     Returns
     -------
     `StimImportResult`
@@ -250,13 +269,18 @@ def stim_circuit_to_pattern(
         raise ValueError(msg)
 
     idealized = _idealize_circuit(circuit.flattened())
-    normalized_circuit, stim_ids = _normalize_import_circuit(idealized.circuit)
+    reset_split = _split_reused_reset_wires(idealized.circuit)
+    normalized_circuit, stim_ids = _normalize_import_circuit(reset_split.circuit)
     analysis = _CircuitAnalyzer().analyze(normalized_circuit)
     annotations = collect_record_annotations(normalized_circuit)
     if analysis.measurement_count == 0 and (annotations.detectors or annotations.logical_observables):
         msg = "DETECTOR and OBSERVABLE_INCLUDE require at least one imported measurement instruction."
         raise ValueError(msg)
-    coordinate_by_stim_id = extract_qubit_coordinates(idealized.circuit, coord_dims=coord_dims)
+    coordinate_by_stim_id = _coordinates_with_split_wires(
+        idealized.circuit,
+        reset_split.split_to_original,
+        coord_dims=coord_dims,
+    )
     stim_to_qubit = {stim_id: qubit for qubit, stim_id in enumerate(sorted(stim_ids))}
     context = _ImportContext(
         stim_to_qubit=stim_to_qubit,
@@ -266,6 +290,7 @@ def stim_circuit_to_pattern(
         logical_observable_record_indices=annotations.logical_observables,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
+        split_wire_ids=frozenset(reset_split.split_to_original),
     )
 
     build = _fragments_from_blocks(analysis.blocks, context=context)
@@ -280,20 +305,20 @@ def stim_circuit_to_pattern(
         record_nodes=fragment.record_nodes,
         zero_record_indices=idealized.zero_record_indices,
     )
-    flows = _flows_with_feedback(
-        fragment,
-        zero_record_indices=idealized.zero_record_indices,
-    )
     pattern = qompile(
         fragment.graph,
-        *flows,
+        *_flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices),
         parity_check_group=parity_check_groups,
         logical_observables=logical_observables,
     )
     return StimImportResult(
         pattern=pattern,
-        stim_to_qubit=stim_to_qubit,
-        qubit_to_stim=build.qubit_to_stim,
+        stim_to_qubit={
+            stim_id: qubit for stim_id, qubit in stim_to_qubit.items() if stim_id not in reset_split.split_to_original
+        },
+        qubit_to_stim={
+            qubit: reset_split.split_to_original.get(stim_id, stim_id) for qubit, stim_id in build.qubit_to_stim.items()
+        },
         mpp_extractions=fragment.mpp_extractions,
     )
 
@@ -332,6 +357,103 @@ def _tracked_qubits(instruction: stim.CircuitInstruction) -> set[int]:
     if instruction.name in {"TICK", "DETECTOR", "OBSERVABLE_INCLUDE", "MPAD"}:
         return set()
     return {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
+
+
+def _split_reused_reset_wires(circuit: stim.Circuit) -> _ResetLifetimeSplit:
+    """Give every reset-started wire lifetime its own Stim qubit id.
+
+    A ``R``/``RX``/``RY`` instruction targeting a qubit that already had a
+    quantum operation starts a new wire: the reset and all later instructions
+    on that qubit are remapped to a fresh Stim qubit id, so downstream import
+    stages see initial resets only. Resets repeated before any quantum use
+    keep their wire id, matching the leading-reset rule where the last reset
+    determines the initialization axis.
+
+    Returns
+    -------
+    `_ResetLifetimeSplit`
+        Rewritten circuit and the mapping from fresh ids to original ids.
+    """
+    result = stim.Circuit()
+    next_wire = circuit.num_qubits
+    wire_of: dict[int, int] = {}
+    used_wires: set[int] = set()
+    split_to_original: dict[int, int] = {}
+
+    for instruction in iter_instructions(circuit):
+        name = instruction.name
+        if name in {"QUBIT_COORDS", "MPAD"}:
+            # Coordinates stay attached to original ids; MPAD pad bits are
+            # spelled like qubit targets and must not be remapped.
+            result.append(instruction)
+            continue
+        if name in RESET_AXES:
+            wires: list[int] = []
+            for target in instruction.targets_copy():
+                stim_id = plain_qubit_target(target, name)
+                wire = wire_of.get(stim_id, stim_id)
+                if wire in used_wires:
+                    wire = next_wire
+                    next_wire += 1
+                    split_to_original[wire] = stim_id
+                    wire_of[stim_id] = wire
+                wires.append(wire)
+            result.append(name, wires, instruction.gate_args_copy(), tag=instruction.tag)
+            continue
+        result.append(
+            name,
+            [_remap_qubit_target(target, wire_of) for target in instruction.targets_copy()],
+            instruction.gate_args_copy(),
+            tag=instruction.tag,
+        )
+        if _is_quantum_operation(instruction):
+            used_wires.update(wire_of.get(stim_id, stim_id) for stim_id in _tracked_qubits(instruction))
+
+    return _ResetLifetimeSplit(result, split_to_original)
+
+
+def _coordinates_with_split_wires(
+    circuit: stim.Circuit,
+    split_to_original: Mapping[int, int],
+    *,
+    coord_dims: int,
+) -> dict[int, tuple[float, ...]]:
+    r"""Extract qubit coordinates and share each original's XY with its split wires.
+
+    Returns
+    -------
+    `dict`\[`int`, `tuple`\[`float`, ...\]\]
+        Coordinates keyed by Stim qubit id, including split wire ids.
+    """
+    coordinates = extract_qubit_coordinates(circuit, coord_dims=coord_dims)
+    for split_id, original_id in split_to_original.items():
+        coord = coordinates.get(original_id)
+        if coord is not None:
+            coordinates[split_id] = coord
+    return coordinates
+
+
+def _remap_qubit_target(target: stim.GateTarget, wire_of: Mapping[int, int]) -> stim.GateTarget | int:
+    """Map one Stim gate target onto its current wire id.
+
+    Returns
+    -------
+    ``stim.GateTarget`` | `int`
+        Remapped target, or the unchanged non-qubit target.
+    """
+    qubit_value = target.qubit_value
+    if qubit_value is None:
+        return target
+    wire = wire_of.get(int(qubit_value), int(qubit_value))
+    if target.pauli_type == "X":
+        return stim.target_x(wire, invert=target.is_inverted_result_target)
+    if target.pauli_type == "Y":
+        return stim.target_y(wire, invert=target.is_inverted_result_target)
+    if target.pauli_type == "Z":
+        return stim.target_z(wire, invert=target.is_inverted_result_target)
+    if target.is_inverted_result_target:
+        return stim.target_inv(wire)
+    return wire
 
 
 @dataclass
@@ -387,7 +509,6 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
     result = stim.Circuit()
     block = _TickBlock()
     stim_ids: set[int] = set()
-    used_qubits: set[int] = set()
     block_number = 1
 
     def flush_block() -> None:
@@ -399,14 +520,11 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
             result.append(part)
         block = _TickBlock()
 
+    # `_split_reused_reset_wires` runs first, so every reset here is the
+    # initial reset of its own wire id.
     for index, instruction in enumerate(instructions):
         instruction_qubits = _tracked_qubits(instruction)
         stim_ids.update(instruction_qubits)
-        if instruction.name in RESET_AXES:
-            _reject_reset_after_use(instruction, instruction_qubits, used_qubits)
-        elif _is_quantum_operation(instruction):
-            used_qubits.update(instruction_qubits)
-
         if instruction.name == "TICK":
             flush_block()
             result.append(instruction)
@@ -416,20 +534,6 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
 
     flush_block()
     return result, frozenset(stim_ids)
-
-
-def _reject_reset_after_use(
-    instruction: stim.CircuitInstruction,
-    instruction_qubits: set[int],
-    used_qubits: set[int],
-) -> None:
-    reset_after_use = used_qubits & instruction_qubits
-    if reset_after_use:
-        msg = (
-            f"Stim reset instruction {instruction.name} targets qubit(s) {sorted(reset_after_use)} "
-            "after another quantum operation; only initial resets are supported."
-        )
-        raise ValueError(msg)
 
 
 def _normalize_block(
@@ -839,10 +943,24 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
     z_base = 0
     stim_to_qubit = dict(context.stim_to_qubit)
     qubit_to_stim = {qubit: stim_id for stim_id, qubit in stim_to_qubit.items()}
-    live_stim_ids = set(stim_to_qubit)
+    live_stim_ids = set(stim_to_qubit) - context.split_wire_ids
     future_use = _stim_ids_used_after_block(blocks)
 
     for block_index, block in enumerate(blocks):
+        new_wire_ids = sorted(
+            {
+                stim_id
+                for analyzed in block
+                if analyzed.instruction.name in RESET_AXES
+                for stim_id in analyzed.qubit_ids
+                if stim_id in context.split_wire_ids and stim_id not in live_stim_ids
+            }
+        )
+        if new_wire_ids:
+            z_base += 1
+            fragments.append(_new_wire_fragment(new_wire_ids, z=z_base, stim_to_qubit=stim_to_qubit, context=context))
+            live_stim_ids.update(new_wire_ids)
+
         direct_items = tuple(analyzed for analyzed in block if analyzed.instruction.name in DIRECT_MEASUREMENT_AXES)
         directly_measured_stim_ids = {stim_id for analyzed in direct_items for stim_id in analyzed.qubit_ids}
         reused_measurements = tuple(
@@ -1049,6 +1167,9 @@ def _feedback_fragment(
 def _identity_fragment(context: _ImportContext) -> _Fragment:
     graph = GraphState()
     for stim_id, qubit_index in sorted(context.stim_to_qubit.items()):
+        if stim_id in context.split_wire_ids:
+            # Split wires start at their reset position, not at the circuit input.
+            continue
         coord = context.coordinate_by_stim_id.get(stim_id)
         node = graph.add_node(coordinate=_coordinate_at_z(coord, 0) if coord is not None else None)
         graph.register_input(
@@ -1062,6 +1183,36 @@ def _identity_fragment(context: _ImportContext) -> _Fragment:
         xflow={},
         record_nodes={},
     )
+
+
+def _new_wire_fragment(
+    stim_ids: Sequence[int],
+    *,
+    z: int,
+    stim_to_qubit: Mapping[int, int],
+    context: _ImportContext,
+) -> _Fragment:
+    """Open fresh wires for reset-started lifetimes at their reset position.
+
+    Each wire reuses its original qubit's XY coordinates at ``z`` and is
+    initialized in the positive eigenstate of its last leading reset axis.
+    The reset discards the previous state, so the wire carries no outcome
+    conditioning; the replaced wire simply ends (a measured wire ended at its
+    measurement, an unmeasured wire remains a pattern output).
+
+    Returns
+    -------
+    `_Fragment`
+        Fragment holding the fresh input/output wires.
+    """
+    graph = GraphState()
+    for stim_id in stim_ids:
+        coord = context.coordinate_by_stim_id.get(stim_id)
+        node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
+        qubit = stim_to_qubit[stim_id]
+        graph.register_input(node, qubit, init_axis=context.input_initialization_axes[stim_id])
+        graph.register_output(node, qubit)
+    return _Fragment(graph=graph, xflow={}, record_nodes={})
 
 
 def _unitary_fragment(  # ruff:ignore[too-many-arguments]

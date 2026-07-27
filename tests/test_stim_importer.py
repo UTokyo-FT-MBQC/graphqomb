@@ -1041,10 +1041,74 @@ def test_stim_text_to_pattern_allows_initial_reset_after_other_qubit_operation()
     assert result.pattern.input_initialization_axes[input_node] == Axis.Z
 
 
-@pytest.mark.parametrize("instruction", ["R", "RX", "RY"])
-def test_stim_text_to_pattern_rejects_reset_after_quantum_operation(instruction: str) -> None:
-    with pytest.raises(ValueError, match="only initial resets are supported"):
-        stim_text_to_pattern(f"H 0\n{instruction} 0")
+@pytest.mark.parametrize(
+    ("reset", "measurement", "axis"),
+    [("R", "M", Axis.Z), ("RX", "MX", Axis.X), ("RY", "MY", Axis.Y)],
+)
+def test_stim_text_to_pattern_reinitializes_measured_qubit_on_fresh_wire(
+    reset: str, measurement: str, axis: Axis
+) -> None:
+    result = stim_text_to_pattern(f"M 0\n{reset} 0\nTICK\n{measurement} 0\nDETECTOR rec[-1]")
+
+    assert result.stim_to_qubit == {0: 0}
+    assert result.qubit_to_stim == {0: 0, 1: 0}
+    fresh_input = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
+    assert result.pattern.input_initialization_axes[fresh_input] == axis
+    compiled = stim.Circuit(stim_compile(result.pattern))
+    assert not compiled.compile_detector_sampler().sample(shots=32).any()
+
+
+def test_stim_text_to_pattern_reset_reuse_keeps_syndrome_detector_deterministic() -> None:
+    result = stim_text_to_pattern(
+        """
+        QUBIT_COORDS(0, 0) 0
+        QUBIT_COORDS(1, 0) 1
+        RX 0
+        R 1
+        TICK
+        CZ 0 1
+        TICK
+        M 1
+        R 1
+        TICK
+        CZ 0 1
+        TICK
+        M 1
+        DETECTOR rec[-1] rec[-2]
+        TICK
+        MX 0
+        """
+    )
+    graph = result.pattern.pauli_frame.graphstate
+    fresh_input = next(node for node, q_index in graph.input_node_indices.items() if q_index == 2)
+    coordinate = graph.coordinates[fresh_input]
+
+    is_runnable(result.pattern)
+    assert result.stim_to_qubit == {0: 0, 1: 1}
+    assert result.qubit_to_stim == {0: 0, 1: 1, 2: 1}
+    assert coordinate[:2] == (1.0, 0.0)
+    assert coordinate[2] > 0
+    compiled = stim.Circuit(stim_compile(result.pattern))
+    assert not compiled.compile_detector_sampler().sample(shots=32).any()
+
+
+def test_stim_text_to_pattern_reset_on_live_wire_keeps_old_wire_as_output() -> None:
+    result = stim_text_to_pattern("H 0\nTICK\nR 0\nTICK\nM 0\nDETECTOR rec[-1]")
+
+    assert result.qubit_to_stim == {0: 0, 1: 0}
+    assert set(result.pattern.output_node_indices.values()) == {0, 1}
+    compiled = stim.Circuit(stim_compile(result.pattern))
+    assert not compiled.compile_detector_sampler().sample(shots=32).any()
+
+
+def test_stim_text_to_pattern_uses_last_reset_before_reuse() -> None:
+    result = stim_text_to_pattern("M 0\nR 0\nRX 0\nTICK\nMX 0\nDETECTOR rec[-1]")
+
+    assert result.qubit_to_stim == {0: 0, 1: 0}
+    fresh_input = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
+    assert result.pattern.input_initialization_axes[fresh_input] == Axis.X
+    compiled = stim.Circuit(stim_compile(result.pattern))
+    assert not compiled.compile_detector_sampler().sample(shots=32).any()
 
 
 def test_stim_text_to_pattern_rejects_duplicate_qubit_coordinates() -> None:
