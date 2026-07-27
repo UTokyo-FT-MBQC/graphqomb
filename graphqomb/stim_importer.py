@@ -17,7 +17,7 @@ from graphqomb.qec._stim import (
     PauliSupport,
     StimMppExtraction,
     extract_qubit_coordinates,
-    mpp_targets_to_products,
+    mpp_targets_to_signed_products,
     observable_index,
     pauli_products_commute,
     plain_qubit_target,
@@ -1241,9 +1241,11 @@ def _mpp_fragment(
     stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> _Fragment:
-    supports = tuple(
-        support for analyzed in block for support in mpp_targets_to_products(analyzed.instruction.targets_copy())
+    signed_products = tuple(
+        product for analyzed in block for product in mpp_targets_to_signed_products(analyzed.instruction.targets_copy())
     )
+    supports = tuple(support for support, _sign in signed_products)
+    signs = tuple(sign for _support, sign in signed_products)
     _validate_commuting_mpp_supports(supports)
     record_indices = tuple(record_index for analyzed in block for record_index in analyzed.record_indices)
     extraction = stim_mpp_extraction_from_records(
@@ -1256,6 +1258,7 @@ def _mpp_fragment(
     fragment = _mpp_graph_fragment(
         extraction,
         record_indices=record_indices,
+        signs=signs,
         z_base=z_base,
         io_stim_ids=io_stim_ids,
         stim_to_qubit=stim_to_qubit,
@@ -1282,6 +1285,7 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     extraction: StimMppExtraction,
     *,
     record_indices: Sequence[int],
+    signs: Sequence[Sign],
     z_base: int,
     io_stim_ids: set[int],
     stim_to_qubit: Mapping[int, int],
@@ -1295,6 +1299,9 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
         data_as_io=True,
         qubit_indices=qubit_indices,
     )
+    for row, sign in enumerate(signs):
+        if sign is Sign.MINUS:
+            result.graph.assign_meas_basis(result.ancilla_nodes[row], AxisMeasBasis(Axis.X, Sign.MINUS))
     active_stim_ids = set(extraction.stim_to_column)
     _add_relocated_io_nodes(
         result.graph,

@@ -7,7 +7,6 @@ import pytest
 import stim
 
 from graphqomb.stim_mpp_rewriter import (
-    MppRewriteVerificationError,
     UnsupportedSyndromeCircuitError,
     rewrite_to_mpp,
 )
@@ -126,7 +125,7 @@ def test_trivial_data_measurements_pass_through_verbatim() -> None:
         """
     )
 
-    assert result.circuit == stim.Circuit("R 4\nMPP Z0*Z1\nDETECTOR rec[-1]\nM 0 1")
+    assert result.circuit == stim.Circuit("R 4\nMPP Z0*Z1\nDETECTOR rec[-1]\nTICK\nM 0 1")
     assert [check.source_qubit for check in result.checks] == [4, 0, 1]
 
 
@@ -269,17 +268,19 @@ def test_pair_measurement_passes_through_verbatim_without_body() -> None:
     ]
 
 
-def test_pair_measurement_entangling_an_unmeasured_ancilla_fails_verification() -> None:
-    # Qubit 2 stays entangled with the data after MZZ, so dropping the CX
-    # would lose the 1 -> Z1*Z2 xor rec correlation.
-    with pytest.raises(MppRewriteVerificationError):
-        rewrite_to_mpp(
-            """
-            R 2
-            CX 0 2
-            MZZ 1 2
-            """
-        )
+def test_pair_measurement_preserves_residual_entangling_frame() -> None:
+    source = stim.Circuit(
+        """
+        R 2
+        CX 0 2
+        MZZ 1 2
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit("R 2\nMPP Z0*Z1*Z2\nCX 0 2")
+    assert result.circuit.flow_generators() == source.flow_generators()
 
 
 def test_mpp_tag_is_preserved() -> None:
@@ -434,21 +435,7 @@ def test_reset_after_entangling_in_the_same_segment_is_rejected() -> None:
         )
 
 
-def test_residual_data_unitary_fails_verification() -> None:
-    with pytest.raises(MppRewriteVerificationError):
-        rewrite_to_mpp(
-            """
-            R 4
-            H 4
-            CX 4 0
-            H 4
-            S 0
-            M 4
-            """
-        )
-
-
-def test_residual_data_unitary_is_dropped_silently_without_verification() -> None:
+def test_residual_data_unitary_is_preserved() -> None:
     result = rewrite_to_mpp(
         """
         R 4
@@ -457,11 +444,66 @@ def test_residual_data_unitary_is_dropped_silently_without_verification() -> Non
         H 4
         S 0
         M 4
-        """,
-        verify=False,
+        """
     )
 
-    assert result.circuit == stim.Circuit("R 4\nMPP X0")
+    assert result.circuit == stim.Circuit("R 4\nMPP X0\nS 0")
+
+
+def test_residual_frame_is_preserved_across_segments() -> None:
+    source = stim.Circuit(
+        """
+        R 0 1
+        CX 0 1
+        H 0
+        M 1
+        H 0
+        M 0
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit(
+        """
+        R 0 1
+        MPP Z0
+        H 0
+        MPP X0
+        """
+    )
+    assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
+
+
+def test_unsupported_residual_channel_falls_back_to_fresh_reset_lifetimes() -> None:
+    source = stim.Circuit(
+        """
+        R 1
+        H 1
+        CX 1 0
+        M 1
+        R 1
+        H 1
+        M 1
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit(
+        """
+        R 1
+        H 1
+        CX 1 0
+        M 1
+        R 2
+        H 2
+        M 2
+        """
+    )
+    assert result.circuit.num_measurements == source.num_measurements
+    assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
+    assert [check.source_qubit for check in result.checks] == [1, 2]
 
 
 def test_basis_mismatched_residual_on_measured_ancilla_is_kept_in_the_product() -> None:

@@ -52,22 +52,24 @@ such as ``M !4`` produce signed ``MPP`` products.
 
 The rewrite is structural: circuit-level noise instructions are rejected
 instead of being folded into ``MPP`` arguments, classical feedback is not
-supported, and measured-out ancillas are left in their reset state rather
-than the measurement outcome's eigenstate. The original gate schedule is
-discarded, so hook-fault analysis must rely on the returned
+supported, and optimized rewrites leave measured-out ancillas in their reset
+state rather than the measurement outcome's eigenstate. The optimized path
+preserves any residual Clifford frame on surviving qubits. It discards the
+original gate schedule, so hook-fault analysis must rely on the returned
 :class:`graphqomb.stim_mpp_rewriter.CheckMapping` sidecar and the source
 circuit.
 
 By default every rewritten segment is verified against its source segment by
 cross-checking stabilizer-flow generators (with resets appended to measured-out
-ancillas in both copies), so residual data-qubit unitaries or unsupported
-flag-style structures raise
-:class:`graphqomb.stim_mpp_rewriter.MppRewriteVerificationError` instead of
-silently changing the circuit's semantics. Bodies that rotate data qubits
-beyond measuring the inferred products — for example the ``C_XYZ`` data
-rotations of ``stim.Circuit.generated("color_code:memory_xyz", ...)`` — are
-rejected this way, while the generated repetition-code and surface-code memory
-circuits rewrite cleanly. Pass ``verify=False`` to skip this check.
+ancillas in both copies). If initialized-ancilla substitution cannot preserve
+the segment, the rewriter retries with the exact pulled-back products. If the
+result still cannot be represented and verified as ``MPP`` measurements plus a
+residual Clifford frame, it returns the original gate-level circuit with each
+reset lifetime assigned a fresh Stim qubit id. This fallback preserves gate
+order and measurement-record annotations while avoiding importer ambiguity
+from reusing the same Stim id after reset. Pass ``verify=False`` to skip the
+segment-flow cross-check; residual-frame synthesis can still select the
+gate-level fallback.
 
 API reference
 -------------
