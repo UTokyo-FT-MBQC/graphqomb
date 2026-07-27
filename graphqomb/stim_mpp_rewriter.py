@@ -3,27 +3,16 @@
 This experimental module recognizes the standard syndrome-extraction shape
 (reset ancillas, apply Clifford unitaries, measure ancillas) and replaces each
 gate-level extraction block with ``MPP`` instructions that directly measure the
-inferred data Pauli products. Each source measurement maps to exactly one
-measurement in the rewritten circuit, so ``DETECTOR`` and
-``OBSERVABLE_INCLUDE`` annotations are copied verbatim.
+inferred data Pauli products. Circuit-level noise and classical feedback remain
+unsupported.
 
-The inference conjugates each final measurement Pauli backwards through the
-segment's Clifford body (``U† P U`` via :meth:`stim.PauliString.before`) and
-substitutes ``+1`` for stabilizers of freshly initialized, measured-out
-ancillas. A segment ends when a unitary follows its measurements, or when a
-measurement follows a reset issued after those measurements (including the
-implicit reset of ``MR``); trailing data measurements therefore start a fresh
-segment with an empty Clifford body and pass through verbatim. Clifford frames
-left on surviving qubits are retained after the inferred measurements. If that
-optimized representation cannot be verified, the rewriter preserves the
-gate-level circuit and assigns a fresh Stim qubit id to each reset lifetime
-instead.
+This module provides:
 
-By default each rewritten segment is verified against its source segment by
-cross-checking stabilizer-flow generators, with a reset appended to every
-measured-out ancilla in both copies to discard the intentionally different
-ancilla post-states of the optimized representation. Circuit-level noise and
-classical feedback remain unsupported.
+- `rewrite_to_mpp`: Rewrite a noiseless syndrome-extraction circuit into MPP form.
+- `MppRewriteResult`: Rewritten circuit with its per-measurement Pauli products.
+- `CheckMapping`: Mapping from one measurement record to its Pauli product.
+- `UnsupportedSyndromeCircuitError`: Error for unsupported syndrome circuits.
+- `MppRewriteVerificationError`: Error for a failed segment verification.
 """
 
 from __future__ import annotations
@@ -66,14 +55,14 @@ class CheckMapping:
 
     Attributes
     ----------
-    measurement_index : int
+    measurement_index : `int`
         Global measurement-record index, identical in source and rewritten circuits.
-    segment_index : int
+    segment_index : `int`
         Index of the extraction segment that produced this measurement.
-    product : stim.PauliString
+    product : ``stim.PauliString``
         Inferred signed Pauli product measured at this record position.
-    source_qubit : int | None
-        Measured qubit for single-qubit source measurements, ``None`` for
+    source_qubit : `int` | `None`
+        Measured qubit for single-qubit source measurements, `None` for
         source ``MPP``/``MXX``/``MYY``/``MZZ`` products.
     """
 
@@ -89,9 +78,9 @@ class MppRewriteResult:
 
     Attributes
     ----------
-    circuit : stim.Circuit
+    circuit : ``stim.Circuit``
         Rewritten circuit with one measurement per source measurement.
-    checks : `tuple`\\[`CheckMapping`, ...\\]
+    checks : `tuple`\[`CheckMapping`, ...\]
         One mapping per measurement record produced by a Pauli measurement.
         ``MPAD`` records are not listed.
     """
@@ -122,29 +111,42 @@ class _SegmentBuffer:
 def rewrite_to_mpp(circuit: stim.Circuit | str, *, verify: bool = True) -> MppRewriteResult:
     """Rewrite a noiseless Stim syndrome-extraction circuit into MPP form.
 
+    The inference conjugates each final measurement Pauli backwards through the
+    segment's Clifford body (``U† P U`` via ``stim.PauliString.before``) and
+    substitutes ``+1`` for stabilizers of freshly initialized, measured-out
+    ancillas. A segment ends when a unitary follows its measurements, or when a
+    measurement follows a reset issued after those measurements (including the
+    implicit reset of ``MR``); trailing data measurements therefore start a
+    fresh segment with an empty Clifford body and pass through verbatim.
+    Clifford frames left on surviving qubits are retained after the inferred
+    measurements. Each source measurement maps to exactly one measurement in
+    the rewritten circuit, so ``DETECTOR`` and ``OBSERVABLE_INCLUDE``
+    annotations are copied verbatim.
+
     ``REPEAT`` blocks are flattened before rewriting, which also bakes
-    ``SHIFT_COORDS`` offsets into ``DETECTOR`` coordinate arguments. Noise
-    instructions, measurement noise arguments, and classical feedback are
-    rejected with :class:`UnsupportedSyndromeCircuitError`.
-
-    Parameters
-    ----------
-    circuit : stim.Circuit | str
-        Source circuit or Stim circuit text.
-    verify : bool
-        Cross-check stabilizer-flow generators of every rewritten segment
-        against its source segment. Verification models the documented
-        optimized-rewrite semantics: measured-out ancilla post-states are
-        reset in both copies before comparison.
-
-    Returns
-    -------
-    MppRewriteResult
-        Rewritten circuit and per-measurement Pauli-product mappings.
+    ``SHIFT_COORDS`` offsets into ``DETECTOR`` coordinate arguments.
 
     If a segment cannot be represented by MPP measurements plus a residual
     Clifford frame, the rewriter preserves the gate-level circuit and replaces
     reset-based qubit reuse with fresh Stim qubit ids.
+
+    Parameters
+    ----------
+    circuit : ``stim.Circuit`` | `str`
+        Source circuit or Stim circuit text. Noise instructions, measurement
+        noise arguments, and classical feedback are rejected with
+        `UnsupportedSyndromeCircuitError`.
+    verify : `bool`, optional
+        Whether to cross-check the stabilizer-flow generators of every
+        rewritten segment against its source segment, by default True.
+        Verification models the documented optimized-rewrite semantics:
+        measured-out ancilla post-states are reset in both copies before
+        comparison.
+
+    Returns
+    -------
+    `MppRewriteResult`
+        Rewritten circuit and per-measurement Pauli-product mappings.
     """
     flattened = _coerce_circuit(circuit).flattened()
     try:
@@ -159,7 +161,7 @@ def _rewrite_flattened_to_mpp(flattened: stim.Circuit, *, verify: bool) -> MppRe
 
     Returns
     -------
-    MppRewriteResult
+    `MppRewriteResult`
         Optimized rewrite result.
 
     Raises
@@ -187,7 +189,7 @@ def _split_reset_lifetimes(circuit: stim.Circuit) -> stim.Circuit:
 
     Returns
     -------
-    stim.Circuit
+    ``stim.Circuit``
         Equivalent circuit where every reset after prior quantum use starts a
         fresh wire. Old post-measurement wires remain unused.
 
@@ -244,7 +246,7 @@ def _remap_gate_target(target: stim.GateTarget, current_qubit: dict[int, int]) -
 
     Returns
     -------
-    stim.GateTarget | int
+    ``stim.GateTarget`` | `int`
         Remapped target, or the unchanged non-qubit target.
     """
     qubit_value = target.qubit_value
@@ -263,11 +265,11 @@ def _remap_gate_target(target: stim.GateTarget, current_qubit: dict[int, int]) -
 
 
 def _check_mappings(circuit: stim.Circuit) -> tuple[CheckMapping, ...]:
-    """Build pass-through measurement mappings for a gate-level fallback.
+    r"""Build pass-through measurement mappings for a gate-level fallback.
 
     Returns
     -------
-    tuple[CheckMapping, ...]
+    `tuple`\[`CheckMapping`, ...\]
         One mapping for each Pauli measurement record.
 
     Raises
@@ -348,7 +350,7 @@ def _check_no_feedback_targets(instruction: stim.CircuitInstruction) -> None:
 
 
 class _Rewriter:
-    """Streams flattened instructions, buffering and rewriting one segment at a time."""
+    """Streaming rewriter that buffers and rewrites one segment at a time."""
 
     def __init__(self, *, num_qubits: int, verify: bool) -> None:
         self._config = _RewriteConfig(num_qubits=num_qubits, verify=verify)
@@ -386,7 +388,7 @@ class _Rewriter:
 
         Returns
         -------
-        MppRewriteResult
+        `MppRewriteResult`
             Rewritten circuit and per-measurement Pauli-product mappings.
         """
         self._flush_segment()
@@ -412,7 +414,7 @@ class _Rewriter:
 
         Returns
         -------
-        _Segment
+        `_Segment`
             Completed segment rewrite.
         """
         segment = _Segment(
@@ -433,7 +435,7 @@ class _Rewriter:
 
 
 class _Segment:
-    """Rewrites one reset/Clifford/measure segment of the source circuit."""
+    """Rewrite state for one reset/Clifford/measure segment of the source circuit."""
 
     def __init__(  # ruff:ignore[too-many-arguments]
         self,
@@ -663,7 +665,7 @@ class _Segment:
 
         Returns
         -------
-        stim.Circuit
+        ``stim.Circuit``
             A synthesized residual Clifford circuit.
         """
         xs = [self._restricted_body_output(qubit, "X", survivors) for qubit in survivors]
@@ -678,7 +680,7 @@ class _Segment:
 
         Returns
         -------
-        stim.Circuit
+        ``stim.Circuit``
             A local Clifford circuit satisfying all matched flow generators.
         """
         padding = sorted(self._measured_out)
@@ -703,7 +705,7 @@ class _Segment:
 
         Returns
         -------
-        stim.PauliString
+        ``stim.PauliString``
             Conjugated generator restricted to the surviving qubits.
         """
         source = stim.PauliString(self._config.num_qubits)
@@ -752,7 +754,7 @@ class _Segment:
 
         Returns
         -------
-        `dict`\\[`int`, `str`\\]
+        `dict`\[`int`, `str`\]
             Prepared Pauli bases still valid at the next segment's start.
         """
         carried = {
@@ -768,7 +770,7 @@ class _Segment:
 
         Returns
         -------
-        `set`\\[`int`\\]
+        `set`\[`int`\]
             Qubits measured out without a subsequent reset.
         """
         return self._dirty | self._measured_unreset
@@ -779,7 +781,7 @@ def _remap_tableau_circuit(tableau: stim.Tableau, qubits: Sequence[int]) -> stim
 
     Returns
     -------
-    stim.Circuit
+    ``stim.Circuit``
         Synthesized Clifford circuit on ``qubits``.
 
     Raises
@@ -803,11 +805,11 @@ def _matched_flow_output_pairs(
     qubits: Sequence[int],
     segment_index: int,
 ) -> list[tuple[stim.PauliString, stim.PauliString]]:
-    """Match channel-flow outputs by their input Pauli and measurement parity.
+    r"""Match channel-flow outputs by their input Pauli and measurement parity.
 
     Returns
     -------
-    list[tuple[stim.PauliString, stim.PauliString]]
+    `list`\[`tuple`\[``stim.PauliString``, ``stim.PauliString``\]\]
         Converted/original output-Pauli pairs restricted to ``qubits``.
 
     Raises
@@ -834,11 +836,11 @@ def _local_axis_maps(
     num_qubits: int,
     segment_index: int,
 ) -> list[dict[int, int]]:
-    """Infer unsigned one-qubit Pauli-axis maps from matched flow outputs.
+    r"""Infer unsigned one-qubit Pauli-axis maps from matched flow outputs.
 
     Returns
     -------
-    list[dict[int, int]]
+    `list`\[`dict`\[`int`, `int`\]\]
         Source-to-target Pauli-axis maps for each dense qubit.
 
     Raises
@@ -867,11 +869,11 @@ def _local_sign_equations(
     tableaus: Sequence[stim.Tableau],
     segment_index: int,
 ) -> list[tuple[int, int]]:
-    """Build Pauli-correction equations for local residual Clifford signs.
+    r"""Build Pauli-correction equations for local residual Clifford signs.
 
     Returns
     -------
-    list[tuple[int, int]]
+    `list`\[`tuple`\[`int`, `int`\]\]
         Bit-packed GF(2) equations.
 
     Raises
@@ -907,7 +909,7 @@ def _materialize_local_frame(
 
     Returns
     -------
-    stim.Circuit
+    ``stim.Circuit``
         Residual local Clifford circuit on the requested Stim qubits.
     """
     frame = stim.Circuit()
@@ -924,11 +926,11 @@ def _materialize_local_frame(
 
 
 def _flow_key(flow: stim.Flow) -> tuple[str, tuple[int, ...]]:
-    """Return the flow fields unchanged by an output Clifford frame.
+    r"""Return the flow fields unchanged by an output Clifford frame.
 
     Returns
     -------
-    tuple[str, tuple[int, ...]]
+    `tuple`\[`str`, `tuple`\[`int`, ...\]\]
         Input-Pauli spelling and measurement-record parity.
     """
     return str(flow.input_copy()), tuple(flow.measurements_copy())
@@ -939,7 +941,7 @@ def _restrict_pauli(pauli: stim.PauliString, qubits: Sequence[int]) -> stim.Paul
 
     Returns
     -------
-    stim.PauliString
+    ``stim.PauliString``
         Pauli string on dense indices corresponding to ``qubits``.
     """
     result = stim.PauliString(len(qubits))
@@ -954,7 +956,7 @@ def _unsigned_local_tableau(axis_map: dict[int, int], segment_index: int) -> sti
 
     Returns
     -------
-    stim.Tableau
+    ``stim.Tableau``
         A matching one-qubit Clifford tableau.
 
     Raises
@@ -981,7 +983,7 @@ def _apply_local_tableaus(pauli: stim.PauliString, tableaus: Sequence[stim.Table
 
     Returns
     -------
-    stim.PauliString
+    ``stim.PauliString``
         Conjugated Pauli string.
     """
     result = stim.PauliString(len(pauli))
@@ -1000,7 +1002,7 @@ def _solve_binary_equations(equations: Sequence[tuple[int, int]]) -> int:
 
     Returns
     -------
-    int
+    `int`
         Bit-packed solution.
 
     Raises

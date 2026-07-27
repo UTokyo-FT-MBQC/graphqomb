@@ -11,7 +11,7 @@ The rewriter recognizes the standard syndrome-extraction shape — reset
 ancillas, apply Clifford unitaries, measure ancillas — and replaces each
 gate-level extraction block with ``MPP`` instructions measuring the inferred
 data Pauli products. The inference conjugates each measurement Pauli backwards
-through the block's Clifford body (:meth:`stim.PauliString.before`) and
+through the block's Clifford body (``stim.PauliString.before``) and
 substitutes ``+1`` for stabilizers of freshly initialized, measured-out
 ancillas.
 
