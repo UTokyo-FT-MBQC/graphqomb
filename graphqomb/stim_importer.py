@@ -14,10 +14,14 @@ from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.gates import CZ, J
 from graphqomb.graphstate import GraphState, compose, odd_neighbors
 from graphqomb.qec._stim import (
+    DIRECT_MEASUREMENT_AXES,
+    MEASURE_RESET_AXES,
+    PAIR_MEASUREMENT_AXES,
+    RESET_AXES,
     PauliSupport,
     StimMppExtraction,
     extract_qubit_coordinates,
-    mpp_targets_to_products,
+    mpp_targets_to_signed_products,
     observable_index,
     pauli_products_commute,
     plain_qubit_target,
@@ -35,15 +39,7 @@ if TYPE_CHECKING:
     from graphqomb.pattern import Pattern
 
 
-# Stim canonicalizes Z-axis aliases when parsing circuits: RZ becomes R,
-# MZ becomes M, and MRZ becomes MR before instructions reach the importer.
-_RESET_AXES = {"R": Axis.Z, "RX": Axis.X, "RY": Axis.Y}
-_SINGLE_PAULI_MEASUREMENT_AXES = {"M": Axis.Z, "MX": Axis.X, "MY": Axis.Y}
-# Measure-reset gates measure and re-prepare along the same axis.
-_MEASURE_RESET_AXES = {"MR": Axis.Z, "MRX": Axis.X, "MRY": Axis.Y}
-_DIRECT_MEASUREMENT_AXES = {**_SINGLE_PAULI_MEASUREMENT_AXES, **_MEASURE_RESET_AXES}
-_PAIR_PAULI_MEASUREMENT_AXES = {"MXX": "X", "MYY": "Y", "MZZ": "Z"}
-_PAULI_PRODUCT_MEASUREMENT_GATES = frozenset({"MPP", *_PAIR_PAULI_MEASUREMENT_AXES})
+_PAULI_PRODUCT_MEASUREMENT_GATES = frozenset({"MPP", *PAIR_MEASUREMENT_AXES})
 _FEEDBACK_AXES = {
     ("CX", 0): Axis.X,
     ("CY", 0): Axis.Y,
@@ -314,7 +310,7 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
             raise TypeError(msg)
 
         gate_data = stim.gate_data(instruction.name)
-        if instruction.name in _DIRECT_MEASUREMENT_AXES:
+        if instruction.name in DIRECT_MEASUREMENT_AXES:
             result.append(instruction.name, instruction.targets_copy())
         elif instruction.name in _PAULI_PRODUCT_MEASUREMENT_GATES:
             _append_ideal_pauli_measurements(result, instruction)
@@ -411,8 +407,8 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
         stim_ids.update(instruction_qubits)
         is_unitary = _is_unitary_instruction(instruction)
         is_feedback = _is_feedback_instruction(instruction)
-        is_single_measurement = instruction.name in _DIRECT_MEASUREMENT_AXES
-        if instruction.name in _RESET_AXES:
+        is_single_measurement = instruction.name in DIRECT_MEASUREMENT_AXES
+        if instruction.name in RESET_AXES:
             reset_after_use = used_qubits & instruction_qubits
             if reset_after_use:
                 msg = (
@@ -432,7 +428,7 @@ def _normalize_import_circuit(  # ruff:ignore[complex-structure, too-many-locals
             block_last_index = index
             block_has_unitary |= is_unitary
             block_has_single_measurement |= is_single_measurement
-            block_has_measure_reset |= instruction.name in _MEASURE_RESET_AXES
+            block_has_measure_reset |= instruction.name in MEASURE_RESET_AXES
             block_has_mpp |= instruction.name == "MPP"
             block_has_feedback |= is_feedback
             if is_single_measurement:
@@ -506,8 +502,8 @@ def _is_quantum_operation(instruction: stim.CircuitInstruction) -> bool:
     return (
         _is_unitary_instruction(instruction)
         or _is_feedback_instruction(instruction)
-        or instruction.name in _RESET_AXES
-        or instruction.name in _DIRECT_MEASUREMENT_AXES
+        or instruction.name in RESET_AXES
+        or instruction.name in DIRECT_MEASUREMENT_AXES
         or instruction.name == "MPP"
     )
 
@@ -540,7 +536,7 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
 
     for instruction in _atomized_block_instructions(block):
         name = instruction.name
-        is_measurement = name == "MPP" or name in _DIRECT_MEASUREMENT_AXES
+        is_measurement = name == "MPP" or name in DIRECT_MEASUREMENT_AXES
         is_feedback = _is_feedback_instruction(instruction)
         is_quantum = _is_quantum_operation(instruction)
         if is_measurement:
@@ -581,7 +577,7 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
         if is_quantum:
             for qubit in _tracked_qubits(instruction):
                 last_part_of_qubit[qubit] = part_index
-                last_touch_is_single_measurement[qubit] = name in _DIRECT_MEASUREMENT_AXES
+                last_touch_is_single_measurement[qubit] = name in DIRECT_MEASUREMENT_AXES
         if is_record_ordered:
             record_floor = part_index
 
@@ -644,7 +640,7 @@ def _atomized_block_instructions(block: stim.Circuit) -> Iterator[stim.CircuitIn
         if not isinstance(instruction, stim.CircuitInstruction):
             msg = "Flattened Stim circuit unexpectedly contains a repeat block."
             raise TypeError(msg)
-        if instruction.name in _DIRECT_MEASUREMENT_AXES and instruction.num_measurements > 1:
+        if instruction.name in DIRECT_MEASUREMENT_AXES and instruction.num_measurements > 1:
             gate_args = instruction.gate_args_copy()
             for target in instruction.targets_copy():
                 yield stim.CircuitInstruction(instruction.name, [target], gate_args, tag=instruction.tag)
@@ -728,16 +724,16 @@ class _CircuitAnalyzer:
         self.current_block.append(analyzed)
 
         is_unitary = _is_unitary_instruction(instruction)
-        is_pauli_measurement = instruction.name == "MPP" or instruction.name in _DIRECT_MEASUREMENT_AXES
+        is_pauli_measurement = instruction.name == "MPP" or instruction.name in DIRECT_MEASUREMENT_AXES
         self._validate_block_separation(
             is_unitary=is_unitary,
             is_pauli_measurement=is_pauli_measurement,
         )
-        reset_axis = _RESET_AXES.get(instruction.name)
+        reset_axis = RESET_AXES.get(instruction.name)
         if reset_axis is not None:
             self.input_initialization_axes.update(dict.fromkeys(instruction_qubits, reset_axis))
 
-        if instruction.name in _DIRECT_MEASUREMENT_AXES:
+        if instruction.name in DIRECT_MEASUREMENT_AXES:
             self.direct_measurements.extend(_direct_measurements_from_instruction(analyzed))
 
     def _validate_block_separation(self, *, is_unitary: bool, is_pauli_measurement: bool) -> None:
@@ -764,8 +760,8 @@ def _validate_supported_instruction(instruction: stim.CircuitInstruction) -> Non
     if (
         _is_unitary_instruction(instruction)
         or _is_feedback_instruction(instruction)
-        or instruction.name in _RESET_AXES
-        or instruction.name in _DIRECT_MEASUREMENT_AXES
+        or instruction.name in RESET_AXES
+        or instruction.name in DIRECT_MEASUREMENT_AXES
         or instruction.name == "MPP"
     ):
         return
@@ -829,8 +825,8 @@ def _direct_measurements_from_instruction(
 
     measurements: list[_DirectMeasurement] = []
     seen_qubits: set[int] = set()
-    axis = _DIRECT_MEASUREMENT_AXES[instruction.name]
-    resets = instruction.name in _MEASURE_RESET_AXES
+    axis = DIRECT_MEASUREMENT_AXES[instruction.name]
+    resets = instruction.name in MEASURE_RESET_AXES
     for target, record_index in zip(targets, analyzed.record_indices, strict=True):
         stim_id = plain_qubit_target(target, instruction.name)
         if stim_id in seen_qubits:
@@ -855,10 +851,10 @@ def _append_ideal_pauli_measurements(
         msg = f"Signed {instruction.name} products are not supported; inverted targets cannot be imported."
         raise ValueError(msg)
 
-    axis = _PAIR_PAULI_MEASUREMENT_AXES[instruction.name]
+    axis = PAIR_MEASUREMENT_AXES[instruction.name]
     expected_group_size = 2
 
-    target_factory = {"X": stim.target_x, "Y": stim.target_y, "Z": stim.target_z}[axis]
+    target_factory = {Axis.X: stim.target_x, Axis.Y: stim.target_y, Axis.Z: stim.target_z}[axis]
     for group in instruction.target_groups():
         if len(group) != expected_group_size:
             msg = f"{instruction.name} target group must contain {expected_group_size} qubit(s)."
@@ -888,7 +884,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
     future_use = _stim_ids_used_after_block(blocks)
 
     for block_index, block in enumerate(blocks):
-        direct_items = tuple(analyzed for analyzed in block if analyzed.instruction.name in _DIRECT_MEASUREMENT_AXES)
+        direct_items = tuple(analyzed for analyzed in block if analyzed.instruction.name in DIRECT_MEASUREMENT_AXES)
         directly_measured_stim_ids = {stim_id for analyzed in direct_items for stim_id in analyzed.qubit_ids}
         reused_measurements = tuple(
             measurement
@@ -1241,9 +1237,13 @@ def _mpp_fragment(
     stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> _Fragment:
-    supports = tuple(
-        support for analyzed in block for support in mpp_targets_to_products(analyzed.instruction.targets_copy())
+    signed_products = tuple(
+        product for analyzed in block for product in mpp_targets_to_signed_products(analyzed.instruction.targets_copy())
     )
+    supports = tuple(support for support, _sign in signed_products)
+    # `stim_mpp_extraction_from_records` keeps the product order, so product i
+    # becomes stabilizer row i and therefore ancilla node `ancilla_nodes[i]`.
+    negative_rows = frozenset(row for row, (_support, sign) in enumerate(signed_products) if sign is Sign.MINUS)
     _validate_commuting_mpp_supports(supports)
     record_indices = tuple(record_index for analyzed in block for record_index in analyzed.record_indices)
     extraction = stim_mpp_extraction_from_records(
@@ -1256,6 +1256,7 @@ def _mpp_fragment(
     fragment = _mpp_graph_fragment(
         extraction,
         record_indices=record_indices,
+        negative_rows=negative_rows,
         z_base=z_base,
         io_stim_ids=io_stim_ids,
         stim_to_qubit=stim_to_qubit,
@@ -1282,6 +1283,7 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     extraction: StimMppExtraction,
     *,
     record_indices: Sequence[int],
+    negative_rows: AbstractSet[int],
     z_base: int,
     io_stim_ids: set[int],
     stim_to_qubit: Mapping[int, int],
@@ -1295,6 +1297,8 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
         data_as_io=True,
         qubit_indices=qubit_indices,
     )
+    for row in sorted(negative_rows):
+        result.graph.assign_meas_basis(result.ancilla_nodes[row], AxisMeasBasis(Axis.X, Sign.MINUS))
     active_stim_ids = set(extraction.stim_to_column)
     _add_relocated_io_nodes(
         result.graph,

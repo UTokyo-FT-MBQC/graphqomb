@@ -444,6 +444,22 @@ def test_stim_text_to_pattern_rejects_anticommuting_mpp_in_one_tick_block() -> N
         stim_text_to_pattern("MPP X0\nMPP Z0")
 
 
+def test_stim_text_to_pattern_preserves_signed_mpp_measurement_result() -> None:
+    result = stim_text_to_pattern("MPP !X0*Z1")
+    extraction = result.mpp_extractions[0]
+    graphstate = result.pattern.pauli_frame.graphstate
+    negative_x_measurements = [
+        node
+        for node, meas_basis in graphstate.meas_bases.items()
+        if isinstance(meas_basis, AxisMeasBasis) and meas_basis.axis is Axis.X and meas_basis.sign is Sign.MINUS
+    ]
+    compiled = stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
+
+    assert extraction.supports == (((0, "X"), (1, "Z")),)
+    assert len(negative_x_measurements) == 1
+    assert sum(line.startswith("MX !") for line in compiled) == 1
+
+
 @pytest.mark.parametrize(
     ("y_foliation", "expected_node_count"),
     [(YFoliation.TYPE_I, 27), (YFoliation.TYPE_II, 28)],

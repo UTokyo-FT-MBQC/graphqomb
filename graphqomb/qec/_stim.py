@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from scipy.sparse import csr_array, lil_array
 
+from graphqomb.common import Axis, Sign
 from graphqomb.qec.qeccode import Coordinate, StabilizerCode
 
 if TYPE_CHECKING:
@@ -17,6 +18,16 @@ if TYPE_CHECKING:
 
 
 PauliSupport = tuple[tuple[int, str], ...]
+
+# Stim canonicalizes Z-axis aliases when parsing circuits: RZ becomes R,
+# MZ becomes M, and MRZ becomes MR before instructions reach these tables.
+RESET_AXES: dict[str, Axis] = {"R": Axis.Z, "RX": Axis.X, "RY": Axis.Y}
+SINGLE_MEASUREMENT_AXES: dict[str, Axis] = {"M": Axis.Z, "MX": Axis.X, "MY": Axis.Y}
+# Measure-reset gates measure and re-prepare along the same axis.
+MEASURE_RESET_AXES: dict[str, Axis] = {"MR": Axis.Z, "MRX": Axis.X, "MRY": Axis.Y}
+DIRECT_MEASUREMENT_AXES: dict[str, Axis] = {**SINGLE_MEASUREMENT_AXES, **MEASURE_RESET_AXES}
+PAIR_MEASUREMENT_AXES: dict[str, Axis] = {"MXX": Axis.X, "MYY": Axis.Y, "MZZ": Axis.Z}
+RESET_GATES: dict[Axis, str] = {axis: name for name, axis in RESET_AXES.items()}
 
 
 @dataclass(frozen=True)
@@ -240,10 +251,33 @@ def mpp_targets_to_products(targets: Sequence[stim.GateTarget]) -> list[PauliSup
     ValueError
         If the target sequence is signed or malformed.
     """
-    products: list[PauliSupport] = []
+    signed_products = mpp_targets_to_signed_products(targets)
+    if any(sign is Sign.MINUS for _support, sign in signed_products):
+        msg = "Signed MPP products are not supported; inverted Pauli targets cannot be imported."
+        raise ValueError(msg)
+    return [support for support, _sign in signed_products]
+
+
+def mpp_targets_to_signed_products(
+    targets: Sequence[stim.GateTarget],
+) -> list[tuple[PauliSupport, Sign]]:
+    """Parse Stim MPP targets into Pauli supports and measurement signs.
+
+    Returns
+    -------
+    list[tuple[PauliSupport, Sign]]
+        Parsed products and their result signs in target order.
+
+    Raises
+    ------
+    ValueError
+        If the target sequence is malformed.
+    """
+    products: list[tuple[PauliSupport, Sign]] = []
     current: list[tuple[int, str]] = []
     seen_in_current: set[int] = set()
     expect_pauli = True
+    negative = False
 
     for target in targets:
         if target.is_combiner:
@@ -253,14 +287,12 @@ def mpp_targets_to_products(targets: Sequence[stim.GateTarget]) -> list[PauliSup
             expect_pauli = True
             continue
 
-        if target.is_inverted_result_target:
-            msg = "Signed MPP products are not supported; inverted Pauli targets cannot be imported."
-            raise ValueError(msg)
         pauli = _target_pauli(target)
         if current and not expect_pauli:
-            products.append(tuple(current))
+            products.append((tuple(current), Sign.MINUS if negative else Sign.PLUS))
             current = []
             seen_in_current = set()
+            negative = False
 
         qid = int(target.value)
         if qid in seen_in_current:
@@ -268,12 +300,13 @@ def mpp_targets_to_products(targets: Sequence[stim.GateTarget]) -> list[PauliSup
             raise ValueError(msg)
         current.append((qid, pauli))
         seen_in_current.add(qid)
+        negative ^= target.is_inverted_result_target
         expect_pauli = False
 
     if expect_pauli:
         msg = "Invalid MPP target list: trailing combiner or empty product."
         raise ValueError(msg)
-    products.append(tuple(current))
+    products.append((tuple(current), Sign.MINUS if negative else Sign.PLUS))
     return products
 
 
@@ -292,6 +325,10 @@ def pauli_products_commute(left: PauliSupport, right: PauliSupport) -> bool:
 
 def plain_qubit_target(target: stim.GateTarget, instruction_name: str) -> int:
     """Return a plain Stim qubit target.
+
+    Rejects Pauli-typed and inverted-result targets, which the importer cannot
+    represent. ``stim_mpp_rewriter._plain_qubit`` deliberately accepts those
+    because it only needs the qubit id an instruction acts on.
 
     Returns
     -------
