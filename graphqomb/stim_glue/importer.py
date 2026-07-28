@@ -55,20 +55,47 @@ _CONTROLLED_PAULI_GATES = frozenset(name for name, _position in _FEEDBACK_AXES)
 
 @dataclass(frozen=True)
 class StimImportResult:
-    """Result of importing a supported Stim circuit.
+    r"""Result of importing a supported Stim circuit.
 
     ``stim_to_qubit`` maps each Stim qubit id to the qubit index of its
     initial (input-side) wire. When a Stim qubit is used again after a direct
     single-qubit measurement or re-initialized by a mid-circuit reset, the
     importer issues a fresh internal qubit index for the new wire;
     ``qubit_to_stim`` maps every internal qubit index, including those
-    continuation indices, back to its Stim qubit id.
+    continuation indices, back to its Stim qubit id. That mapping is
+    many-to-one, so ``stim_to_final_qubit`` names the index of the last
+    lifetime of each Stim qubit; the earlier indices of a reset qubit are its
+    discarded history, whose wires may remain pattern outputs.
+
+    A mid-circuit reset also issues a fresh *Stim* qubit id for the reset
+    lifetime, and that id is what ``mpp_extractions`` reports in ``supports``,
+    ``stim_to_column``, and ``column_to_stim``. ``wire_to_stim`` maps every
+    such id back to the original circuit's Stim qubit id; it is the identity
+    on qubits that are never reset mid-circuit.
+
+    Attributes
+    ----------
+    pattern : Pattern
+        Imported measurement pattern.
+    stim_to_qubit : `dict`\[`int`, `int`\]
+        Original Stim qubit id to the internal qubit index of its initial wire.
+    qubit_to_stim : `dict`\[`int`, `int`\]
+        Every internal qubit index to its original Stim qubit id.
+    mpp_extractions : `tuple`\[`StimMppExtraction`, ...\]
+        Stabilizer data of each imported MPP block, keyed by wire id.
+    wire_to_stim : `dict`\[`int`, `int`\]
+        Wire (post-split Stim) id to original Stim qubit id.
+    stim_to_final_qubit : `dict`\[`int`, `int`\]
+        Original Stim qubit id to the internal qubit index of its last
+        lifetime.
     """
 
     pattern: Pattern
     stim_to_qubit: dict[int, int]
     qubit_to_stim: dict[int, int]
     mpp_extractions: tuple[StimMppExtraction, ...]
+    wire_to_stim: dict[int, int]
+    stim_to_final_qubit: dict[int, int]
 
 
 @dataclass(frozen=True)
@@ -251,8 +278,16 @@ def stim_circuit_to_pattern(
     state. A wire that was not consumed by a direct measurement before the
     reset remains a pattern output; leaving it coherent and untouched is
     channel-equivalent to Stim's trace-out reset on every recorded
-    measurement. ``qubit_to_stim`` maps the fresh indices back to the original
-    Stim qubit id.
+    measurement, provided that discarded output is traced out rather than read.
+    ``qubit_to_stim`` maps the fresh indices back to the original Stim qubit
+    id, and ``stim_to_final_qubit`` selects the live one among them.
+
+    Each reset lifetime also gets its own Stim qubit id internally, and the
+    ``mpp_extractions`` metadata (``supports``, ``stim_to_column``, and
+    ``column_to_stim``) reports the lifetime that an ``MPP`` product actually
+    measured, so a qubit measured before and after a reset occupies a distinct
+    column in each block. ``wire_to_stim`` maps those ids back to the original
+    circuit ids.
 
     Returns
     -------
@@ -320,7 +355,27 @@ def stim_circuit_to_pattern(
             qubit: reset_split.split_to_original.get(stim_id, stim_id) for qubit, stim_id in build.qubit_to_stim.items()
         },
         mpp_extractions=fragment.mpp_extractions,
+        wire_to_stim={wire_id: reset_split.split_to_original.get(wire_id, wire_id) for wire_id in sorted(stim_ids)},
+        stim_to_final_qubit=_final_qubit_by_stim_id(build.stim_to_qubit, reset_split.split_to_original),
     )
+
+
+def _final_qubit_by_stim_id(
+    final_stim_to_qubit: Mapping[int, int],
+    split_to_original: Mapping[int, int],
+) -> dict[int, int]:
+    r"""Return the internal qubit index of each Stim qubit's last lifetime.
+
+    Returns
+    -------
+    `dict`\[`int`, `int`\]
+        Original Stim qubit id to internal qubit index.
+    """
+    # `_split_reused_reset_wires` issues wire ids above every original id and
+    # in circuit order, so the largest wire id of a Stim qubit is its last
+    # reset lifetime; `final_stim_to_qubit` already resolves the
+    # measurement-reuse continuations within one wire.
+    return {split_to_original.get(wire_id, wire_id): qubit for wire_id, qubit in sorted(final_stim_to_qubit.items())}
 
 
 def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:

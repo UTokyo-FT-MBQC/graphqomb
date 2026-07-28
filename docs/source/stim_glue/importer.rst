@@ -51,17 +51,36 @@ remains a pattern output, which is channel-equivalent to the trace-out reset
 on every recorded measurement. Combined measurement-reset instructions
 (``MR``/``MRZ``, ``MRX``, and ``MRY``) are imported as a direct measurement
 whose continuation re-prepares the measured axis eigenstate unconditionally.
+
 ``StimImportResult.qubit_to_stim`` maps every fresh index back to the original
-Stim qubit id.
+Stim qubit id. Because that mapping is many-to-one for a reset qubit,
+``stim_to_final_qubit`` gives the index of its last lifetime; the earlier
+indices are discarded history. Equivalence to the source circuit is equivalence
+of the recorded measurements, not of the pattern's output channel: a replaced
+live wire is a purification of Stim's trace-out reset, so a caller that reads
+every pattern output must trace out the outputs that are not named by
+``stim_to_final_qubit``.
+
+Internally each reset lifetime also receives its own Stim qubit id, and the
+``StimMppExtraction`` metadata of an MPP block (``supports``,
+``stim_to_column``, and ``column_to_stim``) reports the lifetime that each
+product measured. A qubit measured before and after a reset therefore occupies
+a different column in each block, and the same physical qubit may carry
+different ids across blocks. ``StimImportResult.wire_to_stim`` maps every such
+id back to the original circuit id; it is the identity for qubits that are
+never reset mid-circuit.
 
 Single-qubit measurements assign an ``AxisMeasBasis`` directly to the measured
 data-lane endpoint without replacing that node or its coordinate. They do not
 create an ``MPP`` extraction or an ancillary parity measurement node. Inverted
 single-qubit measurement targets select the minus sign of that node's basis. A
-direct single-qubit measurement terminates that qubit's lifetime: a later
-quantum operation on the same qubit is rejected, while operations on other
-qubits may continue. A measured qubit cannot begin a new lifetime later in the
-circuit.
+direct single-qubit measurement ends that wire: a later quantum operation on
+the same qubit continues on a fresh internal qubit index initialized in the
+positive eigenstate of the measurement axis and conditioned on the outcome
+through the correction flows. Reuse after an inverted plain target (``M !q``)
+is rejected because negative-eigenstate initialization cannot be represented,
+while an inverted measure-reset target may be reused because the reset
+discards the outcome.
 
 The first two components of ``QUBIT_COORDS`` are used as the fixed spatial
 ``(x, y)`` position of each data lane. The importer supplies the temporal ``z``

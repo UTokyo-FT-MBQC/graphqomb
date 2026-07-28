@@ -38,11 +38,15 @@ class StimMppExtraction:
     code : StabilizerCode
         Dense-column stabilizer code using the ``[Hx | Hz]`` convention.
     stim_to_column : `dict`\[`int`, `int`\]
-        Mapping from original Stim qubit ids to dense matrix columns.
+        Mapping from the Stim qubit ids of the analyzed circuit to dense matrix
+        columns. When the circuit importer splits a mid-circuit reset onto a
+        fresh wire, the id is that of the measured reset lifetime rather than
+        the original circuit id; ``StimImportResult.wire_to_stim`` maps it back.
     column_to_stim : `dict`\[`int`, `int`\]
         Inverse dense-column mapping.
     supports : `tuple`\[``PauliSupport``, ...\]
-        Original Stim Pauli supports, one support per stabilizer row.
+        Stim Pauli supports, one support per stabilizer row, over the same ids
+        as ``stim_to_column``.
     detector_rows : `tuple`\[`frozenset`\[`int`\], ...\]
         Detector groups as selected-MPP stabilizer row indices.
     logical_observable_rows : `dict`\[`int`, `frozenset`\[`int`\]\]
