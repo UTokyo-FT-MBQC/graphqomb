@@ -19,6 +19,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+import typing_extensions
+
 from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.common import (
     Axis,
@@ -534,59 +536,73 @@ class _LoadedGraphState(BaseGraphState):
             self._neighbors.setdefault(node2, set()).add(node1)
 
     @property
+    @typing_extensions.override
     def input_node_indices(self) -> dict[int, int]:
         return self._input_node_indices.copy()
 
     @property
+    @typing_extensions.override
     def input_initialization_axes(self) -> dict[int, Axis]:
         return self._input_initialization_axes.copy()
 
     @property
+    @typing_extensions.override
     def output_node_indices(self) -> dict[int, int]:
         return self._output_node_indices.copy()
 
     @property
+    @typing_extensions.override
     def nodes(self) -> set[int]:
         return set(self._nodes)
 
     @property
+    @typing_extensions.override
     def edges(self) -> set[tuple[int, int]]:
         return set(self._edges)
 
     @property
+    @typing_extensions.override
     def meas_bases(self) -> MappingProxyType[int, MeasBasis]:
         return MappingProxyType(self._meas_bases)
 
     @property
+    @typing_extensions.override
     def coordinates(self) -> dict[int, tuple[float, ...]]:
         return self._coordinates.copy()
 
+    @typing_extensions.override
     def add_node(self, node: int | None = None, *, coordinate: tuple[float, ...] | None = None) -> int:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
+    @typing_extensions.override
     def add_edge(self, node1: int, node2: int) -> None:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
+    @typing_extensions.override
     def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X) -> None:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
+    @typing_extensions.override
     def register_output(self, node: int, q_index: int) -> None:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
+    @typing_extensions.override
     def assign_meas_basis(self, node: int, meas_basis: MeasBasis) -> None:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
+    @typing_extensions.override
     def neighbors(self, node: int) -> set[int]:
         if node not in self._nodes:
             msg = f"Node does not exist node={node}"
             raise ValueError(msg)
         return self._neighbors.get(node, set()).copy()
 
+    @typing_extensions.override
     def check_canonical_form(self) -> None:
         for node in self._nodes - self._output_node_indices.keys():
             if node not in self._meas_bases:

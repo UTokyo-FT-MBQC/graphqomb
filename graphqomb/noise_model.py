@@ -87,6 +87,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
+import typing_extensions
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -993,6 +995,7 @@ class DepolarizingNoiseModel(NoiseModel):
         self._p1 = _validate_probability("DepolarizingNoiseModel.p1", p1)
         self._p2 = self._p1 if p2 is None else _validate_probability("DepolarizingNoiseModel.p2", p2)
 
+    @typing_extensions.override
     def on_prepare(self, event: PrepareEvent) -> Sequence[NoiseOp]:
         r"""Add single-qubit depolarizing noise after preparation.
 
@@ -1005,6 +1008,7 @@ class DepolarizingNoiseModel(NoiseModel):
             return ()
         return (RawStimOp(f"DEPOLARIZE1({self._p1}) {event.node.id}"),)
 
+    @typing_extensions.override
     def on_entangle(self, event: EntangleEvent) -> Sequence[NoiseOp]:
         r"""Add two-qubit depolarizing noise after entanglement.
 
@@ -1040,6 +1044,7 @@ class MeasurementFlipNoiseModel(NoiseModel):
     def __init__(self, p: float) -> None:
         self._p = _validate_probability("MeasurementFlipNoiseModel.p", p)
 
+    @typing_extensions.override
     def on_measure(self, event: MeasureEvent) -> Sequence[NoiseOp]:
         r"""Add measurement flip error.
 

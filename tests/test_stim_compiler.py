@@ -6,6 +6,7 @@ import math
 from typing import TYPE_CHECKING
 
 import pytest
+import typing_extensions
 
 from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign
@@ -281,7 +282,7 @@ def test_stim_compile_removed_legacy_noise_parameters() -> None:
     pattern, _, _ = create_simple_pattern_x_measurement()
 
     with pytest.raises(TypeError, match="unexpected keyword argument 'p_before_meas_flip'"):
-        stim_compile(pattern, p_before_meas_flip=0.01)  # type: ignore[call-arg]
+        stim_compile(pattern, p_before_meas_flip=0.01)  # type: ignore[call-arg]  # ty: ignore[unknown-argument]
 
 
 def test_stim_compile_with_detectors() -> None:
@@ -318,6 +319,7 @@ def test_stim_compile_with_detectors() -> None:
 class _HeraldedNoise(NoiseModel):
     """Test noise model that adds heralded Pauli channel on measurements."""
 
+    @typing_extensions.override
     def on_measure(self, event: MeasureEvent) -> list[HeraldedPauliChannel1]:
         return [HeraldedPauliChannel1(0.0, 0.0, 0.0, 0.1, targets=[event.node.id])]
 
@@ -325,6 +327,7 @@ class _HeraldedNoise(NoiseModel):
 class _MismatchedMeasurementFlipNoise(NoiseModel):
     """Test noise model with intentionally mismatched MeasurementFlip target."""
 
+    @typing_extensions.override
     def on_measure(self, event: MeasureEvent) -> list[MeasurementFlip]:
         return [MeasurementFlip(p=0.1, target=event.node.id + 999)]
 
@@ -332,6 +335,7 @@ class _MismatchedMeasurementFlipNoise(NoiseModel):
 class _PrepareMeasurementFlipNoise(NoiseModel):
     """Test noise model with invalid MeasurementFlip on prepare."""
 
+    @typing_extensions.override
     def on_prepare(self, event: PrepareEvent) -> list[MeasurementFlip]:
         return [MeasurementFlip(p=0.1, target=event.node.id)]
 
@@ -339,6 +343,7 @@ class _PrepareMeasurementFlipNoise(NoiseModel):
 class _EntangleMeasurementFlipNoise(NoiseModel):
     """Test noise model with invalid MeasurementFlip on entangle."""
 
+    @typing_extensions.override
     def on_entangle(self, event: EntangleEvent) -> list[MeasurementFlip]:
         return [MeasurementFlip(p=0.1, target=event.node0.id)]
 
@@ -346,6 +351,7 @@ class _EntangleMeasurementFlipNoise(NoiseModel):
 class _IdleMeasurementFlipNoise(NoiseModel):
     """Test noise model with invalid MeasurementFlip on idle."""
 
+    @typing_extensions.override
     def on_idle(self, event: IdleEvent) -> list[MeasurementFlip]:
         return [MeasurementFlip(p=0.1, target=event.nodes[0].id)]
 

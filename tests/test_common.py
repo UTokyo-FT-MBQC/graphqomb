@@ -9,11 +9,11 @@ from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign,
 
 def test_inverse_order_plane() -> None:
     with pytest.raises(AttributeError):
-        _ = PlannerMeasBasis(Plane.YX, 0)  # type: ignore[attr-defined]
+        _ = PlannerMeasBasis(Plane.YX, 0)  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
     with pytest.raises(AttributeError):
-        _ = PlannerMeasBasis(Plane.ZX, 0)  # type: ignore[attr-defined]
+        _ = PlannerMeasBasis(Plane.ZX, 0)  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
     with pytest.raises(AttributeError):
-        _ = PlannerMeasBasis(Plane.ZY, 0)  # type: ignore[attr-defined]
+        _ = PlannerMeasBasis(Plane.ZY, 0)  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
 
 def test_is_clifford_angle() -> None:

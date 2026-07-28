@@ -15,6 +15,8 @@ import typing
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+import typing_extensions
+
 from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.common import Axis
 
@@ -51,9 +53,11 @@ class Pattern(Sequence[Command]):
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initialization_axes: dict[int, Axis] = dataclasses.field(default_factory=dict[int, Axis])
 
+    @typing_extensions.override
     def __len__(self) -> int:
         return len(self.commands)
 
+    @typing_extensions.override
     def __iter__(self) -> Iterator[Command]:
         return iter(self.commands)
 
@@ -61,6 +65,7 @@ class Pattern(Sequence[Command]):
     def __getitem__(self, index: int) -> Command: ...
     @typing.overload
     def __getitem__(self, index: slice) -> tuple[Command, ...]: ...
+    @typing_extensions.override
     def __getitem__(self, index: int | slice) -> Command | tuple[Command, ...]:
         return self.commands[index]
 

@@ -315,7 +315,8 @@ def observable_index(instruction: stim.CircuitInstruction) -> int:
         If the annotation does not have one integer argument.
     """
     args = instruction.gate_args_copy()
-    if len(args) != 1 or not args[0].is_integer():
+    # `int.is_integer` only exists from Python 3.12, so coerce to `float` first.
+    if len(args) != 1 or not float(args[0]).is_integer():
         msg = "OBSERVABLE_INCLUDE must have one integer observable index."
         raise ValueError(msg)
     return int(args[0])
