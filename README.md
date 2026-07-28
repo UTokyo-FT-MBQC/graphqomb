@@ -113,10 +113,12 @@ If you already have a graph-state design and explicit feedforward maps, you can 
 - **Architecture overview**: https://graphqomb.readthedocs.io/en/latest/architecture.html
 - **Example gallery**: https://graphqomb.readthedocs.io/en/latest/gallery/index.html
 - **API reference**: https://graphqomb.readthedocs.io/en/latest/references.html
-- **QEC graph-state builder reference**: https://graphqomb.readthedocs.io/en/latest/qec.html
-- **Stim MPP import reference**: https://graphqomb.readthedocs.io/en/latest/stim_mpp.html
-- **Stim circuit import reference**: https://graphqomb.readthedocs.io/en/latest/stim_importer.html
-- **Stim compiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_compiler.html
+- **QEC graph-state builder reference**: https://graphqomb.readthedocs.io/en/latest/qeccode.html
+- **Stim MPP import reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/mpp.html
+- **Stim MPP rewriter reference (experimental)**: https://graphqomb.readthedocs.io/en/latest/stim_glue/mpp_rewriter.html
+- **Stim Clifford transpiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/transpiler.html
+- **Stim circuit import reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/importer.html
+- **Stim compiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/compiler.html
 
 ## Current Scope
 
