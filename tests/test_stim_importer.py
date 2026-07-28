@@ -37,6 +37,8 @@ def test_stim_text_to_pattern_imports_unitary_clifford_block() -> None:
 
     assert result.stim_to_qubit == {10: 0, 12: 1}
     assert result.qubit_to_stim == {0: 10, 1: 12}
+    assert result.wire_to_stim == {10: 10, 12: 12}
+    assert result.stim_to_final_qubit == {10: 0, 12: 1}
     assert result.mpp_extractions == ()
     assert set(result.pattern.input_node_indices.values()) == {0, 1}
     assert set(result.pattern.output_node_indices.values()) == {0, 1}
@@ -1097,6 +1099,74 @@ def test_stim_text_to_pattern_reset_on_live_wire_keeps_old_wire_as_output() -> N
 
     assert result.qubit_to_stim == {0: 0, 1: 0}
     assert set(result.pattern.output_node_indices.values()) == {0, 1}
+    compiled = stim.Circuit(stim_compile(result.pattern))
+    assert not compiled.compile_detector_sampler().sample(shots=32).any()
+
+
+def test_stim_text_to_pattern_mpp_after_reset_reports_the_measured_lifetime() -> None:
+    result = stim_text_to_pattern("H 0\nTICK\nR 0\nTICK\nMPP Z0")
+
+    extraction = result.mpp_extractions[0]
+    (support,) = extraction.supports
+    ((measured_wire, pauli),) = support
+    # The MPP measured the reset lifetime, not the wire that `H 0` acted on.
+    assert pauli == "Z"
+    assert measured_wire != 0
+    assert extraction.stim_to_column == {measured_wire: 0}
+    assert extraction.column_to_stim == {0: measured_wire}
+    assert result.wire_to_stim[measured_wire] == 0
+    assert result.stim_to_qubit == {0: 0}
+    assert result.stim_to_final_qubit == {0: 1}
+
+
+def test_stim_text_to_pattern_mpp_rounds_across_a_reset_use_separate_columns() -> None:
+    result = stim_text_to_pattern(
+        """
+        QUBIT_COORDS(3, 4) 0
+        QUBIT_COORDS(5, 6) 1
+        MPP Z0*Z1
+        TICK
+        R 0
+        TICK
+        MPP Z0*Z1
+        """
+    )
+
+    first, second = result.mpp_extractions
+    # Each round measures the lifetime that existed then, so the wire ids of
+    # qubit 0 differ; `wire_to_stim` recovers the original circuit ids.
+    assert [[result.wire_to_stim[wire] for wire, _pauli in support] for support in first.supports] == [[0, 1]]
+    assert [[result.wire_to_stim[wire] for wire, _pauli in support] for support in second.supports] == [[0, 1]]
+    first_lifetime = next(wire for wire in first.stim_to_column if result.wire_to_stim[wire] == 0)
+    second_lifetime = next(wire for wire in second.stim_to_column if result.wire_to_stim[wire] == 0)
+    assert first_lifetime == 0
+    assert second_lifetime != first_lifetime
+    # Columns keep the physical position of the qubit they came from.
+    coordinates = second.code.qubit_coord
+    assert coordinates is not None
+    assert {coordinates[column] for column in second.column_to_stim} == {(3.0, 4.0), (5.0, 6.0)}
+
+
+def test_stim_text_to_pattern_reset_on_entangled_wire_keeps_detectors_deterministic() -> None:
+    """A live reset of an entangled qubit reproduces Stim's recorded measurements."""
+    result = stim_text_to_pattern(
+        """
+        R 0 1
+        TICK
+        H 0
+        TICK
+        CX 0 1
+        TICK
+        R 0
+        TICK
+        M 0
+        DETECTOR rec[-1]
+        TICK
+        M 1
+        """
+    )
+
+    assert result.stim_to_final_qubit == {0: 2, 1: 1}
     compiled = stim.Circuit(stim_compile(result.pattern))
     assert not compiled.compile_detector_sampler().sample(shots=32).any()
 
