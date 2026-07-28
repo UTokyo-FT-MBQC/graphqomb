@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-27
+
 ### Changed (Breaking)
 
 - **Stim modules consolidated under `graphqomb.stim_glue`**: All Stim interoperability now lives in one subpackage, and the `graphqomb.qec` package is dissolved. `graphqomb.stim_compiler` moved to `graphqomb.stim_glue.compiler`, `graphqomb.stim_importer` to `graphqomb.stim_glue.importer`, `graphqomb.stim_parser` to `graphqomb.stim_glue.transpiler`, `graphqomb.stim_mpp_rewriter` to `graphqomb.stim_glue.mpp_rewriter`, and `graphqomb.qec.stim_mpp` to `graphqomb.stim_glue.mpp`; the shared parsing helpers formerly in `graphqomb.qec._stim` are now `graphqomb.stim_glue._parse`. The Stim-independent stabilizer-code builder `graphqomb.qec.qeccode` moved to the top-level `graphqomb.qeccode` module. `graphqomb.stim_glue` re-exports the public API (`stim_compile`, `stim_circuit_to_pattern`, `transpile`, `rewrite_to_mpp`, `stabilizer_code_from_stim_text`, and friends), so `from graphqomb.stim_glue import stim_compile` is the recommended import; importing `graphqomb.stim_glue` requires the optional `stim` dependency.
