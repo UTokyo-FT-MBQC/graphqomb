@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import pytest
+import typing_extensions
 
 from graphqomb.common import Axis
 from graphqomb.noise_model import (
@@ -540,15 +541,19 @@ class _CustomNoiseModel(NoiseModel):
     def __init__(self, p: float) -> None:
         self.p = p
 
+    @typing_extensions.override
     def on_prepare(self, event: PrepareEvent) -> list[PauliChannel1]:
         return [PauliChannel1(px=self.p, py=0.0, pz=0.0, targets=[event.node.id])]
 
+    @typing_extensions.override
     def on_entangle(self, event: EntangleEvent) -> list[PauliChannel2]:
         return [PauliChannel2.from_mapping(probabilities={"ZZ": self.p}, targets=[(event.node0.id, event.node1.id)])]
 
+    @typing_extensions.override
     def on_measure(self, event: MeasureEvent) -> list[HeraldedPauliChannel1]:
         return [HeraldedPauliChannel1(pi=0.0, px=self.p, py=0.0, pz=0.0, targets=[event.node.id])]
 
+    @typing_extensions.override
     def on_idle(self, event: IdleEvent) -> list[PauliChannel1]:
         p = self.p * event.duration
         targets = [n.id for n in event.nodes]

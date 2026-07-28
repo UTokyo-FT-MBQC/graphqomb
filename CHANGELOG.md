@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ty Type Checking**: Added [ty](https://docs.astral.sh/ty/) as a third type checker alongside mypy and pyright, configured under `[tool.ty]` with every disabled-by-default rule promoted to `error`, and wired into the `Type Checking` workflow.
+- **Explicit Override Markers**: Every method overriding a base-class method now carries `@typing_extensions.override`.
+
+### Fixed
+
+- **Observable Index Parsing on Python 3.10 and 3.11**: `observable_index` used `int.is_integer()`, which requires Python 3.12, so an integer `OBSERVABLE_INCLUDE` argument raised `AttributeError`.
+
 ## [0.5.0] - 2026-07-27
 
 ### Changed (Breaking)

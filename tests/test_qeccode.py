@@ -460,4 +460,4 @@ def test_build_graph_state_rejects_non_integer_z_base() -> None:
     code = StabilizerCode(_matrix([[1, 0]]))
 
     with pytest.raises(TypeError, match="z_base must be an integer"):
-        build_graph_state(code, z_base=0.5)  # type: ignore[arg-type]
+        build_graph_state(code, z_base=0.5)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]

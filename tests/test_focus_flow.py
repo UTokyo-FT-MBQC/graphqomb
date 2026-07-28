@@ -48,4 +48,4 @@ def test_is_focused_false_for_unfocused_flow(graphstate: GraphState) -> None:
 def test_focus_gflow_raises_typeerror(graphstate: GraphState) -> None:
     """If neither Flow nor GFlow, focus_gflow must raise TypeError."""
     with pytest.raises(TypeError):
-        focus_gflow({"bad": object()}, graphstate)  # type: ignore[arg-type]
+        focus_gflow({"bad": object()}, graphstate)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]

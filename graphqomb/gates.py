@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
 import numpy as np
+import typing_extensions
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -109,6 +110,7 @@ class J(SingleGate):
     qubit: int
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the unit gates that make up the gate.
 
@@ -119,6 +121,7 @@ class J(SingleGate):
         """
         return [self]
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the matrix representation of the gate.
 
@@ -156,6 +159,7 @@ class CZ(TwoQubitGate):
 
     qubits: tuple[int, int]
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -166,7 +170,8 @@ class CZ(TwoQubitGate):
         """
         return [self]
 
-    def matrix(  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(
         self,
     ) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
@@ -202,6 +207,7 @@ class PhaseGadget(MultiGate):
     qubits: list[int]
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -212,6 +218,7 @@ class PhaseGadget(MultiGate):
         """
         return [self]
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -257,6 +264,7 @@ class Identity(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -267,7 +275,8 @@ class Identity(SingleGate):
         """
         return [J(self.qubit, 0), J(self.qubit, 0)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -298,6 +307,7 @@ class X(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -308,7 +318,8 @@ class X(SingleGate):
         """
         return [J(self.qubit, 0), J(self.qubit, math.pi)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -339,6 +350,7 @@ class Y(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -354,7 +366,8 @@ class Y(SingleGate):
             J(self.qubit, 0),
         ]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -385,6 +398,7 @@ class Z(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -395,7 +409,8 @@ class Z(SingleGate):
         """
         return [J(self.qubit, math.pi), J(self.qubit, 0)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -426,6 +441,7 @@ class H(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -436,7 +452,8 @@ class H(SingleGate):
         """
         return [J(self.qubit, 0)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -468,6 +485,7 @@ class S(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -478,7 +496,8 @@ class S(SingleGate):
         """
         return [J(self.qubit, math.pi / 2), J(self.qubit, 0)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -509,6 +528,7 @@ class T(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -519,7 +539,8 @@ class T(SingleGate):
         """
         return [J(self.qubit, math.pi / 4), J(self.qubit, 0)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -550,6 +571,7 @@ class Tdg(SingleGate):
 
     qubit: int
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -560,7 +582,8 @@ class Tdg(SingleGate):
         """
         return [J(self.qubit, -math.pi / 4), J(self.qubit, 0)]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -594,6 +617,7 @@ class Rx(SingleGate):
     qubit: int
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -607,6 +631,7 @@ class Rx(SingleGate):
             J(self.qubit, self.angle),
         ]
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -647,6 +672,7 @@ class Ry(SingleGate):
     qubit: int
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -662,6 +688,7 @@ class Ry(SingleGate):
             J(self.qubit, 0),
         ]
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -702,6 +729,7 @@ class Rz(SingleGate):
     qubit: int
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -712,6 +740,7 @@ class Rz(SingleGate):
         """
         return [J(self.qubit, self.angle), J(self.qubit, 0)]
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -755,6 +784,7 @@ class U3(SingleGate):
     angle2: float
     angle3: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -770,6 +800,7 @@ class U3(SingleGate):
             J(self.qubit, 0),
         ]
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -815,6 +846,7 @@ class CNOT(TwoQubitGate):
 
     qubits: tuple[int, int]
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -830,7 +862,8 @@ class CNOT(TwoQubitGate):
             J(target, 0),
         ]
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -866,6 +899,7 @@ class SWAP(TwoQubitGate):
 
     qubits: tuple[int, int]
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -885,7 +919,8 @@ class SWAP(TwoQubitGate):
             unit_gates.extend(macro_gate.unit_gates())
         return unit_gates
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -929,6 +964,7 @@ class CRz(TwoQubitGate):
     qubits: tuple[int, int]
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -949,6 +985,7 @@ class CRz(TwoQubitGate):
             unit_gates.extend(macro_gate.unit_gates())
         return unit_gates
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -993,6 +1030,7 @@ class CRx(TwoQubitGate):
     qubits: tuple[int, int]
     angle: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -1012,6 +1050,7 @@ class CRx(TwoQubitGate):
             unit_gates.extend(macro_gate.unit_gates())
         return unit_gates
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -1062,6 +1101,7 @@ class CU3(TwoQubitGate):
     angle2: float
     angle3: float
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -1084,6 +1124,7 @@ class CU3(TwoQubitGate):
             unit_gates.extend(macro_gate.unit_gates())
         return unit_gates
 
+    @typing_extensions.override
     def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
@@ -1139,6 +1180,7 @@ class Toffoli(MultiGate):
 
     qubits: list[int]
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -1170,7 +1212,8 @@ class Toffoli(MultiGate):
             unit_gates.extend(macro_gate.unit_gates())
         return unit_gates
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns
@@ -1219,6 +1262,7 @@ class CCZ(MultiGate):
 
     qubits: list[int]
 
+    @typing_extensions.override
     def unit_gates(self) -> list[UnitGate]:
         r"""Get the `unit_gates` that make up the gate.
 
@@ -1238,7 +1282,8 @@ class CCZ(MultiGate):
             unit_gates.extend(macro_gate.unit_gates())
         return unit_gates
 
-    def matrix(self) -> NDArray[np.complex128]:  # ruff:ignore[no-self-use]
+    @typing_extensions.override
+    def matrix(self) -> NDArray[np.complex128]:
         r"""Get the `matrix` representation of the gate.
 
         Returns

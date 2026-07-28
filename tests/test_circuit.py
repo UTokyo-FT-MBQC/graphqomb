@@ -7,6 +7,7 @@ import math
 
 import numpy as np
 import pytest
+import typing_extensions
 
 from graphqomb.circuit import BaseCircuit, Circuit, CircuitScheduleStrategy, MBQCCircuit, circuit2graph
 from graphqomb.common import Plane, PlannerMeasBasis
@@ -345,15 +346,18 @@ def test_circuit2graph_invalid_instruction() -> None:
     # Create a mock invalid circuit
     class MockCircuit(BaseCircuit):
         @property
+        @typing_extensions.override
         def num_qubits(self) -> int:
             return 1
 
+        @typing_extensions.override
         def instructions(self) -> list[Gate]:
             return [X(qubit=0)]
 
+        @typing_extensions.override
         def unit_instructions(self) -> list[UnitGate]:
             # Return a non-UnitGate object to trigger error
-            return [X(qubit=0)]  # type: ignore[list-item]
+            return [X(qubit=0)]  # type: ignore[list-item]  # ty: ignore[invalid-return-type]
 
     circuit = MockCircuit()
     with pytest.raises(TypeError, match="Invalid instruction"):

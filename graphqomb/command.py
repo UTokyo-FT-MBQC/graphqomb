@@ -14,6 +14,8 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING
 
+import typing_extensions
+
 if TYPE_CHECKING:
     from graphqomb.common import MeasBasis
 
@@ -33,6 +35,7 @@ class N:
     node: int
     coordinate: tuple[float, ...] | None = None
 
+    @typing_extensions.override
     def __str__(self) -> str:
         if self.coordinate is not None:
             return f"N: node={self.node}, coord={self.coordinate}"
@@ -51,6 +54,7 @@ class E:
 
     nodes: tuple[int, int]
 
+    @typing_extensions.override
     def __str__(self) -> str:
         return f"E: nodes={self.nodes}"
 
@@ -70,6 +74,7 @@ class M:
     node: int
     meas_basis: MeasBasis
 
+    @typing_extensions.override
     def __str__(self) -> str:
         return f"M: node={self.node}, plane={self.meas_basis.plane}, angle={self.meas_basis.angle}"
 
@@ -82,6 +87,7 @@ class TICK:
     TICK commands can be executed in parallel within the same time slice.
     """
 
+    @typing_extensions.override
     def __str__(self) -> str:
         return "TICK"
 

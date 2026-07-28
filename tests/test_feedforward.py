@@ -83,7 +83,7 @@ def test_dag_from_flow_invalid_type_raises() -> None:
     graphstate, node1, node2 = two_node_graph()
     invalid: dict[int, int | set[int]] = {node1: node2, node2: {node2}}  # mixed types
     with pytest.raises(TypeError):
-        dag_from_flow(graphstate, invalid)  # type: ignore[arg-type]
+        dag_from_flow(graphstate, invalid)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def test_dag_from_flow_cycle_detection() -> None:

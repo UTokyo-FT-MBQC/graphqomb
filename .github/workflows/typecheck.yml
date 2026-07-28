@@ -11,8 +11,17 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        tool: [mypy, pyright]
+        include:
+          - tool: mypy
+            command: mypy
+          - tool: pyright
+            command: pyright
+          - tool: ty
+            command: ty check --output-format github
+
+    name: typecheck (${{ matrix.tool }})
 
     steps:
       - uses: actions/checkout@v7
@@ -28,4 +37,4 @@ jobs:
 
       - run: uv sync --locked --python 3.10 --extra dev --extra stim
 
-      - run: uv run --no-sync ${{ matrix.tool }}
+      - run: uv run --no-sync ${{ matrix.command }}
