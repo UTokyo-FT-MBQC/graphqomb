@@ -27,6 +27,9 @@ MEASURE_RESET_AXES: dict[str, Axis] = {"MR": Axis.Z, "MRX": Axis.X, "MRY": Axis.
 DIRECT_MEASUREMENT_AXES: dict[str, Axis] = {**SINGLE_MEASUREMENT_AXES, **MEASURE_RESET_AXES}
 PAIR_MEASUREMENT_AXES: dict[str, Axis] = {"MXX": Axis.X, "MYY": Axis.Y, "MZZ": Axis.Z}
 RESET_GATES: dict[Axis, str] = {axis: name for name, axis in RESET_AXES.items()}
+# Annotation instructions that perform no quantum operation. QUBIT_COORDS and
+# DETECTOR spell qubit- or record-valued targets, but never touch a state.
+ANNOTATION_GATES: frozenset[str] = frozenset({"DETECTOR", "OBSERVABLE_INCLUDE", "QUBIT_COORDS", "SHIFT_COORDS", "TICK"})
 
 
 @dataclass(frozen=True)

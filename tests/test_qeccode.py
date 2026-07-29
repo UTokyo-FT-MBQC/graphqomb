@@ -142,6 +142,47 @@ def test_build_graph_state_omits_ancilla_edge_without_odd_twisted_order_pairs(
     assert not result.graph.has_edge(result.ancilla_nodes[0], result.ancilla_nodes[1])
 
 
+_YY_ODD = [
+    [1, 1, 0, 1, 1, 0],  # Y0 Y1.
+    [0, 1, 1, 0, 1, 1],  # Y1 Y2: one equal-Y overlap.
+]
+_YY_ODD_WITH_MIXED_PAIR = [
+    [1, 0, 1, 1, 1, 0],  # Y0 Z1 X2.
+    [1, 1, 0, 1, 0, 1],  # Y0 X1 Z2: equal-Y overlap plus one twist in each direction.
+]
+_YY_ODD_WITH_FORWARD_PAIRS = [
+    [1, 0, 0, 1, 1, 1],  # Y0 Z1 Z2.
+    [1, 1, 1, 1, 0, 0],  # Y0 X1 X2: equal-Y overlap plus two twists in one direction.
+]
+_YY_EVEN = [
+    [1, 1, 1, 1, 1, 1, 1, 1],  # Y0 Y1 Y2 Y3.
+    [0, 0, 1, 1, 0, 0, 1, 1],  # Y2 Y3: two equal-Y overlaps.
+]
+
+
+@pytest.mark.parametrize(
+    ("stabilizer_matrix", "y_foliation", "expected_edge"),
+    [
+        pytest.param(_YY_ODD, YFoliation.TYPE_I, True, id="yy-odd-type-i"),
+        pytest.param(_YY_ODD, YFoliation.TYPE_II, False, id="yy-odd-type-ii"),
+        pytest.param(_YY_ODD_WITH_MIXED_PAIR, YFoliation.TYPE_I, False, id="yy-odd-mixed-pair-type-i"),
+        pytest.param(_YY_ODD_WITH_MIXED_PAIR, YFoliation.TYPE_II, True, id="yy-odd-mixed-pair-type-ii"),
+        pytest.param(_YY_ODD_WITH_FORWARD_PAIRS, YFoliation.TYPE_I, True, id="yy-odd-forward-pairs-type-i"),
+        pytest.param(_YY_ODD_WITH_FORWARD_PAIRS, YFoliation.TYPE_II, False, id="yy-odd-forward-pairs-type-ii"),
+        pytest.param(_YY_EVEN, YFoliation.TYPE_I, False, id="yy-even-type-i"),
+        pytest.param(_YY_EVEN, YFoliation.TYPE_II, False, id="yy-even-type-ii"),
+    ],
+)
+def test_build_graph_state_counts_equal_y_overlaps_in_twist_parity_for_type_i(
+    stabilizer_matrix: list[list[int]],
+    y_foliation: YFoliation,
+    expected_edge: bool,
+) -> None:
+    result = build_graph_state(StabilizerCode(_matrix(stabilizer_matrix)), y_foliation=y_foliation)
+
+    assert result.graph.has_edge(result.ancilla_nodes[0], result.ancilla_nodes[1]) == expected_edge
+
+
 def test_build_graph_state_returns_index_to_node_maps() -> None:
     code = StabilizerCode(_matrix([[1, 0, 0, 1]]))
 

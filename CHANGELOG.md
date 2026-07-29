@@ -11,9 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **ty Type Checking**: Added [ty](https://docs.astral.sh/ty/) as a third type checker alongside mypy and pyright, configured under `[tool.ty]` with every disabled-by-default rule promoted to `error`, and wired into the `Type Checking` workflow.
 - **Explicit Override Markers**: Every method overriding a base-class method now carries `@typing_extensions.override`.
+- **Partial Coordinate Coverage Warning**: `stim_circuit_to_pattern()` emits a `UserWarning` when only some imported wires carry `QUBIT_COORDS`, since a mixture usually means coordinate metadata was lost upstream.
+
+### Changed
+
+- **MPP Rewriter Fallback Returns the Source Unsplit**: The gate-level fallback of `rewrite_to_mpp` returns the flattened source circuit unchanged instead of pre-splitting reset lifetimes onto fresh qubit ids, which dropped their `QUBIT_COORDS`; the importer handles reset reuse natively and inherits coordinates. `CheckMapping` now always reports original-circuit qubit ids.
 
 ### Fixed
 
+- **Signed MPP Rows Keep Their Measurement Axis**: A negative `MPP` product sign now flips the sign of the ancilla's assigned measurement basis instead of forcing a negative X measurement, which clobbered the Y basis of Type I odd-Y-support rows and made detectors non-deterministic (for example `MPP !Y0`).
+- **Type I Twist Edges for Shared Y-Y Support**: Equal-Y overlaps between stabilizers now count toward both twist direction parities, fixing missing or spurious ancilla CZ edges that compiled to non-deterministic detectors (for example two rounds of `MPP Y0*Y1 Y1*Y2`). Type II foliation is unaffected.
 - **Observable Index Parsing on Python 3.10 and 3.11**: `observable_index` used `int.is_integer()`, which requires Python 3.12, so an integer `OBSERVABLE_INCLUDE` argument raised `AttributeError`.
 
 ## [0.5.0] - 2026-07-27

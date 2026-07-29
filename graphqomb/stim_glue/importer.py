@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from itertools import combinations, pairwise
 from pathlib import Path
@@ -316,6 +317,7 @@ def stim_circuit_to_pattern(
         reset_split.split_to_original,
         coord_dims=coord_dims,
     )
+    _warn_on_partial_coordinate_coverage(stim_ids, coordinate_by_stim_id)
     stim_to_qubit = {stim_id: qubit for qubit, stim_id in enumerate(sorted(stim_ids))}
     context = _ImportContext(
         stim_to_qubit=stim_to_qubit,
@@ -370,11 +372,19 @@ def _final_qubit_by_stim_id(
     -------
     `dict`\[`int`, `int`\]
         Original Stim qubit id to internal qubit index.
+
+    Raises
+    ------
+    RuntimeError
+        If a split wire id is not above its original Stim qubit id.
     """
     # `_split_reused_reset_wires` issues wire ids above every original id and
     # in circuit order, so the largest wire id of a Stim qubit is its last
     # reset lifetime; `final_stim_to_qubit` already resolves the
     # measurement-reuse continuations within one wire.
+    if any(wire_id <= original_id for wire_id, original_id in split_to_original.items()):
+        msg = "Split wire ids must be issued above their original Stim qubit ids; this is a bug."
+        raise RuntimeError(msg)
     return {split_to_original.get(wire_id, wire_id): qubit for wire_id, qubit in sorted(final_stim_to_qubit.items())}
 
 
@@ -409,6 +419,9 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
 
 
 def _tracked_qubits(instruction: stim.CircuitInstruction) -> set[int]:
+    # Narrower than _parse.ANNOTATION_GATES on purpose: QUBIT_COORDS targets
+    # must stay tracked so coordinate-only qubits become wires, while MPAD pad
+    # bits are spelled like qubit targets but are not qubits.
     if instruction.name in {"TICK", "DETECTOR", "OBSERVABLE_INCLUDE", "MPAD"}:
         return set()
     return {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
@@ -486,6 +499,29 @@ def _coordinates_with_split_wires(
         if coord is not None:
             coordinates[split_id] = coord
     return coordinates
+
+
+def _warn_on_partial_coordinate_coverage(
+    stim_ids: frozenset[int],
+    coordinate_by_stim_id: Mapping[int, tuple[float, ...]],
+) -> None:
+    """Warn when only some imported wires carry ``QUBIT_COORDS``.
+
+    Fully coordinated and fully uncoordinated circuits are both intentional
+    inputs; a mixture usually means coordinate metadata was lost upstream, for
+    example on reset lifetimes that were split onto fresh qubit ids by another
+    tool, which the importer cannot map back to an original qubit.
+    """
+    uncoordinated = stim_ids - coordinate_by_stim_id.keys()
+    if uncoordinated and uncoordinated != stim_ids:
+        shown = sorted(uncoordinated)[:10]
+        listing = ", ".join(str(wire) for wire in shown) + (", ..." if len(uncoordinated) > len(shown) else "")
+        msg = (
+            f"{len(uncoordinated)} of {len(stim_ids)} imported wires have no QUBIT_COORDS (wire ids {listing}); "
+            "their pattern nodes get no coordinates. Reset lifetimes split onto fresh qubit ids outside the "
+            "importer cannot inherit the original qubit's coordinates."
+        )
+        warnings.warn(msg, stacklevel=3)
 
 
 def _remap_qubit_target(target: stim.GateTarget, wire_of: Mapping[int, int]) -> stim.GateTarget | int:
@@ -821,6 +857,9 @@ class _CircuitAnalyzer:
     def _process_instruction(self, instruction: stim.CircuitInstruction) -> None:
         if instruction.name == "TICK":
             self._finish_block()
+        # Not _parse.ANNOTATION_GATES: TICK is the block boundary handled
+        # above, and MPAD still advances measurement_count in analyze() even
+        # though it becomes no operation (idealization records its zero bits).
         elif instruction.name not in {"QUBIT_COORDS", "DETECTOR", "OBSERVABLE_INCLUDE", "MPAD"}:
             self._record_operation(instruction, _tracked_qubits(instruction))
 
@@ -1462,8 +1501,11 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
         data_as_io=True,
         qubit_indices=qubit_indices,
     )
+    # A negative product sign flips only the measurement sign; the axis must stay
+    # the one build_graph_state chose (Y for odd-Y-support rows under Type I).
     for row in sorted(negative_rows):
-        result.graph.assign_meas_basis(result.ancilla_nodes[row], AxisMeasBasis(Axis.X, Sign.MINUS))
+        ancilla_node = result.ancilla_nodes[row]
+        result.graph.assign_meas_basis(ancilla_node, result.graph.meas_bases[ancilla_node].flip())
     active_stim_ids = set(extraction.stim_to_column)
     _add_relocated_io_nodes(
         result.graph,

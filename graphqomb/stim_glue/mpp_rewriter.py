@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import stim
 
 from graphqomb.stim_glue._parse import (
+    ANNOTATION_GATES,
     MEASURE_RESET_AXES,
     PAIR_MEASUREMENT_AXES,
     RESET_AXES,
@@ -34,8 +35,6 @@ from graphqomb.stim_glue._parse import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-_ANNOTATION_GATES = frozenset({"DETECTOR", "OBSERVABLE_INCLUDE", "QUBIT_COORDS", "SHIFT_COORDS", "TICK"})
 # Pauli bases are spelled as Stim's "X"/"Y"/"Z" letters inside this module.
 _RESET_BASES = {name: axis.name for name, axis in RESET_AXES.items()}
 _SINGLE_MEASUREMENT_BASES = {name: axis.name for name, axis in SINGLE_MEASUREMENT_AXES.items()}
@@ -162,10 +161,11 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     Every rewritten segment is cross-checked against its source by stabilizer-
     flow generators, with measured-out ancilla post-states reset in both copies
     before comparison. If a segment cannot be represented by MPP measurements
-    plus a residual Clifford frame, or fails that check, the rewriter preserves
-    the gate-level circuit and replaces reset-based qubit reuse with fresh Stim
-    qubit ids. The check is not optional: it is what selects between the
-    optimized rewrite, the unsubstituted retry, and the gate-level fallback.
+    plus a residual Clifford frame, or fails that check, the rewriter returns
+    the flattened gate-level circuit unchanged; the Stim importer handles
+    reset-based qubit reuse natively. The check is not optional: it is what
+    selects between the optimized rewrite, the unsubstituted retry, and the
+    gate-level fallback.
 
     Parameters
     ----------
@@ -184,8 +184,7 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     try:
         return _rewrite_flattened_to_mpp(flattened)
     except (MppRewriteVerificationError, _ResidualFrameSynthesisError):
-        fallback = _split_reset_lifetimes(flattened)
-        return MppRewriteResult(circuit=fallback, checks=_check_mappings(fallback))
+        return MppRewriteResult(circuit=flattened, checks=_check_mappings(flattened))
 
 
 def _rewrite_flattened_to_mpp(flattened: stim.Circuit) -> MppRewriteResult:
@@ -214,83 +213,6 @@ def _rewrite_flattened_to_mpp(flattened: stim.Circuit) -> MppRewriteResult:
         msg = "MPP rewrite changed the measurement count; this is a bug."
         raise RuntimeError(msg)
     return result
-
-
-def _split_reset_lifetimes(circuit: stim.Circuit) -> stim.Circuit:
-    """Replace reset-based qubit reuse with fresh Stim qubit ids.
-
-    Returns
-    -------
-    ``stim.Circuit``
-        Equivalent circuit where every reset after prior quantum use starts a
-        fresh wire. Old post-measurement wires remain unused.
-    """
-    result = stim.Circuit()
-    next_qubit = circuit.num_qubits
-    current_qubit = {qubit: qubit for qubit in range(circuit.num_qubits)}
-    used_qubits: set[int] = set()
-
-    for instruction in iter_instructions(circuit):
-        if instruction.name == "QUBIT_COORDS":
-            coordinate_targets = [
-                mapped
-                for target in instruction.targets_copy()
-                if (mapped := current_qubit[_plain_qubit(target, instruction.name)]) < circuit.num_qubits
-            ]
-            if coordinate_targets:
-                result.append(instruction.name, coordinate_targets, instruction.gate_args_copy(), tag=instruction.tag)
-            continue
-
-        if instruction.name == "MPAD":
-            # MPAD pad bits are spelled like qubit targets, so they must never
-            # be routed through the lifetime map.
-            result.append(instruction)
-            continue
-
-        targets = instruction.targets_copy()
-        if instruction.name in _RESET_BASES:
-            reset_targets: list[int] = []
-            for target in targets:
-                source_qubit = _plain_qubit(target, instruction.name)
-                if source_qubit in used_qubits:
-                    current_qubit[source_qubit] = next_qubit
-                    next_qubit += 1
-                used_qubits.add(source_qubit)
-                reset_targets.append(current_qubit[source_qubit])
-            result.append(instruction.name, reset_targets, instruction.gate_args_copy(), tag=instruction.tag)
-            continue
-
-        result.append(
-            instruction.name,
-            [_remap_gate_target(target, current_qubit) for target in targets],
-            instruction.gate_args_copy(),
-            tag=instruction.tag,
-        )
-        used_qubits.update(int(target.qubit_value) for target in targets if target.qubit_value is not None)
-    return result
-
-
-def _remap_gate_target(target: stim.GateTarget, current_qubit: dict[int, int]) -> stim.GateTarget | int:
-    """Map one Stim gate target through the current qubit lifetime.
-
-    Returns
-    -------
-    ``stim.GateTarget`` | `int`
-        Remapped target, or the unchanged non-qubit target.
-    """
-    qubit_value = target.qubit_value
-    if qubit_value is None:
-        return target
-    qubit = current_qubit[int(qubit_value)]
-    if target.pauli_type == "X":
-        return stim.target_x(qubit, invert=target.is_inverted_result_target)
-    if target.pauli_type == "Y":
-        return stim.target_y(qubit, invert=target.is_inverted_result_target)
-    if target.pauli_type == "Z":
-        return stim.target_z(qubit, invert=target.is_inverted_result_target)
-    if target.is_inverted_result_target:
-        return stim.target_inv(qubit)
-    return qubit
 
 
 def _check_mappings(circuit: stim.Circuit) -> tuple[CheckMapping, ...]:
@@ -327,7 +249,7 @@ def _check_mappings(circuit: stim.Circuit) -> tuple[CheckMapping, ...]:
 
 def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
     name = instruction.name
-    if name in _ANNOTATION_GATES:
+    if name in ANNOTATION_GATES:
         return "annotation"
     if name == "MPAD":
         return "mpad"
