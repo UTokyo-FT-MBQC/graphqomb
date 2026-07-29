@@ -475,7 +475,7 @@ def test_residual_frame_is_preserved_across_segments() -> None:
     assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
 
 
-def test_unsupported_residual_channel_falls_back_to_fresh_reset_lifetimes() -> None:
+def test_unsupported_residual_channel_falls_back_to_gate_level_source() -> None:
     source = stim.Circuit(
         """
         R 1
@@ -490,20 +490,10 @@ def test_unsupported_residual_channel_falls_back_to_fresh_reset_lifetimes() -> N
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit(
-        """
-        R 1
-        H 1
-        CX 1 0
-        M 1
-        R 2
-        H 2
-        M 2
-        """
-    )
+    assert result.circuit == source.flattened()
     assert result.circuit.num_measurements == source.num_measurements
     assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
-    assert [check.source_qubit for check in result.checks] == [1, 2]
+    assert [check.source_qubit for check in result.checks] == [1, 1]
 
 
 def test_nonlocal_body_rewrites_via_channel_flows() -> None:
@@ -548,7 +538,7 @@ def test_fallback_numbers_segments_like_the_optimized_rewrite() -> None:
     # circuit takes the gate-level fallback while keeping the same boundary.
     fallback = rewrite_to_mpp("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 0\nM 0")
 
-    assert fallback.circuit == stim.Circuit("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 2\nM 2")
+    assert fallback.circuit == stim.Circuit("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 0\nM 0")
     assert [check.segment_index for check in optimized.checks] == [0, 1]
     assert [check.segment_index for check in fallback.checks] == [0, 1]
 
@@ -569,23 +559,12 @@ def test_fallback_preserves_mpad_bits_and_measurement_indices() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit(
-        """
-        R 1
-        H 1
-        CX 1 0
-        M 1
-        R 2
-        H 2
-        MPAD 0 1
-        M 2
-        """
-    )
+    assert result.circuit == source.flattened()
     assert [check.measurement_index for check in result.checks] == [0, 3]
-    assert [check.source_qubit for check in result.checks] == [1, 2]
+    assert [check.source_qubit for check in result.checks] == [1, 1]
 
 
-def test_fallback_remaps_signed_composite_measurements_to_fresh_lifetimes() -> None:
+def test_fallback_preserves_signed_composite_measurements() -> None:
     source = stim.Circuit(
         """
         QUBIT_COORDS(1, 2) 1
@@ -595,7 +574,6 @@ def test_fallback_remaps_signed_composite_measurements_to_fresh_lifetimes() -> N
         CX 1 0
         M 1
         R 1
-        QUBIT_COORDS(1, 2) 1
         H 1
         MPP !X1*Y2*Z0
         MXX !1 2
@@ -604,22 +582,29 @@ def test_fallback_remaps_signed_composite_measurements_to_fresh_lifetimes() -> N
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit(
-        """
-        QUBIT_COORDS(1, 2) 1
-        QUBIT_COORDS(3, 4) 2
-        R 1
-        H 1
-        CX 1 0
-        M 1
-        R 3
-        H 3
-        MPP !X3*Y2*Z0
-        MXX !3 2
-        """
-    )
+    assert result.circuit == source.flattened()
     assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
     assert [check.measurement_index for check in result.checks] == [0, 1, 2]
+
+
+def test_fallback_preserves_qubit_coordinates() -> None:
+    source = stim.Circuit(
+        """
+        QUBIT_COORDS(0, 0) 0
+        QUBIT_COORDS(1, 0) 1
+        R 0 1
+        H 0
+        SWAP 0 1
+        S 0
+        M 0
+        R 0
+        M 0
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit.get_final_qubit_coordinates() == source.get_final_qubit_coordinates()
 
 
 def test_basis_mismatched_residual_on_measured_ancilla_is_kept_in_the_product() -> None:

@@ -64,10 +64,10 @@ cross-checking stabilizer-flow generators (with resets appended to measured-out
 ancillas in both copies). If initialized-ancilla substitution cannot preserve
 the segment, the rewriter retries with the exact pulled-back products. If the
 result still cannot be represented and verified as ``MPP`` measurements plus a
-residual Clifford frame, it returns the original gate-level circuit with each
-reset lifetime assigned a fresh Stim qubit id. This fallback preserves gate
-order and measurement-record annotations while avoiding importer ambiguity
-from reusing the same Stim id after reset.
+residual Clifford frame, it returns the flattened source circuit unchanged, so
+gate order, ``QUBIT_COORDS``, and measurement-record annotations are all
+preserved. Reset-based qubit reuse in the fallback output is handled natively
+by the Stim importer, which starts a fresh wire per reset lifetime.
 
 The cross-check is not an optional assertion: it is the decision procedure that
 picks between the optimized rewrite, the unsubstituted retry, and the

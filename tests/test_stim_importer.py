@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import operator
+import re
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -322,6 +324,24 @@ def test_stim_text_to_pattern_preserves_sparse_qubit_coordinates() -> None:
     assert set(result.pattern.input_coordinates.values()) == {(1.0, 2.0, 1.0), (3.0, 4.0, 0.0)}
 
 
+def test_stim_text_to_pattern_warns_on_partial_qubit_coordinate_coverage() -> None:
+    with pytest.warns(UserWarning, match="1 of 2 imported wires have no QUBIT_COORDS"):
+        stim_text_to_pattern("QUBIT_COORDS(0, 0) 0\nR 0 1\nCZ 0 1")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("QUBIT_COORDS(0, 0) 0\nQUBIT_COORDS(1, 0) 1\nR 0 1\nCZ 0 1", id="full-coverage"),
+        pytest.param("R 0 1\nCZ 0 1", id="no-coverage"),
+    ],
+)
+def test_stim_text_to_pattern_stays_silent_on_uniform_coordinate_coverage(text: str) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        stim_text_to_pattern(text)
+
+
 def test_stim_text_to_pattern_aligns_parallel_gate_outputs_with_different_depths() -> None:
     result = stim_text_to_pattern(
         """
@@ -460,6 +480,67 @@ def test_stim_text_to_pattern_preserves_signed_mpp_measurement_result() -> None:
     assert extraction.supports == (((0, "X"), (1, "Z")),)
     assert len(negative_x_measurements) == 1
     assert sum(line.startswith("MX !") for line in compiled) == 1
+
+
+def test_stim_text_to_pattern_preserves_signed_mpp_y_measurement_axis() -> None:
+    result = stim_text_to_pattern("RY 0\nTICK\nMPP !Y0\nDETECTOR rec[-1]")
+    graphstate = result.pattern.pauli_frame.graphstate
+    negative_y_measurements = [
+        node
+        for node, meas_basis in graphstate.meas_bases.items()
+        if isinstance(meas_basis, AxisMeasBasis) and meas_basis.axis is Axis.Y and meas_basis.sign is Sign.MINUS
+    ]
+    compiled = stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
+
+    assert len(negative_y_measurements) == 1
+    assert sum(line.startswith("MY !") for line in compiled) == 1
+
+
+@pytest.mark.parametrize("y_foliation", [YFoliation.TYPE_I, YFoliation.TYPE_II])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "RX 0\nTICK\nMPP !X0\nDETECTOR rec[-1]",
+        "RY 0\nTICK\nMPP !Y0\nDETECTOR rec[-1]",
+        "R 0 1\nTICK\nMPP !Y0*X1\nTICK\nMPP !Y0*X1\nDETECTOR rec[-1] rec[-2]",
+    ],
+)
+def test_stim_text_to_pattern_signed_mpp_rows_stay_deterministic(text: str, y_foliation: YFoliation) -> None:
+    result = stim_text_to_pattern(text, y_foliation=y_foliation)
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    assert compiled.detector_error_model().num_errors == 0
+
+
+def _two_round_mpp_circuit(products: tuple[str, ...]) -> str:
+    """Measure the same MPP products twice and compare the rounds with detectors."""
+    qubits = sorted({int(match) for product in products for match in re.findall(r"[XYZ](\d+)", product)})
+    mpp = "MPP " + " ".join(products)
+    count = len(products)
+    detectors = "\n".join(f"DETECTOR rec[{-1 - offset}] rec[{-1 - offset - count}]" for offset in range(count))
+    return f"R {' '.join(str(qubit) for qubit in qubits)}\nTICK\n{mpp}\nTICK\n{mpp}\n{detectors}"
+
+
+@pytest.mark.parametrize("y_foliation", [YFoliation.TYPE_I, YFoliation.TYPE_II])
+@pytest.mark.parametrize(
+    "products",
+    [
+        pytest.param(("Y0*Y1", "Y1*Y2"), id="one-yy-overlap"),
+        pytest.param(("Y0*Z1*X2", "Y0*X1*Z2"), id="yy-overlap-with-mixed-pair"),
+        pytest.param(("Y0*Z1*Z2", "Y0*X1*X2"), id="yy-overlap-with-forward-pairs"),
+        pytest.param(("Z0*X1", "X0*Z1"), id="mixed-pairs-only"),
+        pytest.param(("Y0*Y1*Y2*Y3", "Y2*Y3"), id="two-yy-overlaps"),
+        pytest.param(("!Y0*Y1", "Y1*Y2"), id="signed-yy-overlap"),
+    ],
+)
+def test_stim_text_to_pattern_shared_y_support_mpp_rounds_stay_deterministic(
+    products: tuple[str, ...],
+    y_foliation: YFoliation,
+) -> None:
+    result = stim_text_to_pattern(_two_round_mpp_circuit(products), y_foliation=y_foliation)
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    assert compiled.detector_error_model().num_errors == 0
 
 
 @pytest.mark.parametrize(

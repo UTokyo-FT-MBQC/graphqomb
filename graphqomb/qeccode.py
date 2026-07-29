@@ -318,23 +318,49 @@ def _add_ancilla_nodes(
             if inferred_coord is not None:
                 graph.set_coordinate(ancilla_node, _avoid_occupied_coordinate(graph, inferred_coord))
 
-    for left_stabilizer, right_stabilizer in _twisted_stabilizer_pairs(supports):
+    twisted_pairs = _twisted_stabilizer_pairs(
+        supports,
+        count_equal_y=data_layer_plan.y_foliation is YFoliation.TYPE_I,
+    )
+    for left_stabilizer, right_stabilizer in twisted_pairs:
         graph.add_edge(ancilla_nodes[left_stabilizer], ancilla_nodes[right_stabilizer])
 
     return ancilla_nodes
 
 
-def _twisted_stabilizer_pairs(supports: Sequence[_StabilizerSupport]) -> list[tuple[int, int]]:
+# Index of the Y entry in the (Z, Y, X) local-interaction order used below.
+_Y_ORDER = 1
+
+
+def _twisted_stabilizer_pairs(
+    supports: Sequence[_StabilizerSupport],
+    *,
+    count_equal_y: bool,
+) -> list[tuple[int, int]]:
     """Return stabilizer pairs whose ancillas require a CZ edge.
 
     Local interactions on each shared data qubit are ordered Z, Y, then X.
     For a stabilizer pair, let ``forward`` and ``reverse`` be the numbers of
     shared qubits with the two possible strict orders. The number of twisted
     qubit pairs is ``forward * reverse``, so only the parity of each direction
-    is required. Equal-Pauli overlaps have no strict order and are ignored.
+    is required. Equal-X and equal-Z overlaps have no strict order and never
+    twist. An equal-Y overlap twists exactly when ``count_equal_y`` is set:
+    under Type I foliation a Y factor couples the ancilla to both nodes of the
+    data chain, so its Z-side and X-side components each cross the partner's
+    opposite component, contributing to both direction parities at once. Under
+    Type II foliation a Y factor couples to a single dedicated middle node and
+    contributes nothing.
 
     Candidate stabilizer pairs are generated from per-qubit incidence lists,
     avoiding a scan over all stabilizer pairs when supports are sparse.
+
+    Parameters
+    ----------
+    supports : `Sequence`[`_StabilizerSupport`]
+        Per-stabilizer X/Z support sets.
+    count_equal_y : `bool`
+        Whether equal-Y overlaps contribute to both direction parities
+        (`True` for Type I foliation, `False` for Type II).
 
     Returns
     -------
@@ -358,6 +384,10 @@ def _twisted_stabilizer_pairs(supports: Sequence[_StabilizerSupport]) -> list[tu
     for incidences in incidences_by_qubit.values():
         for (stabilizer_a, order_a), (stabilizer_b, order_b) in combinations(incidences, 2):
             if order_a == order_b:
+                if count_equal_y and order_a == _Y_ORDER:
+                    parity = parities[stabilizer_a, stabilizer_b]
+                    parity[0] ^= True
+                    parity[1] ^= True
                 continue
             direction = 0 if order_a < order_b else 1
             parities[stabilizer_a, stabilizer_b][direction] ^= True

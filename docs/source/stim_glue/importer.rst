@@ -84,7 +84,13 @@ discards the outcome.
 
 The first two components of ``QUBIT_COORDS`` are used as the fixed spatial
 ``(x, y)`` position of each data lane. The importer supplies the temporal ``z``
-component. Every unitary ``TICK`` block is transpiled before placement. Its
+component. Wires split from a mid-circuit reset inherit the original qubit's
+``(x, y)``. Fully coordinated and fully uncoordinated circuits both import
+silently; when only some wires carry ``QUBIT_COORDS`` the importer emits a
+`UserWarning`, because a mixture usually means coordinate metadata was lost
+upstream — for example reset lifetimes split onto fresh qubit ids by another
+tool, which cannot be mapped back to an original qubit. Every unitary ``TICK``
+block is transpiled before placement. Its
 input layer starts at the preceding block's output ``z``, and all of its output
 nodes share the maximum transpiled depth of the block. A shorter data-wire
 chain is spread across that same interval. A live qubit with no operation in
