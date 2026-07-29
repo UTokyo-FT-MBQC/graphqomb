@@ -11,16 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **ty Type Checking**: Added [ty](https://docs.astral.sh/ty/) as a third type checker alongside mypy and pyright, configured under `[tool.ty]` with every disabled-by-default rule promoted to `error`, and wired into the `Type Checking` workflow.
 - **Explicit Override Markers**: Every method overriding a base-class method now carries `@typing_extensions.override`.
-- **Partial Coordinate Coverage Warning**: `stim_circuit_to_pattern()` emits a `UserWarning` when only some imported wires carry `QUBIT_COORDS`. Fully coordinated and fully uncoordinated circuits import silently; a mixture usually means coordinate metadata was lost upstream, for example reset lifetimes split onto fresh qubit ids by another tool, which the importer cannot map back to an original qubit.
+- **Partial Coordinate Coverage Warning**: `stim_circuit_to_pattern()` emits a `UserWarning` when only some imported wires carry `QUBIT_COORDS`, since a mixture usually means coordinate metadata was lost upstream.
 
 ### Changed
 
-- **MPP Rewriter Fallback Returns the Source Unsplit**: When the optimized rewrite cannot be represented or verified, `rewrite_to_mpp` now returns the flattened source circuit unchanged instead of assigning a fresh Stim qubit id per reset lifetime. The old pre-splitting predated native mid-circuit-reset import and dropped `QUBIT_COORDS` for the fresh ids, so importing a fallback result lost the coordinates of roughly every post-reset lifetime (the nodes then piled up at the viewer default position). Reset-based qubit reuse in fallback output is handled by the importer's own lifetime splitting, which inherits each parent qubit's coordinates. `CheckMapping.product` and `CheckMapping.source_qubit` now always refer to original-circuit qubit ids on the fallback path, matching the optimized path.
+- **MPP Rewriter Fallback Returns the Source Unsplit**: The gate-level fallback of `rewrite_to_mpp` returns the flattened source circuit unchanged instead of pre-splitting reset lifetimes onto fresh qubit ids, which dropped their `QUBIT_COORDS`; the importer handles reset reuse natively and inherits coordinates. `CheckMapping` now always reports original-circuit qubit ids.
 
 ### Fixed
 
-- **Signed MPP Rows Keep Their Measurement Axis**: A negative `MPP` product sign is now imported by flipping the sign of the ancilla's already-assigned measurement basis. Previously the ancilla was forced to a negative X measurement, which clobbered the Y basis that Type I foliation assigns to odd-Y-support rows and made the compiled pattern's detectors non-deterministic (for example `MPP !Y0`).
-- **Type I Twist Edges for Shared Y-Y Support**: Under Type I foliation a Y factor couples the stabilizer ancilla to both nodes of the data chain, so an equal-Y overlap between two stabilizers contributes to both twist direction parities. `build_graph_state` now counts these overlaps when deciding ancilla-ancilla CZ edges; previously stabilizer pairs sharing an odd number of Y-Y qubits got a missing or spurious twist edge and compiled to non-deterministic detectors (for example two rounds of `MPP Y0*Y1 Y1*Y2`). Type II foliation is unaffected because its Y support couples to a single dedicated middle node.
+- **Signed MPP Rows Keep Their Measurement Axis**: A negative `MPP` product sign now flips the sign of the ancilla's assigned measurement basis instead of forcing a negative X measurement, which clobbered the Y basis of Type I odd-Y-support rows and made detectors non-deterministic (for example `MPP !Y0`).
+- **Type I Twist Edges for Shared Y-Y Support**: Equal-Y overlaps between stabilizers now count toward both twist direction parities, fixing missing or spurious ancilla CZ edges that compiled to non-deterministic detectors (for example two rounds of `MPP Y0*Y1 Y1*Y2`). Type II foliation is unaffected.
 - **Observable Index Parsing on Python 3.10 and 3.11**: `observable_index` used `int.is_integer()`, which requires Python 3.12, so an integer `OBSERVABLE_INCLUDE` argument raised `AttributeError`.
 
 ## [0.5.0] - 2026-07-27
