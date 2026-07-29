@@ -43,6 +43,13 @@ if TYPE_CHECKING:
 PTN_VERSION = 2
 SUPPORTED_PTN_VERSIONS = frozenset({1, PTN_VERSION})
 
+# A timeslice marker may skip ahead of the previous one, and every skipped slice becomes a TICK
+# command.  The index is attacker-controlled in an untrusted .ptn file, so the expansion is bounded
+# to keep memory use proportional to the input: a parse may materialize at most one TICK per input
+# line, plus a fixed slack that covers hand-written files that legitimately start at, or jump to, a
+# small non-zero timeslice.
+_IMPLICIT_TICK_SLACK = 4096
+
 # Angle formatting/parsing lookup tables
 _ANGLE_TO_STR: dict[float, str] = {
     0.0: "0",
@@ -724,6 +731,7 @@ class _Parser:
         self.result = _PatternData()
         self.current_timeslice = -1
         self.version: int | None = None
+        self.tick_budget = _IMPLICIT_TICK_SLACK
 
     def parse(self, s: str) -> Pattern:
         r"""Parse the input string and return Pattern.
@@ -743,7 +751,9 @@ class _Parser:
         ValueError
             If the format is invalid or unsupported version.
         """
-        for line_num, raw_line in enumerate(s.splitlines(), 1):
+        lines = s.splitlines()
+        self.tick_budget = _IMPLICIT_TICK_SLACK + len(lines)
+        for line_num, raw_line in enumerate(lines, 1):
             self._parse_line(line_num, raw_line)
 
         if self.version is None:
@@ -855,7 +865,8 @@ class _Parser:
         Raises
         ------
         ValueError
-            If the timeslice marker is malformed.
+            If the timeslice marker is malformed, or if it skips so far ahead that the implied
+            TICK commands would exceed the budget for this input.
         """
         slice_num = _parse_int(line[1:-1], "timeslice")
         if slice_num < 0:
@@ -865,6 +876,13 @@ class _Parser:
             msg = "Timeslices must be monotonically increasing"
             raise ValueError(msg)
         ticks_to_insert = slice_num if self.current_timeslice < 0 else slice_num - self.current_timeslice
+        if ticks_to_insert > self.tick_budget:
+            msg = (
+                f"Timeslice {slice_num} would insert {ticks_to_insert} TICK commands, exceeding the "
+                f"remaining budget of {self.tick_budget} for an input of this size"
+            )
+            raise ValueError(msg)
+        self.tick_budget -= ticks_to_insert
         self.result.commands.extend(TICK() for _ in range(ticks_to_insert))
         self.current_timeslice = slice_num
 
