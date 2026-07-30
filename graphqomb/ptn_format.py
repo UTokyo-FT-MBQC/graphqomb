@@ -41,8 +41,14 @@ from graphqomb.pauli_frame import PauliFrame
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-PTN_VERSION = 2
-SUPPORTED_PTN_VERSIONS = frozenset({1, PTN_VERSION})
+PTN_VERSION = 3
+SUPPORTED_PTN_VERSIONS = frozenset({1, 2, PTN_VERSION})
+# Version 3 added detector tags (".detector[tag] ..."). A file is written with
+# the smallest version whose grammar it uses, so external parsers that only
+# know version 2 keep reading tag-free files, and a tagged file announces
+# itself with a version those parsers reject up front.
+_DETECTOR_TAG_VERSION = 3
+_BASE_VERSION = 2
 
 # A timeslice marker may skip ahead of the previous one, and every skipped slice becomes a TICK
 # command.  The index is attacker-controlled in an untrusted .ptn file, so the expansion is bounded
@@ -177,12 +183,28 @@ def _parse_coord(parts: Sequence[str]) -> tuple[float, ...]:
 # ============================================================
 
 
+def _required_version(pattern: Pattern) -> int:
+    """Return the smallest .ptn version whose grammar the pattern needs.
+
+    Returns
+    -------
+    `int`
+        Minimum version required to parse the serialized pattern.
+    """
+    frame = pattern.pauli_frame
+    has_tagged_detector = any(
+        tag and group for group, tag in zip(frame.parity_check_group, frame.parity_check_tags, strict=True)
+    )
+    return _DETECTOR_TAG_VERSION if has_tagged_detector else _BASE_VERSION
+
+
 def _write_header(out: StringIO, pattern: Pattern) -> None:
     """Write header section to output."""
-    out.write(f"# GraphQOMB Pattern Format v{PTN_VERSION}\n")
+    version = _required_version(pattern)
+    out.write(f"# GraphQOMB Pattern Format v{version}\n")
     out.write("\n")
     out.write("#======== HEADER ========\n")
-    out.write(f".version {PTN_VERSION}\n")
+    out.write(f".version {version}\n")
 
     if pattern.input_node_indices:
         input_parts = [
@@ -306,6 +328,11 @@ def _write_classical_section(out: StringIO, pauli_frame: PauliFrame) -> None:
 
 def dumps(pattern: Pattern) -> str:
     """Serialize a pattern to a .ptn format string.
+
+    The header declares the smallest format version whose grammar the file
+    uses: version 3 when a parity check group carries a detector tag
+    (``.detector[tag] ...``), version 2 otherwise, so tag-free files stay
+    readable by version 2 parsers.
 
     Parameters
     ----------
@@ -788,8 +815,8 @@ class _Parser:
         if self.version == 1 and self.result.input_initialization_axes:
             msg = ".input_basis requires .ptn version 2 or later"
             raise ValueError(msg)
-        if self.version == 1 and any(self.result.parity_check_tags):
-            msg = ".detector tags require .ptn version 2 or later"
+        if self.version < _DETECTOR_TAG_VERSION and any(self.result.parity_check_tags):
+            msg = f".detector tags require .ptn version {_DETECTOR_TAG_VERSION} or later"
             raise ValueError(msg)
 
         return _build_pattern(self.result)

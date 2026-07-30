@@ -821,6 +821,27 @@ def test_dumps_writes_detector_tag() -> None:
     ptn_str = dumps(pattern)
 
     assert any(line.startswith(".detector[type=flag] ") for line in ptn_str.splitlines())
+    assert ".version 3" in ptn_str
+
+
+def test_dumps_keeps_version_2_without_detector_tags() -> None:
+    """Tag-free files keep the version 2 header for external version 2 parsers."""
+    pattern = create_measured_output_pattern_with_detector()
+    ptn_str = dumps(pattern)
+
+    assert ".version 2" in ptn_str
+    assert ".version 3" not in ptn_str
+
+
+def test_dumps_keeps_version_2_for_tag_on_empty_group() -> None:
+    """A tag on an empty (unwritten) group does not force the version 3 header."""
+    pattern = create_simple_pattern()
+    pattern.pauli_frame.parity_check_group.append(set())
+    pattern.pauli_frame.parity_check_tags.append("type=flag")
+
+    ptn_str = dumps(pattern)
+
+    assert ".version 2" in ptn_str
 
 
 @pytest.mark.parametrize("tag", ["type=flag", "a]b", "back\\slash", "sp ace#hash"])
@@ -834,7 +855,7 @@ def test_ptn_roundtrip_preserves_detector_tags(tag: str) -> None:
 
 def test_loads_detector_tag_parsing() -> None:
     ptn_str = """
-.version 2
+.version 3
 .input 0:0
 .output 1:0
 [0]
@@ -886,9 +907,10 @@ def test_loads_rejects_unknown_detector_like_directive() -> None:
         loads(ptn_str)
 
 
-def test_loads_rejects_detector_tag_in_legacy_version() -> None:
-    ptn_str = """
-.version 1
+@pytest.mark.parametrize("version", [1, 2])
+def test_loads_rejects_detector_tag_in_older_version(version: int) -> None:
+    ptn_str = f"""
+.version {version}
 .input 0:0
 .output 1:0
 [0]
@@ -898,5 +920,5 @@ E 0 1
 M 0 XY 0
 .detector[type=flag] 0
 """
-    with pytest.raises(ValueError, match=r"\.detector tags require \.ptn version 2"):
+    with pytest.raises(ValueError, match=r"\.detector tags require \.ptn version 3"):
         loads(ptn_str)
