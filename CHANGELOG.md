@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MPP Rewriter Fallback Returns the Source Unsplit**: The gate-level fallback of `rewrite_to_mpp` returns the flattened source circuit unchanged instead of pre-splitting reset lifetimes onto fresh qubit ids, which dropped their `QUBIT_COORDS`; the importer handles reset reuse natively and inherits coordinates. `CheckMapping` now always reports original-circuit qubit ids.
 
+### Security
+
+- **Bounded `.ptn` Timeslice Expansion**: `graphqomb.ptn_format.loads()` materialized one `TICK` command for every timeslice a `[n]` marker skipped, so a handful of bytes of untrusted input (for example `[100000000000]`) could exhaust memory before the parse finished. The number of `TICK` commands a parse may materialize from timeslice markers is now bounded by the input size (one per line, plus a fixed slack of 4096), and an input that exceeds it raises `ValueError` instead of allocating. Files written by `dumps()` never skip timeslices and are unaffected.
+- **Pillow 12.3.0 in the Lock File**: Bumped the locked `pillow` (a transitive dependency of `matplotlib`) from 12.2.0 to 12.3.0, clearing the 12.2.0 image-decoding advisories reported against the lock file. No direct dependency constraints changed.
+- **Release Workflow Shell Hardening**: The `Publish to PyPI` workflow interpolated the pushed tag name straight into a `run:` script and closed its `$GITHUB_OUTPUT` heredoc with a fixed `EOF` delimiter. The tag now reaches the script through the environment, and the delimiter is randomly generated, so neither a crafted tag name nor a changelog line can inject shell commands or forge step outputs in the job that holds the trusted-publishing token.
+
 ### Fixed
 
 - **Signed MPP Rows Keep Their Measurement Axis**: A negative `MPP` product sign now flips the sign of the ancilla's assigned measurement basis instead of forcing a negative X measurement, which clobbered the Y basis of Type I odd-Y-support rows and made detectors non-deterministic (for example `MPP !Y0`).

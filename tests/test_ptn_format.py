@@ -396,6 +396,34 @@ M 0 XY 0
     ]
 
 
+def test_loads_rejects_timeslice_expansion_bomb() -> None:
+    """A tiny input must not be able to allocate an unbounded number of TICK commands."""
+    with pytest.raises(ValueError, match="exceeding the remaining budget"):
+        loads(".version 1\n[100000000000]\nM 0 XY 0\n")
+
+
+def test_loads_rejects_cumulative_timeslice_expansion() -> None:
+    """Repeated moderate skips must not add up to an unbounded expansion either."""
+    ptn_str = ".version 1\n" + "".join(f"[{i * 1000}]\n" for i in range(1, 20))
+    with pytest.raises(ValueError, match="exceeding the remaining budget"):
+        loads(ptn_str)
+
+
+def test_loads_allows_empty_timeslices_within_budget() -> None:
+    """Skipping ahead by a modest number of empty timeslices still parses."""
+    result = loads(".version 1\n[4000]\nM 0 XY 0\n")
+
+    assert sum(1 for cmd in result.commands if isinstance(cmd, TICK)) == 4000
+
+
+def test_loads_timeslice_budget_scales_with_input_length() -> None:
+    """A long input may legitimately carry more TICK commands than the fixed slack."""
+    ptn_str = "\n".join([".version 1", *(f"[{i}]" for i in range(6000))]) + "\n"
+    result = loads(ptn_str)
+
+    assert sum(1 for cmd in result.commands if isinstance(cmd, TICK)) == 5999
+
+
 def test_loads_angle_parsing() -> None:
     """Test various angle format parsing."""
     ptn_str = """

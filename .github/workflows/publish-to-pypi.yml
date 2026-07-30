@@ -47,15 +47,20 @@ jobs:
 
       - name: Extract changelog for this version
         id: changelog
+        env:
+          # Passed through the environment rather than interpolated into the script: a tag name is
+          # not a safe shell token.
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          VERSION=${{ steps.get_version.outputs.VERSION }}
           # Extract the section for this version from CHANGELOG.md
           CONTENT=$(sed -n "/^## \[$VERSION\]/,/^## \[/{/^## \[$VERSION\]/d;/^## \[/q;p}" CHANGELOG.md)
+          # Random delimiter so changelog text cannot close the heredoc and forge step outputs.
+          DELIMITER="EOF_$(openssl rand -hex 16)"
           {
-            echo "content<<EOF"
+            echo "content<<$DELIMITER"
             echo "$CONTENT"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
+            echo "$DELIMITER"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
