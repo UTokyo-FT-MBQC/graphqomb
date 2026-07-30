@@ -227,3 +227,15 @@ def test_stim_mpp_extraction_rejects_misaligned_detector_tags() -> None:
             logical_observable_record_indices={},
             detector_tags=("type=flag", "extra"),
         )
+
+
+def test_stim_mpp_extraction_defaults_detector_tags_to_untagged() -> None:
+    extraction = stim_mpp_extraction_from_records(
+        (((0, "X"),),),
+        (0,),
+        coordinate_by_stim_id={},
+        detector_record_indices=(frozenset({0}),),
+        logical_observable_record_indices={},
+    )
+
+    assert extraction.detector_tags == ("",)
