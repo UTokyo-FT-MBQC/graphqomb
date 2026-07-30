@@ -58,6 +58,11 @@ class StimMppExtraction:
         Absolute Stim measurement-record indices for selected detectors.
     logical_observable_record_indices : `dict`\[`int`, `frozenset`\[`int`\]\]
         Absolute Stim record indices for selected logical observables.
+    detector_tags : `tuple`\[`str`, ...\]
+        Stim tag of each selected detector, aligned with ``detector_rows``.
+        The empty string means untagged; ``type=flag`` marks a post-selection
+        flag detector. Suitable as the ``parity_check_tags`` argument of
+        `graphqomb.qompiler.qompile` next to `detector_groups`.
     """
 
     code: StabilizerCode
@@ -68,6 +73,7 @@ class StimMppExtraction:
     logical_observable_rows: dict[int, frozenset[int]]
     detector_record_indices: tuple[frozenset[int], ...] = ()
     logical_observable_record_indices: dict[int, frozenset[int]] = field(default_factory=dict)
+    detector_tags: tuple[str, ...] = ()
 
     def detector_groups(self, ancilla_nodes: Mapping[int, int]) -> list[set[int]]:
         r"""Return detector groups mapped to graph node ids for ``qompile``.
@@ -93,13 +99,14 @@ class StimMppExtraction:
         }
 
 
-def stim_mpp_extraction_from_records(
+def stim_mpp_extraction_from_records(  # ruff:ignore[too-many-arguments]
     supports: Sequence[PauliSupport],
     record_indices: Sequence[int],
     *,
     coordinate_by_stim_id: Mapping[int, Coordinate],
     detector_record_indices: Sequence[frozenset[int]],
     logical_observable_record_indices: Mapping[int, frozenset[int]],
+    detector_tags: Sequence[str] | None = None,
 ) -> StimMppExtraction:
     """Build an MPP extraction from globally indexed measurement records.
 
@@ -111,20 +118,28 @@ def stim_mpp_extraction_from_records(
     Raises
     ------
     ValueError
-        If the support and record counts differ.
+        If the support and record counts differ, or if ``detector_tags`` is
+        not aligned with ``detector_record_indices``.
     """
     if len(supports) != len(record_indices):
         msg = "MPP support count does not match its measurement-record count."
+        raise ValueError(msg)
+    if detector_tags is None:
+        detector_tags = [""] * len(detector_record_indices)
+    elif len(detector_tags) != len(detector_record_indices):
+        msg = "Detector tag count does not match the detector count."
         raise ValueError(msg)
 
     record_to_row = {record_index: row for row, record_index in enumerate(record_indices)}
     selected_detector_rows: list[frozenset[int]] = []
     selected_detector_records: list[frozenset[int]] = []
-    for records in detector_record_indices:
+    selected_detector_tags: list[str] = []
+    for records, tag in zip(detector_record_indices, detector_tags, strict=True):
         rows = frozenset(record_to_row[record] for record in records if record in record_to_row)
         if rows:
             selected_detector_rows.append(rows)
             selected_detector_records.append(records)
+            selected_detector_tags.append(tag)
 
     selected_logical_rows: dict[int, frozenset[int]] = {}
     selected_logical_records: dict[int, frozenset[int]] = {}
@@ -148,6 +163,7 @@ def stim_mpp_extraction_from_records(
         logical_observable_rows=selected_logical_rows,
         detector_record_indices=tuple(selected_detector_records),
         logical_observable_record_indices=selected_logical_records,
+        detector_tags=tuple(selected_detector_tags),
     )
 
 
@@ -179,11 +195,16 @@ class RecordAnnotations:
     ----------
     detectors : `tuple`\[`frozenset`\[`int`\], ...\]
         One absolute record-index group per ``DETECTOR``, in circuit order.
+    detector_tags : `tuple`\[`str`, ...\]
+        Stim tag of each ``DETECTOR``, aligned with ``detectors``. The empty
+        string means untagged; ``type=flag`` marks a post-selection flag
+        detector.
     logical_observables : `dict`\[`int`, `frozenset`\[`int`\]\]
         Merged absolute record indices keyed by Stim observable index.
     """
 
     detectors: tuple[frozenset[int], ...]
+    detector_tags: tuple[str, ...]
     logical_observables: dict[int, frozenset[int]]
 
 
@@ -192,7 +213,9 @@ def collect_record_annotations(circuit: stim.Circuit) -> RecordAnnotations:
 
     Relative ``rec[-k]`` targets are resolved to absolute measurement-record
     indices; repeated targets cancel by parity. ``OBSERVABLE_INCLUDE``
-    instructions sharing an observable index are merged the same way.
+    instructions sharing an observable index are merged the same way. Each
+    ``DETECTOR`` keeps its Stim instruction tag, so a post-selection flag
+    detector (``DETECTOR[type=flag]``) stays identifiable.
 
     Returns
     -------
@@ -200,6 +223,7 @@ def collect_record_annotations(circuit: stim.Circuit) -> RecordAnnotations:
         Resolved detector and logical-observable record indices.
     """
     detectors: list[frozenset[int]] = []
+    detector_tags: list[str] = []
     logical_observables: dict[int, set[int]] = {}
     measurement_count = 0
 
@@ -212,6 +236,7 @@ def collect_record_annotations(circuit: stim.Circuit) -> RecordAnnotations:
                     instruction_name=instruction.name,
                 )
             )
+            detector_tags.append(instruction.tag)
         elif instruction.name == "OBSERVABLE_INCLUDE":
             logical_idx = observable_index(instruction)
             logical_observables.setdefault(logical_idx, set()).symmetric_difference_update(
@@ -225,6 +250,7 @@ def collect_record_annotations(circuit: stim.Circuit) -> RecordAnnotations:
 
     return RecordAnnotations(
         detectors=tuple(detectors),
+        detector_tags=tuple(detector_tags),
         logical_observables={
             logical_idx: frozenset(records) for logical_idx, records in sorted(logical_observables.items())
         },

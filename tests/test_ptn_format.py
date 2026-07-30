@@ -108,6 +108,7 @@ def assert_pattern_equivalent(actual: Pattern, expected: Pattern) -> None:
     assert actual.pauli_frame.xflow == expected.pauli_frame.xflow
     assert actual.pauli_frame.zflow == expected.pauli_frame.zflow
     assert actual.pauli_frame.parity_check_group == expected.pauli_frame.parity_check_group
+    assert actual.pauli_frame.parity_check_tags == expected.pauli_frame.parity_check_tags
     assert actual.pauli_frame.logical_observables == expected.pauli_frame.logical_observables
     assert [command_signature(cmd) for cmd in actual.commands] == [command_signature(cmd) for cmd in expected.commands]
 
@@ -797,4 +798,105 @@ M 20 Y -
 def test_loads_rejects_malformed_input(ptn_str: str, message: str) -> None:
     """Malformed .ptn input should fail instead of being guessed."""
     with pytest.raises(ValueError, match=message):
+        loads(ptn_str)
+
+
+def create_measured_output_pattern_with_tagged_detector(tag: str) -> Pattern:
+    """Create a stim-compatible pattern whose detector carries a tag."""
+    graph = GraphState()
+    in_node = graph.add_node(coordinate=(50.0, 0.0))
+    out_node = graph.add_node(coordinate=(60.0, 0.0))
+
+    graph.register_input(in_node, 0)
+    graph.register_output(out_node, 0)
+    graph.add_edge(in_node, out_node)
+    graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(out_node, PlannerMeasBasis(Plane.XY, 0.0))
+
+    return qompile(graph, {in_node: {out_node}}, parity_check_group=[{in_node}], parity_check_tags=[tag])
+
+
+def test_dumps_writes_detector_tag() -> None:
+    pattern = create_measured_output_pattern_with_tagged_detector("type=flag")
+    ptn_str = dumps(pattern)
+
+    assert any(line.startswith(".detector[type=flag] ") for line in ptn_str.splitlines())
+
+
+@pytest.mark.parametrize("tag", ["type=flag", "a]b", "back\\slash", "sp ace#hash"])
+def test_ptn_roundtrip_preserves_detector_tags(tag: str) -> None:
+    pattern = create_measured_output_pattern_with_tagged_detector(tag)
+    loaded = loads(dumps(pattern))
+
+    assert_pattern_equivalent(loaded, pattern)
+    assert loaded.pauli_frame.parity_check_tags == [tag]
+
+
+def test_loads_detector_tag_parsing() -> None:
+    ptn_str = """
+.version 2
+.input 0:0
+.output 1:0
+[0]
+N 0
+N 1
+E 0 1
+M 0 XY 0
+.detector[type=flag] 0 # trailing comment
+.detector[sp ace#hash] 0
+.detector[a\\Cb\\Bc] 0
+.detector 0
+"""
+    pattern = loads(ptn_str)
+
+    assert pattern.pauli_frame.parity_check_tags == ["type=flag", "sp ace#hash", "a]b\\c", ""]
+    assert pattern.pauli_frame.parity_check_group == [{0}, {0}, {0}, {0}]
+
+
+def test_loads_rejects_unclosed_detector_tag() -> None:
+    ptn_str = """
+.version 2
+.input 0:0
+.output 0:0
+.detector[type=flag 0
+"""
+    with pytest.raises(ValueError, match=r"missing its closing"):
+        loads(ptn_str)
+
+
+def test_loads_rejects_glued_detector_tag() -> None:
+    ptn_str = """
+.version 2
+.input 0:0
+.output 0:0
+.detector[type=flag]0
+"""
+    with pytest.raises(ValueError, match=r"must be followed by whitespace"):
+        loads(ptn_str)
+
+
+def test_loads_rejects_unknown_detector_like_directive() -> None:
+    ptn_str = """
+.version 2
+.input 0:0
+.output 0:0
+.detectorx 0
+"""
+    with pytest.raises(ValueError, match=r"Unknown directive: \.detectorx"):
+        loads(ptn_str)
+
+
+def test_loads_rejects_detector_tag_in_legacy_version() -> None:
+    ptn_str = """
+.version 1
+.input 0:0
+.output 1:0
+[0]
+N 0
+N 1
+E 0 1
+M 0 XY 0
+.detector[type=flag] 0
+"""
+    with pytest.raises(ValueError, match=r"\.detector tags require \.ptn version 2"):
         loads(ptn_str)

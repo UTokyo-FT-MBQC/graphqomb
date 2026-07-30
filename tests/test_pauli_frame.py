@@ -667,3 +667,49 @@ def test_collect_dependent_chain_diamond_cancellation() -> None:
 
     chain_n2 = pframe._collect_dependent_chain(n2)
     assert chain_n2 == {n0, n2}, f"Expected {{n0, n2}} but got {chain_n2}"
+
+
+def _two_group_frame_args() -> tuple[GraphState, dict[int, set[int]], dict[int, set[int]], list[set[int]]]:
+    """Build a small graph with two parity check groups.
+
+    Returns
+    -------
+    tuple[GraphState, dict[int, set[int]], dict[int, set[int]], list[set[int]]]
+        GraphState, xflow, zflow, and parity check groups.
+    """
+    graph = GraphState()
+    n0 = graph.add_node()
+    n1 = graph.add_node()
+    graph.register_input(n0, 0)
+    graph.register_output(n1, 0)
+    graph.add_edge(n0, n1)
+    graph.assign_meas_basis(n0, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(n1, PlannerMeasBasis(Plane.XY, 0.0))
+    return graph, {n0: {n1}}, {}, [{n0}, {n1}]
+
+
+def test_parity_check_tags_default_to_untagged() -> None:
+    graph, xflow, zflow, groups = _two_group_frame_args()
+    pframe = PauliFrame(graph, xflow, zflow, groups)
+
+    assert pframe.parity_check_tags == ["", ""]
+
+
+def test_parity_check_tags_are_stored_in_group_order() -> None:
+    graph, xflow, zflow, groups = _two_group_frame_args()
+    pframe = PauliFrame(graph, xflow, zflow, groups, parity_check_tags=["type=flag", ""])
+
+    assert pframe.parity_check_tags == ["type=flag", ""]
+
+
+def test_parity_check_tags_length_mismatch_raises() -> None:
+    graph, xflow, zflow, groups = _two_group_frame_args()
+    with pytest.raises(ValueError, match="parity_check_tags has 1 tag"):
+        PauliFrame(graph, xflow, zflow, groups, parity_check_tags=["type=flag"])
+
+
+def test_parity_check_tags_without_groups_default_empty() -> None:
+    graph, xflow, zflow, _groups = _two_group_frame_args()
+    pframe = PauliFrame(graph, xflow, zflow)
+
+    assert pframe.parity_check_tags == []

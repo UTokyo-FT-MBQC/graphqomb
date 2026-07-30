@@ -36,6 +36,11 @@ class PauliFrame:
         Current Z Pauli state for each node
     parity_check_group : `list`\[`set`\[`int`\]\]
         Parity check group for FTQC
+    parity_check_tags : `list`\[`str`\]
+        Stim-style tag of each parity check group, aligned with
+        `parity_check_group`. The empty string means untagged. The tag
+        ``type=flag`` marks a flag detector whose samples are meant to be
+        post-selected (rejected when the detector fires).
     inv_xflow : `dict`\[`int`, `set`\[`int`\]\]
         Inverse X correction flow for each measurement flip
     inv_zflow : `dict`\[`int`, `set`\[`int`\]\]
@@ -48,19 +53,22 @@ class PauliFrame:
     x_pauli: dict[int, bool]
     z_pauli: dict[int, bool]
     parity_check_group: list[set[int]]
+    parity_check_tags: list[str]
     logical_observables: dict[int, set[int]]
     inv_xflow: dict[int, set[int]]
     inv_zflow: dict[int, set[int]]
     _pauli_axis_cache: dict[int, Axis | None]
     _chain_cache: dict[int, frozenset[int]]
 
-    def __init__(
+    def __init__(  # ruff:ignore[too-many-arguments]
         self,
         graphstate: BaseGraphState,
         xflow: Mapping[int, AbstractSet[int]],
         zflow: Mapping[int, AbstractSet[int]],
         parity_check_group: Sequence[AbstractSet[int]] | None = None,
         logical_observables: Mapping[int, AbstractSet[int]] | None = None,
+        *,
+        parity_check_tags: Sequence[str] | None = None,
     ) -> None:
         if parity_check_group is None:
             parity_check_group = []
@@ -72,6 +80,15 @@ class PauliFrame:
         self.x_pauli = dict.fromkeys(graphstate.nodes, False)
         self.z_pauli = dict.fromkeys(graphstate.nodes, False)
         self.parity_check_group = [set(item) for item in parity_check_group]
+        if parity_check_tags is None:
+            parity_check_tags = [""] * len(self.parity_check_group)
+        elif len(parity_check_tags) != len(self.parity_check_group):
+            msg = (
+                f"parity_check_tags has {len(parity_check_tags)} tag(s) "
+                f"for {len(self.parity_check_group)} parity check group(s)."
+            )
+            raise ValueError(msg)
+        self.parity_check_tags = list(parity_check_tags)
         self.logical_observables = {
             logical_idx: set(seed_nodes) for logical_idx, seed_nodes in logical_observables.items()
         }
