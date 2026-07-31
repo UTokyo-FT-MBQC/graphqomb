@@ -922,3 +922,36 @@ M 0 XY 0
 """
     with pytest.raises(ValueError, match=r"\.detector tags require \.ptn version 3"):
         loads(ptn_str)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_loads_rejects_empty_detector_tag_in_older_version(version: int) -> None:
+    ptn_str = f"""
+.version {version}
+.input 0:0
+.output 1:0
+[0]
+N 0
+N 1
+E 0 1
+M 0 XY 0
+.detector[] 0
+"""
+    with pytest.raises(ValueError, match=r"\.detector tags require \.ptn version 3"):
+        loads(ptn_str)
+
+
+def test_loads_accepts_empty_detector_tag_in_version_3() -> None:
+    ptn_str = """
+.version 3
+.input 0:0
+.output 1:0
+[0]
+N 0
+N 1
+E 0 1
+M 0 XY 0
+.detector[] 0
+"""
+    pattern = loads(ptn_str)
+    assert list(pattern.pauli_frame.parity_check_tags) == [""]

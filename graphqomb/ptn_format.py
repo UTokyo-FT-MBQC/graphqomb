@@ -785,6 +785,7 @@ class _Parser:
         self.current_timeslice = -1
         self.version: int | None = None
         self.tick_budget = _IMPLICIT_TICK_SLACK
+        self.uses_detector_tag_syntax = False
 
     def parse(self, s: str) -> Pattern:
         r"""Parse the input string and return Pattern.
@@ -815,7 +816,7 @@ class _Parser:
         if self.version == 1 and self.result.input_initialization_axes:
             msg = ".input_basis requires .ptn version 2 or later"
             raise ValueError(msg)
-        if self.version < _DETECTOR_TAG_VERSION and any(self.result.parity_check_tags):
+        if self.version < _DETECTOR_TAG_VERSION and self.uses_detector_tag_syntax:
             msg = f".detector tags require .ptn version {_DETECTOR_TAG_VERSION} or later"
             raise ValueError(msg)
 
@@ -898,6 +899,9 @@ class _Parser:
         """
         tag = ""
         if rest.startswith("["):
+            # The bracketed grammar itself is version 3, even when it holds an
+            # empty tag, so record its use rather than relying on the tag text.
+            self.uses_detector_tag_syntax = True
             closing = rest.find("]")
             if closing == -1:
                 msg = ".detector tag is missing its closing ']'"
