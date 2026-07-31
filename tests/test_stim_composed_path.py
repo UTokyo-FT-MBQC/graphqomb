@@ -10,7 +10,7 @@ its coordinate relative to a fully coordinated source.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 import stim
@@ -84,8 +84,9 @@ def _uncoordinated_node_count(result: StimImportResult) -> int:
         pytest.param(stim.Circuit(_MID_CIRCUIT_RESET_CIRCUIT), id="mid-circuit-reset"),
     ],
 )
-def test_rewrite_output_imports_like_the_source(source: stim.Circuit) -> None:
-    rewritten = rewrite_to_mpp(source).circuit
+@pytest.mark.parametrize("fallback", ["circuit", "segment"])
+def test_rewrite_output_imports_like_the_source(source: stim.Circuit, fallback: Literal["circuit", "segment"]) -> None:
+    rewritten = rewrite_to_mpp(source, fallback=fallback).circuit
 
     composed = stim_circuit_to_pattern(rewritten)
     direct = stim_circuit_to_pattern(source)
@@ -100,6 +101,34 @@ def test_rewrite_output_imports_like_the_source(source: stim.Circuit) -> None:
     if len(source.get_final_qubit_coordinates()) == source.num_qubits:
         assert _uncoordinated_node_count(composed) == 0
         assert _uncoordinated_node_count(direct) == 0
+
+
+def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None:
+    # The rewritten producer of a deterministic-1 record must stay a real
+    # measurement (a signed MPP here, never MPAD 1, which the importer
+    # rejects), so the verbatim feedback segment consuming it still fires.
+    source = stim.Circuit(
+        """
+        QUBIT_COORDS(0, 0) 0
+        QUBIT_COORDS(1, 0) 1
+        R 0 1
+        X 0
+        M 0
+        CX rec[-1] 1
+        M 1
+        DETECTOR rec[-1]
+        """
+    )
+
+    rewritten = rewrite_to_mpp(source, fallback="segment")
+
+    assert rewritten.fallback_segments == (1,)
+    composed = stim_circuit_to_pattern(rewritten.circuit)
+    compiled = stim.Circuit(stim_compile(composed.pattern))
+
+    assert compiled.num_detectors == source.num_detectors
+    assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
+    assert _uncoordinated_node_count(composed) == 0
 
 
 def test_externally_pre_split_circuit_imports_like_the_original() -> None:

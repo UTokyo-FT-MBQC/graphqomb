@@ -3,8 +3,10 @@
 This experimental module recognizes the standard syndrome-extraction shape
 (reset ancillas, apply Clifford unitaries, measure ancillas) and replaces each
 gate-level extraction block with ``MPP`` instructions that directly measure the
-inferred data Pauli products. Circuit-level noise and classical feedback remain
-unsupported.
+inferred data Pauli products. Circuit-level noise remains unsupported; a
+segment that cannot be rewritten either falls back the whole circuit or, with
+``fallback="segment"``, stays gate-level on its own while the other segments
+are rewritten.
 
 This module provides:
 
@@ -35,6 +37,7 @@ from graphqomb.stim_glue._parse import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from collections.abc import Set as AbstractSet
 # Pauli bases are spelled as Stim's "X"/"Y"/"Z" letters inside this module.
 _RESET_BASES = {name: axis.name for name, axis in RESET_AXES.items()}
 _SINGLE_MEASUREMENT_BASES = {name: axis.name for name, axis in SINGLE_MEASUREMENT_AXES.items()}
@@ -45,6 +48,7 @@ _PAULI_CODES = {"X": 1, "Y": 2, "Z": 3}
 _PAIR_GROUP_SIZE = 2
 
 _InstructionKind = Literal["annotation", "mpad", "reset", "measurement", "unitary"]
+_FallbackMode = Literal["circuit", "segment"]
 
 
 class UnsupportedSyndromeCircuitError(ValueError):
@@ -57,6 +61,28 @@ class MppRewriteVerificationError(ValueError):
 
 class _ResidualFrameSynthesisError(RuntimeError):
     """Raised when the removed body cannot be represented by a residual Clifford frame."""
+
+
+class _SegmentRepresentabilityError(UnsupportedSyndromeCircuitError):
+    """Raised when one segment cannot be rewritten but its gate-level source remains valid."""
+
+
+class _RewrittenStateReuseError(UnsupportedSyndromeCircuitError):
+    """Raised when a segment consumes a post-state that an earlier rewritten segment trashed.
+
+    A rewritten segment is only verified to match its source with the
+    post-states of its measured-out qubits reset, so a later use of such a
+    post-state is unsound no matter how the later segment is emitted. The
+    segment-fallback mode reacts by forcing the recorded source segment to
+    stay gate-level and rerunning the rewrite.
+    """
+
+    def __init__(self, message: str, *, source_segment: int) -> None:
+        super().__init__(message)
+        self.source_segment = source_segment
+
+
+_SEGMENT_FALLBACK_ERRORS = (MppRewriteVerificationError, _ResidualFrameSynthesisError, _SegmentRepresentabilityError)
 
 
 @dataclass(frozen=True)
@@ -93,10 +119,16 @@ class MppRewriteResult:
     checks : `tuple`\[`CheckMapping`, ...\]
         One mapping per measurement record produced by a Pauli measurement.
         ``MPAD`` records are not listed.
+    fallback_segments : `tuple`\[`int`, ...\]
+        Indices of the segments emitted gate-level instead of in MPP form:
+        every segment when the whole circuit took the gate-level fallback,
+        only the individually failing segments under ``fallback="segment"``,
+        and empty when every segment was rewritten.
     """
 
     circuit: stim.Circuit
     checks: tuple[CheckMapping, ...]
+    fallback_segments: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,7 +172,7 @@ class _SegmentBounds:
         return boundary
 
 
-def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
+def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "circuit") -> MppRewriteResult:
     """Rewrite a noiseless Stim syndrome-extraction circuit into MPP form.
 
     The inference conjugates each final measurement Pauli backwards through the
@@ -161,33 +193,61 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     Every rewritten segment is cross-checked against its source by stabilizer-
     flow generators, with measured-out ancilla post-states reset in both copies
     before comparison. If a segment cannot be represented by MPP measurements
-    plus a residual Clifford frame, or fails that check, the rewriter returns
-    the flattened gate-level circuit unchanged; the Stim importer handles
-    reset-based qubit reuse natively. The check is not optional: it is what
-    selects between the optimized rewrite, the unsubstituted retry, and the
-    gate-level fallback.
+    plus a residual Clifford frame, or fails that check, ``fallback="circuit"``
+    returns the flattened gate-level circuit unchanged; the Stim importer
+    handles reset-based qubit reuse natively. The check is not optional: it is
+    what selects between the optimized rewrite, the unsubstituted retry, and
+    the gate-level fallback.
+
+    ``fallback="segment"`` keeps only the failing segments gate-level instead
+    of abandoning the whole circuit, so the result mixes MPP segments with
+    verbatim source segments; `MppRewriteResult.fallback_segments` lists the
+    verbatim ones. In this mode a segment whose measurement post-state is used
+    again without a reset, or that applies measurement-record-controlled
+    feedback, also falls back verbatim instead of raising. Because a rewritten
+    segment is only verified with the post-states of its measured-out qubits
+    reset, a later segment that consumes such a post-state forces the segment
+    that produced it to stay gate-level as well (verbatim segments preserve
+    their post-states exactly), and the rewrite reruns until that fixed point
+    is reached. Noise remains rejected in both modes.
 
     Parameters
     ----------
     circuit : ``stim.Circuit`` | `str`
-        Source circuit or Stim circuit text. Noise instructions, measurement
-        noise arguments, and classical feedback are rejected with
-        `UnsupportedSyndromeCircuitError`.
+        Source circuit or Stim circuit text. Noise instructions and
+        measurement noise arguments are rejected with
+        `UnsupportedSyndromeCircuitError`; classical feedback is rejected
+        under ``fallback="circuit"``.
+    fallback : ``"circuit"`` | ``"segment"``, optional
+        Whether a failing segment falls back the whole circuit (default) or
+        only itself.
 
     Returns
     -------
     `MppRewriteResult`
         Rewritten circuit and per-measurement Pauli-product mappings.
+
+    Raises
+    ------
+    ValueError
+        If ``fallback`` is not ``"circuit"`` or ``"segment"``.
     """
+    if fallback not in {"circuit", "segment"}:
+        msg = f"fallback must be 'circuit' or 'segment', not {fallback!r}."
+        raise ValueError(msg)
     source = circuit if isinstance(circuit, stim.Circuit) else stim.Circuit(circuit)
     flattened = source.flattened()
     try:
-        return _rewrite_flattened_to_mpp(flattened)
+        return _rewrite_flattened_to_mpp(flattened, fallback=fallback)
     except (MppRewriteVerificationError, _ResidualFrameSynthesisError):
-        return MppRewriteResult(circuit=flattened, checks=_check_mappings(flattened))
+        return MppRewriteResult(
+            circuit=flattened,
+            checks=_check_mappings(flattened),
+            fallback_segments=tuple(range(_segment_count(flattened))),
+        )
 
 
-def _rewrite_flattened_to_mpp(flattened: stim.Circuit) -> MppRewriteResult:
+def _rewrite_flattened_to_mpp(flattened: stim.Circuit, *, fallback: _FallbackMode) -> MppRewriteResult:
     """Rewrite a flattened circuit through the optimized MPP path.
 
     Returns
@@ -199,20 +259,53 @@ def _rewrite_flattened_to_mpp(flattened: stim.Circuit) -> MppRewriteResult:
     ------
     UnsupportedSyndromeCircuitError
         If the circuit is outside the supported syndrome-extraction form.
+    _RewrittenStateReuseError
+        Under ``fallback="circuit"``, if a segment consumes a measurement
+        post-state that an earlier rewritten segment trashed.
     RuntimeError
-        If the rewrite changes the measurement count.
+        If the rewrite changes the measurement count or fails to converge.
     """
-    rewriter = _Rewriter(num_qubits=flattened.num_qubits)
-    for instruction in flattened:
-        if isinstance(instruction, stim.CircuitRepeatBlock):
-            msg = "REPEAT blocks must be flattened before rewriting."
-            raise UnsupportedSyndromeCircuitError(msg)
-        rewriter.process(instruction)
-    result = rewriter.finish()
-    if result.circuit.num_measurements != flattened.num_measurements:
-        msg = "MPP rewrite changed the measurement count; this is a bug."
-        raise RuntimeError(msg)
-    return result
+    forced_verbatim: set[int] = set()
+    while True:
+        rewriter = _Rewriter(num_qubits=flattened.num_qubits, fallback=fallback, forced_verbatim=forced_verbatim)
+        try:
+            for instruction in flattened:
+                if isinstance(instruction, stim.CircuitRepeatBlock):
+                    msg = "REPEAT blocks must be flattened before rewriting."
+                    raise UnsupportedSyndromeCircuitError(msg)
+                rewriter.process(instruction)
+            result = rewriter.finish()
+        except _RewrittenStateReuseError as ex:
+            if fallback == "circuit":
+                raise
+            if ex.source_segment in forced_verbatim:
+                msg = "A forced-verbatim segment produced a trashed post-state; this is a bug."
+                raise RuntimeError(msg) from ex
+            forced_verbatim.add(ex.source_segment)
+            continue
+        if result.circuit.num_measurements != flattened.num_measurements:
+            msg = "MPP rewrite changed the measurement count; this is a bug."
+            raise RuntimeError(msg)
+        return result
+
+
+def _segment_count(circuit: stim.Circuit) -> int:
+    """Count the segments of a circuit with the streaming rewriter's boundary rule.
+
+    Returns
+    -------
+    `int`
+        Number of segments the rewriter would flush.
+    """
+    bounds = _SegmentBounds()
+    count = 0
+    pending = False
+    for instruction in iter_instructions(circuit):
+        if bounds.starts_new_segment(instruction, _instruction_kind(instruction)) and pending:
+            count += 1
+            pending = False
+        pending = True
+    return count + int(pending)
 
 
 def _check_mappings(circuit: stim.Circuit) -> tuple[CheckMapping, ...]:
@@ -294,22 +387,36 @@ def _plain_qubit(target: stim.GateTarget, instruction_name: str) -> int:
 
 def _check_no_feedback_targets(instruction: stim.CircuitInstruction) -> None:
     for target in instruction.targets_copy():
-        if target.is_measurement_record_target or target.is_sweep_bit_target:
+        if target.is_sweep_bit_target:
             msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
             raise UnsupportedSyndromeCircuitError(msg)
+        if target.is_measurement_record_target:
+            # Measurement-record feedback cannot be inferred through, but its
+            # gate-level segment stays valid, so segment fallback may keep it.
+            msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
+            raise _SegmentRepresentabilityError(msg)
 
 
 class _Rewriter:
     """Streaming rewriter that buffers and rewrites one segment at a time."""
 
-    def __init__(self, *, num_qubits: int) -> None:
+    def __init__(
+        self,
+        *,
+        num_qubits: int,
+        fallback: _FallbackMode = "circuit",
+        forced_verbatim: AbstractSet[int] = frozenset(),
+    ) -> None:
         self._num_qubits = num_qubits
+        self._fallback = fallback
+        self._forced_verbatim = forced_verbatim
         self._output = stim.Circuit()
         self._checks: list[CheckMapping] = []
         self._measurement_index = 0
         self._segment_index = 0
-        self._dirty: set[int] = set()
+        self._dirty: dict[int, int] = {}
         self._entry_prepared: dict[int, str] = {}
+        self._fallback_segments: list[int] = []
         self._items: list[tuple[stim.CircuitInstruction, _InstructionKind]] = []
         self._bounds = _SegmentBounds()
 
@@ -333,15 +440,16 @@ class _Rewriter:
             Rewritten circuit and per-measurement Pauli-product mappings.
         """
         self._flush_segment()
-        return MppRewriteResult(circuit=self._output, checks=tuple(self._checks))
+        return MppRewriteResult(
+            circuit=self._output,
+            checks=tuple(self._checks),
+            fallback_segments=tuple(self._fallback_segments),
+        )
 
     def _flush_segment(self) -> None:
         if not self._items:
             return
-        try:
-            segment = self._rewrite_segment(substitute_prepared=True)
-        except (MppRewriteVerificationError, _ResidualFrameSynthesisError):
-            segment = self._rewrite_segment(substitute_prepared=False)
+        segment = self._build_segment()
         self._output += segment.output
         self._checks.extend(segment.checks)
         self._measurement_index = segment.measurement_index
@@ -349,6 +457,50 @@ class _Rewriter:
         self._dirty = segment.exit_dirty()
         self._segment_index += 1
         self._items = []
+
+    def _build_segment(self) -> _Segment | _VerbatimSegment:
+        """Rewrite the buffered segment, or emit it verbatim under segment fallback.
+
+        Returns
+        -------
+        `_Segment` | `_VerbatimSegment`
+            Completed segment.
+        """
+        if self._fallback == "segment":
+            if self._segment_index in self._forced_verbatim:
+                return self._verbatim_segment()
+            try:
+                return self._rewrite_segment(substitute_prepared=True)
+            except _SEGMENT_FALLBACK_ERRORS:
+                pass
+            try:
+                return self._rewrite_segment(substitute_prepared=False)
+            except _SEGMENT_FALLBACK_ERRORS:
+                return self._verbatim_segment()
+        try:
+            return self._rewrite_segment(substitute_prepared=True)
+        except (MppRewriteVerificationError, _ResidualFrameSynthesisError):
+            return self._rewrite_segment(substitute_prepared=False)
+
+    def _verbatim_segment(self) -> _VerbatimSegment:
+        """Emit the buffered segment gate-level with exit-state bookkeeping only.
+
+        Returns
+        -------
+        `_VerbatimSegment`
+            Completed verbatim segment.
+        """
+        segment = _VerbatimSegment(
+            num_qubits=self._num_qubits,
+            segment_index=self._segment_index,
+            entry_prepared=dict(self._entry_prepared),
+            dirty=dict(self._dirty),
+            measurement_index=self._measurement_index,
+        )
+        for instruction, kind in self._items:
+            segment.process(instruction, kind)
+        self._fallback_segments.append(self._segment_index)
+        return segment
 
     def _rewrite_segment(self, *, substitute_prepared: bool) -> _Segment:
         """Rewrite and verify the buffered segment using one ancilla-substitution policy.
@@ -362,9 +514,10 @@ class _Rewriter:
             num_qubits=self._num_qubits,
             segment_index=self._segment_index,
             entry_prepared=dict(self._entry_prepared),
-            dirty=set(self._dirty),
+            dirty=dict(self._dirty),
             measurement_index=self._measurement_index,
             substitute_prepared=substitute_prepared,
+            allow_negative_pads=self._fallback == "circuit",
         )
         segment.prescan(self._items)
         for instruction, kind in self._items:
@@ -383,15 +536,17 @@ class _Segment:
         num_qubits: int,
         segment_index: int,
         entry_prepared: dict[int, str],
-        dirty: set[int],
+        dirty: dict[int, int],
         measurement_index: int,
         substitute_prepared: bool,
+        allow_negative_pads: bool = True,
     ) -> None:
         self._num_qubits = num_qubits
         self._segment_index = segment_index
         self._prepared = entry_prepared
         self._dirty = dirty
         self._substitute_prepared = substitute_prepared
+        self._allow_negative_pads = allow_negative_pads
         self.measurement_index = measurement_index
         self.output = stim.Circuit()
         self.checks: list[CheckMapping] = []
@@ -462,23 +617,23 @@ class _Segment:
                 self._late_resets[qubit] = basis
             elif qubit in self._body_touched:
                 msg = f"Reset on qubit {qubit} after it was entangled in the same segment is not supported."
-                raise UnsupportedSyndromeCircuitError(msg)
+                raise _SegmentRepresentabilityError(msg)
             else:
                 self._prepared[qubit] = basis
-            self._dirty.discard(qubit)
+            self._dirty.pop(qubit, None)
             self._measured_unreset.discard(qubit)
         self._append_verbatim(instruction)
 
     def _process_unitary(self, instruction: stim.CircuitInstruction) -> None:
         _check_no_feedback_targets(instruction)
         touched = {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
-        dirty_touched = sorted(touched & self._dirty)
+        dirty_touched = sorted(touched & self._dirty.keys())
         if dirty_touched:
             msg = (
                 f"{instruction.name} acts on measured-but-not-reset qubit(s) {dirty_touched}; "
                 "reusing measurement post-states is not supported."
             )
-            raise UnsupportedSyndromeCircuitError(msg)
+            raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_touched[0]])
         self._body.append(instruction)
         self._orig_verify.append(instruction)
         self._body_touched |= touched
@@ -515,13 +670,13 @@ class _Segment:
         self, instruction: stim.CircuitInstruction, sources: Sequence[_SourceObservable]
     ) -> None:
         qubits = {qubit for source in sources for qubit in source.observable.pauli_indices()}
-        dirty_measured = sorted(qubits & self._dirty)
+        dirty_measured = sorted(qubits & self._dirty.keys())
         if dirty_measured:
             msg = (
                 f"{instruction.name} measures qubit(s) {dirty_measured} whose earlier measurement "
                 "post-state was never reset; correlated re-measurement is not supported."
             )
-            raise UnsupportedSyndromeCircuitError(msg)
+            raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_measured[0]])
         self._measured_any |= qubits
         if instruction.name in _SINGLE_MEASUREMENT_BASES:
             self._measured_unreset |= qubits
@@ -538,7 +693,7 @@ class _Segment:
                 pulled[qubit] = 0
         if pulled.sign not in {1, -1}:
             msg = f"Non-Hermitian inferred observable: {pulled}."
-            raise UnsupportedSyndromeCircuitError(msg)
+            raise _SegmentRepresentabilityError(msg)
         return pulled
 
     def _emit_measurement(
@@ -564,7 +719,14 @@ class _Segment:
                 self._measured_unreset.discard(qubit)
 
     def _emit_inferred_products(self, products: Sequence[stim.PauliString], *, tag: str) -> None:
-        """Append inferred products, using MPAD for deterministic identities."""
+        """Append inferred products, using MPAD for deterministic identities.
+
+        Raises
+        ------
+        _SegmentRepresentabilityError
+            If a deterministic-minus record would become ``MPAD 1`` while
+            negative pads are disallowed (segment fallback).
+        """
         product_has_support = [bool(product.pauli_indices()) for product in products]
         target_circuits = self._rewrite_targets()
         if all(product_has_support):
@@ -584,6 +746,14 @@ class _Segment:
                     target_circuit.append("MPP", product_targets, [], tag=tag)
             else:
                 pad_bit = int(product.sign == -1)
+                if pad_bit and not self._allow_negative_pads:
+                    # The Stim importer rejects MPAD 1 (detector parity offsets
+                    # are not represented), so under segment fallback a
+                    # deterministic-minus record must stay a real measurement:
+                    # the unsubstituted retry keeps it a signed MPP, or the
+                    # segment falls back verbatim.
+                    msg = f"Segment {self._segment_index} infers a deterministic-minus record (MPAD 1)."
+                    raise _SegmentRepresentabilityError(msg)
                 for target_circuit in target_circuits:
                     target_circuit.append("MPAD", [pad_bit], [], tag=tag)
 
@@ -719,15 +889,130 @@ class _Segment:
         carried.update(self._late_resets)
         return carried
 
-    def exit_dirty(self) -> set[int]:
+    def exit_dirty(self) -> dict[int, int]:
+        r"""Return qubits whose post-measurement state diverges after this segment.
+
+        The rewrite deletes the Clifford body, so a qubit measured out without
+        a subsequent reset is left in a state that was only verified up to
+        resetting it; the map records which rewritten segment trashed it.
+
+        Returns
+        -------
+        `dict`\[`int`, `int`\]
+            Trashed qubits mapped to the rewritten segment that trashed them.
+        """
+        dirty = dict(self._dirty)
+        dirty.update(dict.fromkeys(self._measured_unreset, self._segment_index))
+        return dirty
+
+
+class _VerbatimSegment:
+    """One segment emitted gate-level under segment fallback.
+
+    The output states of a verbatim segment are exactly the source's, so its
+    own unreset measured qubits carry faithful post-states and contribute no
+    dirty entries; only qubits trashed by earlier rewritten segments stay
+    dirty until a reset re-synchronizes the two circuits. Prepared bases are
+    tracked per qubit so later segments substitute correctly: any touch
+    invalidates the basis, a reset or measure-reset re-establishes it.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_qubits: int,
+        segment_index: int,
+        entry_prepared: dict[int, str],
+        dirty: dict[int, int],
+        measurement_index: int,
+    ) -> None:
+        self._num_qubits = num_qubits
+        self._segment_index = segment_index
+        self._prepared = entry_prepared
+        self._dirty = dirty
+        self.measurement_index = measurement_index
+        self.output = stim.Circuit()
+        self.checks: list[CheckMapping] = []
+
+    def process(self, instruction: stim.CircuitInstruction, kind: _InstructionKind) -> None:
+        """Append one buffered instruction verbatim and track its state effects."""
+        self.output.append(instruction)
+        if kind == "mpad":
+            self.measurement_index += instruction.num_measurements
+        elif kind == "reset":
+            self._process_reset(instruction)
+        elif kind == "unitary":
+            self._process_unitary(instruction)
+        elif kind == "measurement":
+            self._process_measurement(instruction)
+
+    def _process_reset(self, instruction: stim.CircuitInstruction) -> None:
+        basis = _RESET_BASES[instruction.name]
+        for target in instruction.targets_copy():
+            qubit = _plain_qubit(target, instruction.name)
+            self._prepared[qubit] = basis
+            self._dirty.pop(qubit, None)
+
+    def _process_unitary(self, instruction: stim.CircuitInstruction) -> None:
+        for target in instruction.targets_copy():
+            if target.is_sweep_bit_target:
+                msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
+                raise UnsupportedSyndromeCircuitError(msg)
+        touched = {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
+        self._touch(touched, instruction.name)
+
+    def _process_measurement(self, instruction: stim.CircuitInstruction) -> None:
+        if instruction.gate_args_copy():
+            msg = f"Noisy measurement {instruction.name} with arguments is not supported."
+            raise UnsupportedSyndromeCircuitError(msg)
+        sources = _measurement_observables(instruction, self._num_qubits)
+        qubits = {qubit for source in sources for qubit in source.observable.pauli_indices()}
+        self._touch(qubits, instruction.name)
+        for source in sources:
+            self.checks.append(
+                CheckMapping(
+                    measurement_index=self.measurement_index,
+                    segment_index=self._segment_index,
+                    product=source.observable,
+                    source_qubit=source.source_qubit,
+                )
+            )
+            self.measurement_index += 1
+        if instruction.name in _MEASURE_RESET_GATES:
+            basis = _MEASURE_RESET_GATES[instruction.name][0]
+            for qubit in qubits:
+                self._prepared[qubit] = basis
+
+    def _touch(self, qubits: AbstractSet[int], instruction_name: str) -> None:
+        dirty_touched = sorted(qubits & self._dirty.keys())
+        if dirty_touched:
+            msg = (
+                f"{instruction_name} acts on measured-but-not-reset qubit(s) {dirty_touched}; "
+                "reusing measurement post-states is not supported."
+            )
+            raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_touched[0]])
+        for qubit in qubits:
+            self._prepared.pop(qubit, None)
+
+    def exit_prepared(self) -> dict[int, str]:
+        r"""Return the prepared-qubit map carried into the next segment.
+
+        Returns
+        -------
+        `dict`\[`int`, `str`\]
+            Prepared Pauli bases still valid at the next segment's start.
+        """
+        return dict(self._prepared)
+
+    def exit_dirty(self) -> dict[int, int]:
         r"""Return qubits whose post-measurement state diverges after this segment.
 
         Returns
         -------
-        `set`\[`int`\]
-            Qubits measured out without a subsequent reset.
+        `dict`\[`int`, `int`\]
+            Trashed qubits mapped to the rewritten segment that trashed them.
         """
-        return self._dirty | self._measured_unreset
+        return dict(self._dirty)
 
 
 def _remap_tableau_circuit(tableau: stim.Tableau, qubits: Sequence[int]) -> stim.Circuit:
