@@ -22,6 +22,9 @@ This package provides:
 - `stabilizer_code_from_stim_text`: Function to build a stabilizer code from Stim MPP text.
 - `stabilizer_code_from_stim_file`: Function to build a stabilizer code from a Stim file.
 - `StimMppExtraction`: Stabilizer-code data extracted from Stim MPP products.
+- `FLAG_DETECTOR_TAG`: The Stim instruction tag marking a post-selection flag detector.
+- `flag_detector_indices`: Function to list flag-detector indices in a Stim circuit.
+- `flag_postselection_mask`: Function to build a sinter post-selection mask from flag detectors.
 """
 
 from graphqomb.stim_glue._parse import StimMppExtraction
@@ -40,6 +43,7 @@ from graphqomb.stim_glue.mpp_rewriter import (
     UnsupportedSyndromeCircuitError,
     rewrite_to_mpp,
 )
+from graphqomb.stim_glue.postselect import FLAG_DETECTOR_TAG, flag_detector_indices, flag_postselection_mask
 from graphqomb.stim_glue.transpiler import (
     STIM_GATE_J_ANGLES,
     UnsupportedInstructionError,
@@ -48,6 +52,7 @@ from graphqomb.stim_glue.transpiler import (
 )
 
 __all__ = [
+    "FLAG_DETECTOR_TAG",
     "STIM_GATE_J_ANGLES",
     "CheckMapping",
     "MppRewriteResult",
@@ -56,6 +61,8 @@ __all__ = [
     "StimMppExtraction",
     "UnsupportedInstructionError",
     "UnsupportedSyndromeCircuitError",
+    "flag_detector_indices",
+    "flag_postselection_mask",
     "optimize_j_cz",
     "rewrite_to_mpp",
     "stabilizer_code_from_stim_file",

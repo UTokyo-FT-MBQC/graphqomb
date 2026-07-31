@@ -828,3 +828,61 @@ def test_pattern_coordinates_property() -> None:
     assert pattern.coordinates[in_node] == (0.0, 0.0)
     assert pattern.coordinates[mid_node] == (1.0, 0.0)
     assert pattern.coordinates[out_node] == (2.0, 0.0)
+
+
+def create_detector_pattern(tags: list[str]) -> Pattern:
+    """Create a pattern with one single-node parity check group per tag.
+
+    Returns
+    -------
+    Pattern
+        Compiled pattern whose parity check groups carry the given tags.
+    """
+    graph = GraphState()
+    in_node = graph.add_node()
+    out_node = graph.add_node()
+    graph.register_input(in_node, 0)
+    graph.register_output(out_node, 0)
+    graph.add_edge(in_node, out_node)
+    graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(out_node, PlannerMeasBasis(Plane.XY, 0.0))
+
+    return qompile(
+        graph,
+        {in_node: {out_node}},
+        parity_check_group=[{in_node} for _tag in tags],
+        parity_check_tags=tags,
+    )
+
+
+def test_stim_compile_emits_detector_tag() -> None:
+    stim_str = stim_compile(create_detector_pattern(["type=flag"]))
+
+    assert "DETECTOR[type=flag]" in stim_str
+
+
+def test_stim_compile_leaves_untagged_detector_bare() -> None:
+    stim_str = stim_compile(create_detector_pattern([""]))
+
+    detector_lines = [line for line in stim_str.splitlines() if line.startswith("DETECTOR")]
+    assert len(detector_lines) == 1
+    assert detector_lines[0].startswith("DETECTOR ")
+
+
+def test_stim_compile_orders_detector_tags_with_groups() -> None:
+    stim = pytest.importorskip("stim")
+    stim_str = stim_compile(create_detector_pattern(["type=flag", "", "other"]))
+
+    circuit = stim.Circuit(stim_str)
+    detector_tags = [instruction.tag for instruction in circuit if instruction.name == "DETECTOR"]
+    assert detector_tags == ["type=flag", "", "other"]
+
+
+@pytest.mark.parametrize("tag", ["a]b", "back\\slash", "new\nline", "cr\rreturn", "sp ace#hash"])
+def test_stim_compile_escapes_detector_tags(tag: str) -> None:
+    stim = pytest.importorskip("stim")
+    stim_str = stim_compile(create_detector_pattern([tag]))
+
+    circuit = stim.Circuit(stim_str)
+    detector_tags = [instruction.tag for instruction in circuit if instruction.name == "DETECTOR"]
+    assert detector_tags == [tag]

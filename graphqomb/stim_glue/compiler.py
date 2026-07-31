@@ -10,6 +10,7 @@ from __future__ import annotations
 from io import StringIO
 from typing import TYPE_CHECKING
 
+from graphqomb._tag import escape_tag
 from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, MeasBasis, Sign, determine_pauli_axis
 from graphqomb.noise_model import (
@@ -65,9 +66,10 @@ class _StimCompiler:
         return self._stim_io.getvalue().strip()
 
     def _emit_detectors(self, total_measurements: int) -> None:
-        for checks in self._pframe.detector_groups():
+        for checks, tag in zip(self._pframe.detector_groups(), self._pframe.parity_check_tags, strict=True):
             targets = [f"rec[{self._meas_order[c] - total_measurements}]" for c in checks]
-            self._stim_io.write(f"DETECTOR {' '.join(targets)}\n")
+            tag_suffix = f"[{escape_tag(tag)}]" if tag else ""
+            self._stim_io.write(f"DETECTOR{tag_suffix} {' '.join(targets)}\n")
 
     def _emit_observables(self, total_measurements: int) -> None:
         for log_idx, group in sorted(self._pframe.logical_observable_groups().items()):
@@ -266,6 +268,12 @@ def stim_compile(
     Stim only supports Clifford gates, therefore this compiler only supports
     Pauli measurements (X, Y, Z basis) which correspond to Clifford operations.
     Non-Pauli measurements will raise a ValueError.
+
+    Each parity check group compiles to a ``DETECTOR`` instruction, and the
+    group's tag from `graphqomb.pauli_frame.PauliFrame.parity_check_tags` is
+    emitted as a Stim instruction tag (for example ``DETECTOR[type=flag]``).
+    Use `graphqomb.stim_glue.postselect.flag_postselection_mask` on the
+    compiled circuit to post-select flag detectors with sinter.
 
     Examples
     --------

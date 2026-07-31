@@ -115,6 +115,7 @@ class _ImportContext:
     coordinate_by_stim_id: Mapping[int, tuple[float, ...]]
     input_initialization_axes: Mapping[int, Axis]
     detector_record_indices: Sequence[frozenset[int]]
+    detector_tags: Sequence[str]
     logical_observable_record_indices: Mapping[int, frozenset[int]]
     schedule_strategy: CircuitScheduleStrategy
     y_foliation: YFoliation
@@ -226,7 +227,7 @@ def stim_text_to_pattern(
     )
 
 
-def stim_circuit_to_pattern(
+def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals]
     circuit: stim.Circuit,
     *,
     coord_dims: int = 2,
@@ -283,6 +284,12 @@ def stim_circuit_to_pattern(
     ``qubit_to_stim`` maps the fresh indices back to the original Stim qubit
     id, and ``stim_to_final_qubit`` selects the live one among them.
 
+    ``DETECTOR`` instruction tags are preserved: each imported detector's tag
+    is carried into ``pattern.pauli_frame.parity_check_tags`` (aligned with
+    ``parity_check_group``) and re-emitted by
+    `graphqomb.stim_glue.compiler.stim_compile`, so post-selection flag
+    detectors (``DETECTOR[type=flag]``) survive the import/export round trip.
+
     Each reset lifetime also gets its own Stim qubit id internally, and the
     ``mpp_extractions`` metadata (``supports``, ``stim_to_column``, and
     ``column_to_stim``) reports the lifetime that an ``MPP`` product actually
@@ -324,6 +331,7 @@ def stim_circuit_to_pattern(
         coordinate_by_stim_id=coordinate_by_stim_id,
         input_initialization_axes=analysis.input_initialization_axes,
         detector_record_indices=annotations.detectors,
+        detector_tags=annotations.detector_tags,
         logical_observable_record_indices=annotations.logical_observables,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
@@ -337,7 +345,7 @@ def stim_circuit_to_pattern(
         analysis.direct_measurements,
         final_stim_to_qubit=build.stim_to_qubit,
     )
-    parity_check_groups, logical_observables = _measurement_annotations(
+    parity_check_groups, parity_check_tags, logical_observables = _measurement_annotations(
         annotations,
         record_nodes=fragment.record_nodes,
         zero_record_indices=idealized.zero_record_indices,
@@ -347,6 +355,7 @@ def stim_circuit_to_pattern(
         *_flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices),
         parity_check_group=parity_check_groups,
         logical_observables=logical_observables,
+        parity_check_tags=parity_check_tags,
     )
     return StimImportResult(
         pattern=pattern,
@@ -1456,6 +1465,7 @@ def _mpp_fragment(
         coordinate_by_stim_id=context.coordinate_by_stim_id,
         detector_record_indices=context.detector_record_indices,
         logical_observable_record_indices=context.logical_observable_record_indices,
+        detector_tags=context.detector_tags,
     )
     fragment = _mpp_graph_fragment(
         extraction,
@@ -1658,9 +1668,9 @@ def _measurement_annotations(
     *,
     record_nodes: Mapping[int, int],
     zero_record_indices: frozenset[int],
-) -> tuple[list[set[int]], dict[int, set[int]]]:
+) -> tuple[list[set[int]], list[str], dict[int, set[int]]]:
     if not record_nodes and not zero_record_indices:
-        return [], {}
+        return [], [], {}
 
     parity_check_groups = [
         _record_indices_to_nodes(record_indices, record_nodes, zero_record_indices=zero_record_indices)
@@ -1674,7 +1684,7 @@ def _measurement_annotations(
         )
         for logical_idx, record_indices in annotations.logical_observables.items()
     }
-    return parity_check_groups, logical_observables
+    return parity_check_groups, list(annotations.detector_tags), logical_observables
 
 
 def _record_indices_to_nodes(

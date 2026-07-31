@@ -33,6 +33,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
     *,
     parity_check_group: Sequence[AbstractSet[int]] | None = None,
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
+    parity_check_tags: Sequence[str] | None = None,
     scheduler: Scheduler | None = None,
 ) -> Pattern:
     r"""Compile graph state into pattern with x/z correction flows.
@@ -50,6 +51,10 @@ def qompile(  # ruff:ignore[too-many-arguments]
         parity check group for FTQC
     logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         logical observables represented by logical index and seed nodes
+    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
+        Stim-style tag per parity check group, aligned with ``parity_check_group``.
+        The tag ``type=flag`` marks a flag detector whose firing samples are
+        meant to be post-selected. If `None`, every group is untagged.
     scheduler : `Scheduler` | `None`, optional
         scheduler to schedule the graph state preparation and measurements,
         if `None`, a `Scheduler` is constructed internally and solved with the
@@ -73,6 +78,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
         zflow,
         parity_check_group=parity_check_group,
         logical_observables=logical_observables,
+        parity_check_tags=parity_check_tags,
     )
 
     return _qompile(graph, pauli_frame, scheduler=scheduler)
