@@ -14,6 +14,7 @@ from graphqomb.command import M
 from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import is_runnable
+from graphqomb.ptn_format import dumps as ptn_dumps
 from graphqomb.qeccode import YFoliation
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
@@ -283,6 +284,98 @@ def test_stim_text_to_pattern_preserves_unitary_semantics_across_ticks() -> None
 
         overlap = np.vdot(expected, simulator.state.state())
         assert np.isclose(abs(overlap), 1.0, atol=1e-9)
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_cancels_gates_across_ticks() -> None:
+    text = "R 0\nTICK\nH 0\nTICK\nH 0\nTICK\nM 0"
+
+    default_nodes = stim_text_to_pattern(text).pattern.pauli_frame.graphstate.number_of_nodes()
+    merged_nodes = stim_text_to_pattern(text, merge_safe_ticks=True).pattern.pauli_frame.graphstate.number_of_nodes()
+
+    assert default_nodes == 3
+    assert merged_nodes == 1
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_folds_boundary_cliffords_across_ticks() -> None:
+    text = "R 0\nTICK\nH 0\nTICK\nM 0"
+
+    default_nodes = stim_text_to_pattern(text).pattern.pauli_frame.graphstate.number_of_nodes()
+    merged_nodes = stim_text_to_pattern(text, merge_safe_ticks=True).pattern.pauli_frame.graphstate.number_of_nodes()
+
+    assert default_nodes == 2
+    assert merged_nodes == 1
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_keeps_detectors_deterministic() -> None:
+    text = "R 0 1\nTICK\nH 0 1\nTICK\nCZ 0 1\nTICK\nH 1\nTICK\nM 0 1\nDETECTOR rec[-1] rec[-2]"
+
+    result = stim_text_to_pattern(text, merge_safe_ticks=True)
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
+
+    assert result.pattern.pauli_frame.graphstate.number_of_nodes() == 3
+    assert compiled.num_detectors == 1
+    assert compiled.detector_error_model().num_errors == 0
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_keeps_mpp_blocks_separate() -> None:
+    text = "RX 0 1\nTICK\nMPP X0*X1\nTICK\nMPP X0*X1\nDETECTOR rec[-1] rec[-2]"
+
+    result = stim_text_to_pattern(text, merge_safe_ticks=True)
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
+
+    assert len(result.mpp_extractions) == 2
+    assert compiled.detector_error_model().num_errors == 0
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_imports_sequential_anticommuting_mpp() -> None:
+    result = stim_text_to_pattern("R 0\nTICK\nMPP X0\nTICK\nMPP Z0", merge_safe_ticks=True)
+
+    assert len(result.mpp_extractions) == 2
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_keeps_mpp_apart_across_mpp_free_blocks() -> None:
+    """An MPP block must not coalesce with a later one through an intervening MPP-free block."""
+    result = stim_text_to_pattern("R 0 1\nTICK\nMPP X0\nTICK\nH 1\nTICK\nMPP Z0", merge_safe_ticks=True)
+
+    assert len(result.mpp_extractions) == 2
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_keeps_feedback_import_unchanged() -> None:
+    """Block normalization already splits this stream, so the merged import is identical."""
+    text = "R 1\nM 0\nTICK\nCX rec[-1] 1\nTICK\nM 1"
+
+    default_pattern = stim_text_to_pattern(text).pattern
+    merged_pattern = stim_text_to_pattern(text, merge_safe_ticks=True).pattern
+
+    assert ptn_dumps(merged_pattern) == ptn_dumps(default_pattern)
+
+
+def test_stim_text_to_pattern_merge_safe_ticks_preserves_unitary_semantics() -> None:
+    initial = np.asarray([1.0, 1.0], dtype=np.complex128) / np.sqrt(2)
+    expected = np.asarray([1 + 1j, 1 - 1j], dtype=np.complex128) / 2
+
+    for seed in range(8):
+        pattern = stim_text_to_pattern("S 0\nTICK\nH 0\n", merge_safe_ticks=True).pattern
+        simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
+        simulator.state = StateVector(initial)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        overlap = np.vdot(expected, simulator.state.state())
+        assert np.isclose(abs(overlap), 1.0, atol=1e-9)
+
+
+def test_stim_import_entry_points_accept_merge_safe_ticks(tmp_path: Path) -> None:
+    text = "R 0\nTICK\nH 0\nTICK\nH 0\nTICK\nM 0"
+    path = tmp_path / "merge.stim"
+    path.write_text(text, encoding="utf-8")
+
+    from_text = stim_text_to_pattern(text, merge_safe_ticks=True)
+    from_file = stim_file_to_pattern(path, merge_safe_ticks=True)
+    from_circuit = stim_circuit_to_pattern(stim.Circuit(text), merge_safe_ticks=True)
+
+    assert from_text.pattern.pauli_frame.graphstate.number_of_nodes() == 1
+    assert from_file.pattern.pauli_frame.graphstate.number_of_nodes() == 1
+    assert from_circuit.pattern.pauli_frame.graphstate.number_of_nodes() == 1
 
 
 @pytest.mark.parametrize(

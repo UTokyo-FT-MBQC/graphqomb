@@ -188,8 +188,13 @@ def stim_file_to_pattern(
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
 ) -> StimImportResult:
     """Import a supported Stim file into a GraphQOMB pattern.
+
+    When ``merge_safe_ticks`` is true, TICK boundaries whose removal cannot
+    change the imported semantics are dropped before import; see
+    `stim_circuit_to_pattern`.
 
     Returns
     -------
@@ -201,6 +206,7 @@ def stim_file_to_pattern(
         coord_dims=coord_dims,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
+        merge_safe_ticks=merge_safe_ticks,
     )
 
 
@@ -210,8 +216,13 @@ def stim_text_to_pattern(
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
 ) -> StimImportResult:
     """Import supported Stim text into a GraphQOMB pattern.
+
+    When ``merge_safe_ticks`` is true, TICK boundaries whose removal cannot
+    change the imported semantics are dropped before import; see
+    `stim_circuit_to_pattern`.
 
     Returns
     -------
@@ -223,6 +234,7 @@ def stim_text_to_pattern(
         coord_dims=coord_dims,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
+        merge_safe_ticks=merge_safe_ticks,
     )
 
 
@@ -232,6 +244,7 @@ def stim_circuit_to_pattern(
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
 ) -> StimImportResult:
     """Import a supported Stim circuit into a GraphQOMB pattern.
 
@@ -283,6 +296,19 @@ def stim_circuit_to_pattern(
     ``qubit_to_stim`` maps the fresh indices back to the original Stim qubit
     id, and ``stim_to_final_qubit`` selects the live one among them.
 
+    TICK boundaries are optimization barriers: gates in different TICK blocks
+    are never cancelled against each other or folded into an adjacent
+    reset or measurement, so a finely ticked circuit can import to a much
+    larger graph than the same instructions in fewer blocks. When
+    ``merge_safe_ticks`` is true, the importer drops every TICK whose removal
+    cannot change the imported semantics before analyzing the circuit. Because
+    per-qubit instruction order and measurement-record order survive block
+    normalization, the only TICKs kept are those separating two blocks that
+    both contain Pauli-product measurements, preserving the per-block product
+    grouping (one `StimMppExtraction` per block, block-level commutation
+    validation, and the block's foliation structure). Node coordinates come
+    out z-compressed because merged blocks share layers.
+
     Each reset lifetime also gets its own Stim qubit id internally, and the
     ``mpp_extractions`` metadata (``supports``, ``stim_to_column``, and
     ``column_to_stim``) reports the lifetime that an ``MPP`` product actually
@@ -305,7 +331,9 @@ def stim_circuit_to_pattern(
         raise ValueError(msg)
 
     idealized = _idealize_circuit(circuit.flattened())
-    reset_split = _split_reused_reset_wires(idealized.circuit)
+    reset_split = _split_reused_reset_wires(
+        _merge_safe_tick_blocks(idealized.circuit) if merge_safe_ticks else idealized.circuit
+    )
     normalized_circuit, stim_ids = _normalize_import_circuit(reset_split.circuit)
     analysis = _CircuitAnalyzer().analyze(normalized_circuit)
     annotations = collect_record_annotations(normalized_circuit)
@@ -416,6 +444,47 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
         measurement_offset += instruction.num_measurements
 
     return _IdealizedCircuit(result, frozenset(zero_record_indices))
+
+
+def _merge_safe_tick_blocks(circuit: stim.Circuit) -> stim.Circuit:
+    """Drop every TICK whose removal cannot change the imported semantics.
+
+    Removing a TICK never reorders instructions, and block normalization
+    preserves per-qubit instruction order and measurement-record order inside
+    one block, so merging blocks only widens the scope of per-block
+    optimization: gate runs cancel across the former boundary and single-qubit
+    Cliffords fold into adjacent resets and measurements. The one boundary
+    kept is between two blocks that both contain ``MPP`` instructions
+    (idealization has already rewritten pair measurements into ``MPP``):
+    without it the products would join one measurement layer, which merges
+    their `StimMppExtraction` blocks and rejects anticommuting products that
+    are fine when measured in sequence. The check runs against everything
+    merged so far, so an MPP block never coalesces with a later one through
+    intervening MPP-free blocks.
+
+    Returns
+    -------
+    ``stim.Circuit``
+        The circuit with only the required TICK boundaries.
+    """
+    blocks: list[list[stim.CircuitInstruction]] = [[]]
+    for instruction in iter_instructions(circuit):
+        if instruction.name == "TICK":
+            blocks.append([])
+        else:
+            blocks[-1].append(instruction)
+
+    result = stim.Circuit()
+    merged_has_mpp = False
+    for block in blocks:
+        block_has_mpp = any(instruction.name == "MPP" for instruction in block)
+        if merged_has_mpp and block_has_mpp:
+            result.append("TICK", [])
+            merged_has_mpp = False
+        for instruction in block:
+            result.append(instruction)
+        merged_has_mpp |= block_has_mpp
+    return result
 
 
 def _tracked_qubits(instruction: stim.CircuitInstruction) -> set[int]:
