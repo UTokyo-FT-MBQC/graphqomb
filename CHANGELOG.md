@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] 2026-08-03
+
 ### Added
 
 - **Detector Tags and Post-Selection Flags**: Stim `DETECTOR` instruction tags now survive the import/export round trip, so flag detectors marked `DETECTOR[type=flag]` can be post-selected with sinter on the compiled circuit. `qompile` accepts `parity_check_tags` (aligned with `parity_check_group`) and stores them on the new `PauliFrame.parity_check_tags`; the Stim importer fills them from the source circuit's `DETECTOR` tags and `stim_compile` re-emits each group's tag on its `DETECTOR` instruction, escaped with Stim's tag escape language. `StimMppExtraction` gains a matching `detector_tags` field aligned with `detector_rows`. The new `graphqomb.stim_glue.postselect` module exposes `FLAG_DETECTOR_TAG`, `flag_detector_indices()`, and `flag_postselection_mask()`, the latter returning a bit-packed mask suitable for `sinter.Task(postselection_mask=...)`. The `.ptn` format serializes tagged groups as `.detector[tag] ...` lines and introduces format version 3 for them: a file is written with the smallest version whose grammar it uses, so tag-free files keep the version 2 header and stay readable by external version 2 parsers, while tagged files announce `.version 3` and older parsers reject them with a clear version error.
