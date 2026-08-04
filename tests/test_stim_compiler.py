@@ -216,6 +216,30 @@ def test_stim_compile_z_measurement() -> None:
     assert f"MZ {meas_node}" in stim_str or f"MZ {in_node}" in stim_str
 
 
+@pytest.mark.parametrize(
+    ("meas_basis", "expected_measurement"),
+    [
+        (PlannerMeasBasis(Plane.XY, math.pi), "MX !0"),
+        (PlannerMeasBasis(Plane.XY, -math.pi / 2), "MY !0"),
+        (PlannerMeasBasis(Plane.XZ, -math.pi / 2), "MX !0"),
+        (PlannerMeasBasis(Plane.XZ, math.pi), "MZ !0"),
+    ],
+)
+def test_stim_compile_preserves_negative_planner_pauli_sign(
+    meas_basis: PlannerMeasBasis,
+    expected_measurement: str,
+) -> None:
+    graph = GraphState()
+    node = graph.add_node()
+    graph.register_input(node, 0)
+    graph.assign_meas_basis(node, meas_basis)
+    pattern = qompile(graph, {})
+
+    compiled = stim_compile(pattern, emit_qubit_coords=False)
+
+    assert expected_measurement in compiled.splitlines()
+
+
 def test_stim_compile_with_depolarization() -> None:
     """Test that depolarization error is correctly inserted using DepolarizingNoiseModel."""
     pattern, _, _ = create_simple_pattern_x_measurement()

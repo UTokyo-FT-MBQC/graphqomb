@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 import numpy as np
 import pytest
 import stim
@@ -635,3 +637,117 @@ def test_empty_circuit_rewrites_to_empty_circuit() -> None:
 
     assert result.circuit == stim.Circuit()
     assert result.checks == ()
+
+
+def test_segment_fallback_matches_circuit_mode_when_every_segment_rewrites() -> None:
+    source = "R 4\nCX 0 4 1 4\nM 4\nR 4\nM 4"
+
+    circuit_mode = rewrite_to_mpp(source)
+    segment_mode = rewrite_to_mpp(source, fallback="segment")
+
+    assert segment_mode.circuit == circuit_mode.circuit
+    assert segment_mode.checks == circuit_mode.checks
+    assert circuit_mode.fallback_segments == ()
+    assert segment_mode.fallback_segments == ()
+
+
+def test_segment_fallback_keeps_only_the_failing_segment_gate_level() -> None:
+    # The leading segment has an unrepresentable residual frame; the trailing
+    # reset-and-measure segment still rewrites (to a deterministic MPAD).
+    source = stim.Circuit("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 0\nM 0")
+
+    result = rewrite_to_mpp(source, fallback="segment")
+
+    assert result.circuit == stim.Circuit("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 0\nMPAD 0")
+    assert result.fallback_segments == (0,)
+    assert [check.segment_index for check in result.checks] == [0, 1]
+    assert all(result.circuit.has_flow(flow) for flow in source.flow_generators())
+    assert all(source.has_flow(flow) for flow in result.circuit.flow_generators())
+
+
+def test_whole_circuit_fallback_lists_every_segment() -> None:
+    result = rewrite_to_mpp("R 0 1\nH 0\nSWAP 0 1\nS 0\nM 0\nR 0\nM 0")
+
+    assert result.fallback_segments == (0, 1)
+
+
+def test_segment_fallback_forces_reused_post_state_producer_gate_level() -> None:
+    # Segment 1 reuses ancilla 4's measurement post-state, which a rewritten
+    # segment 0 would trash (its rewrite deletes the entangling body), so
+    # segment 0 is forced verbatim; segment 1 then rewrites against the
+    # faithful post-state.
+    source = stim.Circuit("R 4\nCX 0 4\nM 4\nH 4\nM 4")
+
+    result = rewrite_to_mpp(source, fallback="segment")
+
+    assert result.circuit == stim.Circuit("R 4\nCX 0 4\nM 4\nMPP X4")
+    assert result.fallback_segments == (0,)
+    assert [str(check.product) for check in result.checks] == ["+____Z", "+____X"]
+
+
+def test_segment_fallback_keeps_unrewritable_reuse_chain_gate_level() -> None:
+    # Both segments depend on ancilla 4's post-state and neither rewrite
+    # verifies, so the result is the gate-level source, segment by segment.
+    source = stim.Circuit("R 4\nCX 0 4\nM 4\nCX 0 4\nM 4")
+
+    result = rewrite_to_mpp(source, fallback="segment")
+
+    assert result.circuit == source
+    assert result.fallback_segments == (0, 1)
+    assert all(result.circuit.has_flow(flow) for flow in source.flow_generators())
+
+
+def test_segment_fallback_keeps_feedback_segment_gate_level() -> None:
+    source = stim.Circuit("R 0 1\nM 0\nCX rec[-1] 1\nM 1\nDETECTOR rec[-1]")
+
+    result = rewrite_to_mpp(source, fallback="segment")
+
+    assert result.circuit == stim.Circuit("R 0 1\nMPAD 0\nCX rec[-1] 1\nM 1\nDETECTOR rec[-1]")
+    assert result.fallback_segments == (1,)
+    _assert_same_reference_signs(result.circuit, source)
+
+
+def test_segment_fallback_still_rejects_noise() -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError, match="Unsupported instruction"):
+        rewrite_to_mpp("X_ERROR(0.1) 0\nM 0", fallback="segment")
+
+
+def test_segment_fallback_still_rejects_noisy_measurement() -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError, match="Noisy measurement"):
+        rewrite_to_mpp("R 0\nM(0.01) 0", fallback="segment")
+
+
+def test_segment_fallback_still_rejects_sweep_bit_controls() -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError, match="Classical feedback"):
+        rewrite_to_mpp("R 0\nM 0\nCX sweep[0] 1\nM 1", fallback="segment")
+
+
+def test_rewrite_rejects_unknown_fallback_mode() -> None:
+    with pytest.raises(ValueError, match="fallback must be"):
+        rewrite_to_mpp("M 0", fallback=cast('Literal["circuit", "segment"]', "tick"))
+
+
+def test_segment_fallback_keeps_negative_deterministic_record_importable() -> None:
+    # A deterministic-minus record would become MPAD 1, which the Stim
+    # importer rejects; under segment fallback the unsubstituted retry keeps
+    # it a signed MPP so the record a verbatim feedback segment consumes
+    # survives with its parity.
+    source = stim.Circuit("R 0 1\nX 0\nM 0\nCX rec[-1] 1\nM 1")
+
+    result = rewrite_to_mpp(source, fallback="segment")
+
+    assert result.circuit == stim.Circuit("R 0 1\nMPP !Z0\nCX rec[-1] 1\nM 1")
+    assert result.fallback_segments == (1,)
+    _assert_same_reference_signs(
+        result.circuit + stim.Circuit("DETECTOR rec[-1] rec[-2]"),
+        source + stim.Circuit("DETECTOR rec[-1] rec[-2]"),
+    )
+
+
+def test_segment_fallback_keeps_inverted_identity_measurement_verbatim() -> None:
+    # An inverted identity measurement stays a real measurement instead of the
+    # MPAD 1 pad the circuit-level rewrite emits.
+    result = rewrite_to_mpp("R 4\nM !4", fallback="segment")
+
+    assert result.circuit == stim.Circuit("R 4\nM !4")
+    assert result.fallback_segments == ()

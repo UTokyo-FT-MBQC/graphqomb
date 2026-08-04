@@ -7,12 +7,13 @@ This module provides:
 
 from __future__ import annotations
 
+import math
 from io import StringIO
 from typing import TYPE_CHECKING
 
 from graphqomb._tag import escape_tag
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, AxisMeasBasis, MeasBasis, Sign, determine_pauli_axis
+from graphqomb.common import Axis, AxisMeasBasis, MeasBasis, Plane, Sign, determine_pauli_axis, is_close_angle
 from graphqomb.noise_model import (
     Coordinate,
     EntangleEvent,
@@ -32,6 +33,26 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
     from graphqomb.pattern import Pattern
+
+
+def _is_inverted_pauli_measurement(meas_basis: MeasBasis, axis: Axis) -> bool:
+    """Return whether a Pauli measurement selects the negative eigenbasis.
+
+    Returns
+    -------
+    `bool`
+        Whether the measurement target needs Stim's inversion marker.
+    """
+    if isinstance(meas_basis, AxisMeasBasis):
+        return meas_basis.sign is Sign.MINUS
+
+    if axis is Axis.X:
+        positive_angle = math.pi / 2 if meas_basis.plane is Plane.XZ else 0.0
+    elif axis is Axis.Y:
+        positive_angle = math.pi / 2
+    else:
+        positive_angle = 0.0
+    return not is_close_angle(meas_basis.angle, positive_angle)
 
 
 class _StimCompiler:
@@ -153,7 +174,7 @@ class _StimCompiler:
 
         # Emit measurement with optional flip probability
         meas_instr = {Axis.X: "MX", Axis.Y: "MY", Axis.Z: "MZ"}[axis]
-        is_inverted = isinstance(meas_basis, AxisMeasBasis) and meas_basis.sign is Sign.MINUS
+        is_inverted = _is_inverted_pauli_measurement(meas_basis, axis)
         meas_target = f"!{node}" if is_inverted else str(node)
         if meas_flip_p > 0.0:
             self._stim_io.write(f"{meas_instr}({meas_flip_p}) {meas_target}\n")

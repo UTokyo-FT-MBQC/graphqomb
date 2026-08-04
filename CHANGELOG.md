@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MPP Rewriter Segment Fallback**: `rewrite_to_mpp(..., fallback="segment")` keeps unsupported segments gate-level while rewriting the rest to `MPP`; the default remains `"circuit"`. Measurement post-state reuse, record feedback, and dependent producer segments fall back together, while noise remains rejected. `MppRewriteResult.fallback_segments` reports retained segments, and deterministic-minus feedback records stay signed measurements instead of unsupported `MPAD 1`. On Gidney's logical-Y circuits, node count falls from 9951 directly imported to 6237 at d=9, r=9 (8217 with safe TICK merging alone).
+- **Stim Import Safe TICK Merging**: `stim_circuit_to_pattern()`, `stim_text_to_pattern()`, and `stim_file_to_pattern()` accept `merge_safe_ticks` (default off). It removes semantically redundant TICK barriers so Clifford gates can cancel or fold into resets and measurements without reordering instructions or measurement records. TICKs between Pauli-product measurement blocks remain to preserve `StimMppExtraction` grouping and commutation checks. Gidney logical-Y imports shrink by 17-19% (d=9, r=3: 7167 to 5913 nodes).
+
 ### Fixed
 
 - **Detector Determinism with Z Measurements and Z Initialization**: `PauliFrame.detector_determinism()` credited every Z-measured node with the single-qubit Z stabilizer that only Z-initialized nodes possess (false positives), while Z support landing on Z-initialized neighbors was compared exactly instead of being absorbed by that stabilizer (false negatives). Verdicts now agree with Stim's determinism analysis of the compiled circuit.

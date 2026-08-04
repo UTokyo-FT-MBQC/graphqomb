@@ -51,11 +51,13 @@ such as ``M !4`` produce signed ``MPP`` products.
    assert str(result.circuit).strip() == "R 4\nMPP X0*X1*X2*X3"
 
 The rewrite is structural: circuit-level noise instructions are rejected
-instead of being folded into ``MPP`` arguments, classical feedback is not
-supported, and optimized rewrites leave measured-out ancillas in their reset
-state rather than the measurement outcome's eigenstate. The optimized path
-preserves any residual Clifford frame on surviving qubits. It discards the
-original gate schedule, so hook-fault analysis must rely on the returned
+instead of being folded into ``MPP`` arguments, classical feedback cannot be
+rewritten (it is rejected under ``fallback="circuit"`` and passes through
+gate-level under ``fallback="segment"``), and optimized rewrites leave
+measured-out ancillas in their reset state rather than the measurement
+outcome's eigenstate. The optimized path preserves any residual Clifford frame
+on surviving qubits. It discards the original gate schedule, so hook-fault
+analysis must rely on the returned
 :class:`graphqomb.stim_glue.mpp_rewriter.CheckMapping` sidecar and the source
 circuit.
 
@@ -68,6 +70,16 @@ residual Clifford frame, it returns the flattened source circuit unchanged, so
 gate order, ``QUBIT_COORDS``, and measurement-record annotations are all
 preserved. Reset-based qubit reuse in the fallback output is handled natively
 by the Stim importer, which starts a fresh wire per reset lifetime.
+
+``fallback="segment"`` narrows that fallback to the failing segments: they are
+emitted gate-level in place while every other segment is still rewritten, and
+:attr:`graphqomb.stim_glue.mpp_rewriter.MppRewriteResult.fallback_segments`
+lists them. In this mode segments that reuse a measurement post-state without
+a reset or apply measurement-record feedback also stay gate-level instead of
+raising, a segment whose post-state a later segment consumes is forced
+gate-level as well (a rewritten segment does not preserve measured-out
+post-states), and a deterministic-minus record stays a real signed measurement
+because the Stim importer does not accept ``MPAD 1``.
 
 The cross-check is not an optional assertion: it is the decision procedure that
 picks between the optimized rewrite, the unsubstituted retry, and the
