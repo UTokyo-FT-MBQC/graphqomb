@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-04
+
 ### Added
 
 - **MPP Rewriter Segment Fallback**: `rewrite_to_mpp(..., fallback="segment")` keeps unsupported segments gate-level while rewriting the rest to `MPP`; the default remains `"circuit"`. Measurement post-state reuse, record feedback, and dependent producer segments fall back together, while noise remains rejected. `MppRewriteResult.fallback_segments` reports retained segments, and deterministic-minus feedback records stay signed measurements instead of unsupported `MPAD 1`. On Gidney's logical-Y circuits, node count falls from 9951 directly imported to 6237 at d=9, r=9 (8217 with safe TICK merging alone).
