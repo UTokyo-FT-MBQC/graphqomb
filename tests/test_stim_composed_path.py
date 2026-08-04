@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 import pytest
 import stim
 
@@ -68,6 +69,13 @@ def _uncoordinated_node_count(result: StimImportResult) -> int:
     return graph.number_of_nodes() - len(graph.coordinates)
 
 
+def _assert_same_reference_signs(left: stim.Circuit, right: stim.Circuit) -> None:
+    left_detectors, left_observables = left.reference_detector_and_observable_signs()
+    right_detectors, right_observables = right.reference_detector_and_observable_signs()
+    assert np.array_equal(left_detectors, right_detectors)
+    assert np.array_equal(left_observables, right_observables)
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -95,6 +103,7 @@ def test_rewrite_output_imports_like_the_source(source: stim.Circuit, fallback: 
     assert compiled.num_detectors == source.num_detectors
     assert compiled.num_observables == source.num_observables
     assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
+    _assert_same_reference_signs(compiled, source)
     # When the source carries QUBIT_COORDS for every qubit (the repetition
     # code generator emits none), neither path may produce a coordinate-less
     # node.
@@ -128,6 +137,7 @@ def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None
 
     assert compiled.num_detectors == source.num_detectors
     assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
+    _assert_same_reference_signs(compiled, source)
     assert _uncoordinated_node_count(composed) == 0
 
 

@@ -309,12 +309,30 @@ def test_stim_text_to_pattern_merge_safe_ticks_folds_boundary_cliffords_across_t
 def test_stim_text_to_pattern_merge_safe_ticks_keeps_detectors_deterministic() -> None:
     text = "R 0 1\nTICK\nH 0 1\nTICK\nCZ 0 1\nTICK\nH 1\nTICK\nM 0 1\nDETECTOR rec[-1] rec[-2]"
 
+    source = stim.Circuit(text)
     result = stim_text_to_pattern(text, merge_safe_ticks=True)
     compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
 
     assert result.pattern.pauli_frame.graphstate.number_of_nodes() == 3
     assert compiled.num_detectors == 1
     assert compiled.detector_error_model().num_errors == 0
+    assert np.array_equal(
+        compiled.reference_detector_and_observable_signs()[0],
+        source.reference_detector_and_observable_signs()[0],
+    )
+
+
+@pytest.mark.parametrize("annotation", ["DETECTOR rec[-1]", "OBSERVABLE_INCLUDE(0) rec[-1]"])
+def test_stim_text_to_pattern_merge_safe_ticks_preserves_reference_signs(annotation: str) -> None:
+    source = stim.Circuit(f"RY 0\nTICK\nSQRT_X_DAG 0\nTICK\nM 0\n{annotation}")
+
+    result = stim_circuit_to_pattern(source, merge_safe_ticks=True)
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
+
+    source_detector_signs, source_observable_signs = source.reference_detector_and_observable_signs()
+    compiled_detector_signs, compiled_observable_signs = compiled.reference_detector_and_observable_signs()
+    assert np.array_equal(compiled_detector_signs, source_detector_signs)
+    assert np.array_equal(compiled_observable_signs, source_observable_signs)
 
 
 def test_stim_text_to_pattern_merge_safe_ticks_keeps_mpp_blocks_separate() -> None:
