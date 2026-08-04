@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from graphqomb.qeccode import build_graph_state
+from graphqomb.stim_glue._parse import stim_mpp_extraction_from_records
 from graphqomb.stim_glue.mpp import stabilizer_code_from_stim_text
 
 
@@ -197,3 +198,44 @@ def test_stabilizer_code_from_stim_mpp_can_select_all_mpp_layers() -> None:
 def test_stabilizer_code_from_stim_mpp_rejects_record_before_beginning_of_time() -> None:
     with pytest.raises(ValueError, match="before the beginning of time"):
         stabilizer_code_from_stim_text("DETECTOR rec[-1]\nMPP X0")
+
+
+def test_stabilizer_code_from_stim_mpp_keeps_detector_tags_of_selected_detectors() -> None:
+    extraction = stabilizer_code_from_stim_text(
+        """
+        M 99
+        MPP X0 X1
+        DETECTOR[type=flag] rec[-2]
+        DETECTOR rec[-1]
+        DETECTOR[dropped] rec[-3]
+        """
+    )
+
+    # The last detector only references the non-MPP record, so it is not
+    # selected and its tag is dropped with it.
+    assert extraction.detector_rows == (frozenset({0}), frozenset({1}))
+    assert extraction.detector_tags == ("type=flag", "")
+
+
+def test_stim_mpp_extraction_rejects_misaligned_detector_tags() -> None:
+    with pytest.raises(ValueError, match="Detector tag count"):
+        stim_mpp_extraction_from_records(
+            (((0, "X"),),),
+            (0,),
+            coordinate_by_stim_id={},
+            detector_record_indices=(frozenset({0}),),
+            logical_observable_record_indices={},
+            detector_tags=("type=flag", "extra"),
+        )
+
+
+def test_stim_mpp_extraction_defaults_detector_tags_to_untagged() -> None:
+    extraction = stim_mpp_extraction_from_records(
+        (((0, "X"),),),
+        (0,),
+        coordinate_by_stim_id={},
+        detector_record_indices=(frozenset({0}),),
+        logical_observable_record_indices={},
+    )
+
+    assert extraction.detector_tags == ("",)

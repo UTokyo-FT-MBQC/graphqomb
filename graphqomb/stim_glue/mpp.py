@@ -99,6 +99,7 @@ def stabilizer_code_from_stim_text(
         coordinate_by_stim_id=coordinate_by_stim_id,
         detector_record_indices=annotations.detectors,
         logical_observable_record_indices=annotations.logical_observables,
+        detector_tags=annotations.detector_tags,
     )
 
 

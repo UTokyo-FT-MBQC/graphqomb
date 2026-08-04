@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import typing_extensions
 
+from graphqomb._tag import escape_tag, unescape_tag
 from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.common import (
     Axis,
@@ -40,8 +41,14 @@ from graphqomb.pauli_frame import PauliFrame
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-PTN_VERSION = 2
-SUPPORTED_PTN_VERSIONS = frozenset({1, PTN_VERSION})
+PTN_VERSION = 3
+SUPPORTED_PTN_VERSIONS = frozenset({1, 2, PTN_VERSION})
+# Version 3 added detector tags (".detector[tag] ..."). A file is written with
+# the smallest version whose grammar it uses, so external parsers that only
+# know version 2 keep reading tag-free files, and a tagged file announces
+# itself with a version those parsers reject up front.
+_DETECTOR_TAG_VERSION = 3
+_BASE_VERSION = 2
 
 # A timeslice marker may skip ahead of the previous one, and every skipped slice becomes a TICK
 # command.  The index is attacker-controlled in an untrusted .ptn file, so the expansion is bounded
@@ -176,12 +183,28 @@ def _parse_coord(parts: Sequence[str]) -> tuple[float, ...]:
 # ============================================================
 
 
+def _required_version(pattern: Pattern) -> int:
+    """Return the smallest .ptn version whose grammar the pattern needs.
+
+    Returns
+    -------
+    `int`
+        Minimum version required to parse the serialized pattern.
+    """
+    frame = pattern.pauli_frame
+    has_tagged_detector = any(
+        tag and group for group, tag in zip(frame.parity_check_group, frame.parity_check_tags, strict=True)
+    )
+    return _DETECTOR_TAG_VERSION if has_tagged_detector else _BASE_VERSION
+
+
 def _write_header(out: StringIO, pattern: Pattern) -> None:
     """Write header section to output."""
-    out.write(f"# GraphQOMB Pattern Format v{PTN_VERSION}\n")
+    version = _required_version(pattern)
+    out.write(f"# GraphQOMB Pattern Format v{version}\n")
     out.write("\n")
     out.write("#======== HEADER ========\n")
-    out.write(f".version {PTN_VERSION}\n")
+    out.write(f".version {version}\n")
 
     if pattern.input_node_indices:
         input_parts = [
@@ -291,10 +314,11 @@ def _write_classical_section(out: StringIO, pauli_frame: PauliFrame) -> None:
             targets_str = " ".join(str(t) for t in sorted(targets))
             out.write(f".zflow {source} -> {targets_str}\n")
 
-    for group in pauli_frame.parity_check_group:
+    for group, tag in zip(pauli_frame.parity_check_group, pauli_frame.parity_check_tags, strict=True):
         if group:
             group_str = " ".join(str(n) for n in sorted(group))
-            out.write(f".detector {group_str}\n")
+            tag_suffix = f"[{escape_tag(tag)}]" if tag else ""
+            out.write(f".detector{tag_suffix} {group_str}\n")
 
     for logical_idx, nodes in sorted(pauli_frame.logical_observables.items()):
         if nodes:
@@ -304,6 +328,11 @@ def _write_classical_section(out: StringIO, pauli_frame: PauliFrame) -> None:
 
 def dumps(pattern: Pattern) -> str:
     """Serialize a pattern to a .ptn format string.
+
+    The header declares the smallest format version whose grammar the file
+    uses: version 3 when a parity check group carries a detector tag
+    (``.detector[tag] ...``), version 2 otherwise, so tag-free files stay
+    readable by version 2 parsers.
 
     Parameters
     ----------
@@ -503,6 +532,9 @@ class _PatternData:
         Z correction flow mapping.
     parity_check_groups : `list`[`set`[`int`]]
         Parity check groups for error detection.
+    parity_check_tags : `list`[`str`]
+        Stim-style tag of each parity check group, aligned with
+        ``parity_check_groups``; the empty string means untagged.
     """
 
     input_node_indices: dict[int, int] = field(default_factory=dict[int, int])
@@ -513,6 +545,7 @@ class _PatternData:
     xflow: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
     zflow: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
     parity_check_groups: list[set[int]] = field(default_factory=list[set[int]])
+    parity_check_tags: list[str] = field(default_factory=list[str])
     logical_observables: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
 
 
@@ -713,6 +746,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         data.zflow,
         parity_check_group=data.parity_check_groups,
         logical_observables=data.logical_observables,
+        parity_check_tags=data.parity_check_tags,
     )
     return Pattern(
         input_node_indices=dict(data.input_node_indices),
@@ -724,6 +758,25 @@ def _build_pattern(data: _PatternData) -> Pattern:
     )
 
 
+def _strip_comment(raw_line: str) -> str:
+    r"""Strip a ``#`` comment, keeping ``#`` inside a .detector tag bracket.
+
+    Detector tags use Stim's tag escape language, in which a literal ``]``
+    is escaped as ``\\C``, so the first ``]`` always closes the tag.
+
+    Returns
+    -------
+    `str`
+        Line content without its trailing comment.
+    """
+    stripped = raw_line.lstrip()
+    if stripped.startswith(".detector["):
+        closing = stripped.find("]")
+        if closing != -1:
+            return stripped[: closing + 1] + stripped[closing + 1 :].split("#", 1)[0]
+    return raw_line.split("#", 1)[0]
+
+
 class _Parser:
     """Internal parser state for loads()."""
 
@@ -732,6 +785,7 @@ class _Parser:
         self.current_timeslice = -1
         self.version: int | None = None
         self.tick_budget = _IMPLICIT_TICK_SLACK
+        self.uses_detector_tag_syntax = False
 
     def parse(self, s: str) -> Pattern:
         r"""Parse the input string and return Pattern.
@@ -762,6 +816,9 @@ class _Parser:
         if self.version == 1 and self.result.input_initialization_axes:
             msg = ".input_basis requires .ptn version 2 or later"
             raise ValueError(msg)
+        if self.version < _DETECTOR_TAG_VERSION and self.uses_detector_tag_syntax:
+            msg = f".detector tags require .ptn version {_DETECTOR_TAG_VERSION} or later"
+            raise ValueError(msg)
 
         return _build_pattern(self.result)
 
@@ -773,7 +830,7 @@ class _Parser:
         ValueError
             If the line is malformed.
         """
-        line = raw_line.split("#", 1)[0].strip()
+        line = _strip_comment(raw_line).strip()
         if not line:
             return
 
@@ -799,6 +856,12 @@ class _Parser:
         ValueError
             If the directive is invalid.
         """
+        if line.startswith(".detector"):
+            # Handled before whitespace splitting because a detector tag
+            # (".detector[type=flag] 1 2") may itself contain whitespace.
+            self._handle_detector(line[len(".detector") :])
+            return
+
         parts = line.split(maxsplit=1)
         directive = parts[0]
         content = parts[1] if len(parts) > 1 else ""
@@ -819,14 +882,40 @@ class _Parser:
         elif directive == ".zflow":
             source, targets = _parse_arrow_mapping(content, ".zflow")
             self.result.zflow[source] = targets
-        elif directive == ".detector":
-            self.result.parity_check_groups.append(_parse_node_set(content.split(), ".detector"))
         elif directive == ".observable":
             logical_idx, nodes = _parse_arrow_mapping(content, ".observable")
             self.result.logical_observables[logical_idx] = nodes
         else:
             msg = f"Unknown directive: {directive}"
             raise ValueError(msg)
+
+    def _handle_detector(self, rest: str) -> None:
+        """Handle a .detector directive with an optional bracketed tag.
+
+        Raises
+        ------
+        ValueError
+            If the directive or its tag is malformed.
+        """
+        tag = ""
+        if rest.startswith("["):
+            # The bracketed grammar itself is version 3, even when it holds an
+            # empty tag, so record its use rather than relying on the tag text.
+            self.uses_detector_tag_syntax = True
+            closing = rest.find("]")
+            if closing == -1:
+                msg = ".detector tag is missing its closing ']'"
+                raise ValueError(msg)
+            tag = unescape_tag(rest[1:closing])
+            rest = rest[closing + 1 :]
+            if rest and not rest[0].isspace():
+                msg = ".detector tag must be followed by whitespace"
+                raise ValueError(msg)
+        elif rest and not rest[0].isspace():
+            msg = f"Unknown directive: .detector{rest.split(maxsplit=1)[0]}"
+            raise ValueError(msg)
+        self.result.parity_check_groups.append(_parse_node_set(rest.split(), ".detector"))
+        self.result.parity_check_tags.append(tag)
 
     def _handle_version(self, content: str) -> None:
         r"""Handle .version directive.

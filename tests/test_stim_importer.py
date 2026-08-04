@@ -1780,3 +1780,52 @@ def test_stim_text_to_pattern_rejects_true_mpad_record() -> None:
 def test_stim_text_to_pattern_rejects_record_before_beginning_of_time() -> None:
     with pytest.raises(ValueError, match="before the beginning of time"):
         stim_text_to_pattern("DETECTOR rec[-1]")
+
+
+def test_stim_text_to_pattern_preserves_detector_tags() -> None:
+    result = stim_text_to_pattern(
+        """
+        RX 0 1 2
+        TICK
+        MPP X0*X1 X1*X2
+        DETECTOR[type=flag] rec[-2]
+        DETECTOR rec[-1]
+        """
+    )
+
+    frame = result.pattern.pauli_frame
+    assert len(frame.parity_check_group) == 2
+    assert frame.parity_check_tags == ["type=flag", ""]
+    assert result.mpp_extractions[0].detector_tags == ("type=flag", "")
+
+
+def test_stim_text_to_pattern_preserves_direct_measurement_detector_tags() -> None:
+    result = stim_text_to_pattern(
+        """
+        RX 0 1
+        TICK
+        MX 0 1
+        DETECTOR[type=flag] rec[-2]
+        DETECTOR[custom tag] rec[-1] rec[-2]
+        """
+    )
+
+    frame = result.pattern.pauli_frame
+    assert frame.parity_check_tags == ["type=flag", "custom tag"]
+
+
+def test_stim_import_export_round_trip_preserves_detector_tags() -> None:
+    result = stim_text_to_pattern(
+        """
+        RX 0 1 2
+        TICK
+        MPP X0*X1 X1*X2
+        DETECTOR[type=flag] rec[-2]
+        DETECTOR rec[-1]
+        """
+    )
+
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    detector_tags = [instruction.tag for instruction in compiled if instruction.name == "DETECTOR"]
+    assert detector_tags == ["type=flag", ""]

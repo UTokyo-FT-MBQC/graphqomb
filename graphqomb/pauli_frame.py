@@ -36,6 +36,11 @@ class PauliFrame:
         Current Z Pauli state for each node
     parity_check_group : `list`\[`set`\[`int`\]\]
         Parity check group for FTQC
+    parity_check_tags : `list`\[`str`\]
+        Stim-style tag of each parity check group, aligned with
+        `parity_check_group`. The empty string means untagged. The tag
+        ``type=flag`` marks a flag detector whose samples are meant to be
+        post-selected (rejected when the detector fires).
     inv_xflow : `dict`\[`int`, `set`\[`int`\]\]
         Inverse X correction flow for each measurement flip
     inv_zflow : `dict`\[`int`, `set`\[`int`\]\]
@@ -48,19 +53,22 @@ class PauliFrame:
     x_pauli: dict[int, bool]
     z_pauli: dict[int, bool]
     parity_check_group: list[set[int]]
+    parity_check_tags: list[str]
     logical_observables: dict[int, set[int]]
     inv_xflow: dict[int, set[int]]
     inv_zflow: dict[int, set[int]]
     _pauli_axis_cache: dict[int, Axis | None]
     _chain_cache: dict[int, frozenset[int]]
 
-    def __init__(
+    def __init__(  # ruff:ignore[too-many-arguments]
         self,
         graphstate: BaseGraphState,
         xflow: Mapping[int, AbstractSet[int]],
         zflow: Mapping[int, AbstractSet[int]],
         parity_check_group: Sequence[AbstractSet[int]] | None = None,
         logical_observables: Mapping[int, AbstractSet[int]] | None = None,
+        *,
+        parity_check_tags: Sequence[str] | None = None,
     ) -> None:
         if parity_check_group is None:
             parity_check_group = []
@@ -72,6 +80,15 @@ class PauliFrame:
         self.x_pauli = dict.fromkeys(graphstate.nodes, False)
         self.z_pauli = dict.fromkeys(graphstate.nodes, False)
         self.parity_check_group = [set(item) for item in parity_check_group]
+        if parity_check_tags is None:
+            parity_check_tags = [""] * len(self.parity_check_group)
+        elif len(parity_check_tags) != len(self.parity_check_group):
+            msg = (
+                f"parity_check_tags has {len(parity_check_tags)} tag(s) "
+                f"for {len(self.parity_check_group)} parity check group(s)."
+            )
+            raise ValueError(msg)
+        self.parity_check_tags = list(parity_check_tags)
         self.logical_observables = {
             logical_idx: set(seed_nodes) for logical_idx, seed_nodes in logical_observables.items()
         }
@@ -182,11 +199,15 @@ class PauliFrame:
         r"""Get the graph-state stabilizer associated with each detector.
 
         The detector groups are expanded through their dependent chains before
-        constructing the stabilizers.  A Z-measured node contributes Z only on
-        itself and is removed from the neighbor sets of all other graph
-        stabilizers.  Every other non-input node contributes X on itself and Z
-        on each remaining neighbor.  Input nodes instead contribute the
-        stabilizer obtained from their initialization axis.
+        constructing the stabilizers.  Every node that is not Z-measured
+        contributes the resource-state stabilizer obtained from its
+        initialization axis (X on itself and Z on each neighbor for the
+        default \|+> preparation).  A Z-measured node contributes the
+        single-qubit Z stabilizer of its own preparation when it is
+        Z-initialized, and nothing otherwise: its Z support has to be supplied
+        by the graph stabilizers of its neighbors.  Z-initialized nodes are
+        excluded from all neighbor sets because their single-qubit Z
+        stabilizers make any Z support on them freely adjustable.
 
         Global phases are discarded when multiplying the Pauli operators.
 
@@ -279,7 +300,7 @@ class PauliFrame:
         detector_group : `collections.abc.Set`\[`int`\]
             Closure-expanded detector group.
         z_measurements : `collections.abc.Set`\[`int`\]
-            Nodes removed by Z measurements.
+            Nodes with a Z measurement basis.
 
         Returns
         -------
@@ -289,17 +310,22 @@ class PauliFrame:
         x_support: set[int] = set()
         z_support: set[int] = set()
         input_axes = self.graphstate.input_initialization_axes
+        z_initialized = {node for node, axis in input_axes.items() if axis is Axis.Z}
 
         for node in detector_group:
-            if node in z_measurements:
-                z_support.symmetric_difference_update({node})
-                continue
-
             axis = input_axes.get(node, Axis.X)
+
+            if node in z_measurements:
+                # Only a Z-initialized node owns a single-qubit Z stabilizer that
+                # certifies its Z measurement.  Any other Z-measured node must have
+                # its Z support supplied by the graph stabilizers of its neighbors.
+                if axis is Axis.Z:
+                    z_support.symmetric_difference_update({node})
+                continue
 
             if axis in {Axis.X, Axis.Y}:
                 x_support.symmetric_difference_update({node})
-                z_support.symmetric_difference_update(self.graphstate.neighbors(node) - z_measurements)
+                z_support.symmetric_difference_update(self.graphstate.neighbors(node) - z_initialized)
             if axis in {Axis.Y, Axis.Z}:
                 z_support.symmetric_difference_update({node})
 
