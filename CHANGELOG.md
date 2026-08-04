@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Detector Determinism with Z Measurements and Z Initialization**: `PauliFrame.detector_determinism()` credited every Z-measured node with the single-qubit Z stabilizer that only Z-initialized nodes possess (false positives), while Z support landing on Z-initialized neighbors was compared exactly instead of being absorbed by that stabilizer (false negatives). Verdicts now agree with Stim's determinism analysis of the compiled circuit.
+
 ## [0.5.1] - 2026-08-03
 
 ### Added

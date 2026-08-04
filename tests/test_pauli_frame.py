@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import pytest
@@ -416,8 +417,8 @@ def test_detector_determinism_requires_exact_support() -> None:
     assert pframe.detector_determinism() == [False]
 
 
-def test_z_measurement_replaces_graph_stabilizer_and_incident_edges() -> None:
-    """A Z-measured node contributes Z alone and is removed from neighbor sets."""
+def test_z_measurement_supported_by_neighbor_stabilizer() -> None:
+    """A Z-measured node draws its Z support from the graph stabilizers of its neighbors."""
     graph = GraphState()
     x_node = graph.add_node()
     z_node = graph.add_node()
@@ -429,6 +430,46 @@ def test_z_measurement_replaces_graph_stabilizer_and_incident_edges() -> None:
 
     assert pframe.detector_stabilizers() == [{x_node: Axis.X, z_node: Axis.Z}]
     assert pframe.detector_determinism() == [True]
+
+
+def test_z_measurement_alone_on_plus_state_is_not_deterministic() -> None:
+    """Z on a plus-state node has no single-qubit Z stabilizer, so it stays random."""
+    graph = GraphState()
+    x_node = graph.add_node()
+    z_node = graph.add_node()
+    graph.add_edge(x_node, z_node)
+    graph.assign_meas_basis(x_node, AxisMeasBasis(Axis.X, Sign.PLUS))
+    graph.assign_meas_basis(z_node, AxisMeasBasis(Axis.Z, Sign.PLUS))
+
+    pframe = PauliFrame(graph, xflow={}, zflow={}, parity_check_group=[{z_node}])
+
+    assert pframe.detector_stabilizers() == [{}]
+    assert pframe.detector_determinism() == [False]
+
+
+def test_z_measured_node_z_parity_must_not_cancel_out() -> None:
+    """Neighbor Z supports canceling on a Z-measured node leave its Z uncertified."""
+    graph = GraphState()
+    left = graph.add_node()
+    center = graph.add_node()
+    right = graph.add_node()
+    graph.add_edge(left, center)
+    graph.add_edge(center, right)
+    graph.assign_meas_basis(left, AxisMeasBasis(Axis.X, Sign.PLUS))
+    graph.assign_meas_basis(center, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    graph.assign_meas_basis(right, AxisMeasBasis(Axis.X, Sign.PLUS))
+
+    pframe = PauliFrame(
+        graph,
+        xflow={},
+        zflow={},
+        parity_check_group=[{left, center, right}, {left, center}],
+    )
+
+    # X(left) X(right) cancels the Z supports on the center, leaving its Z
+    # measurement unmatched, while X(left) Z(center) is the graph stabilizer
+    # of the left node.
+    assert pframe.detector_determinism() == [False, True]
 
 
 def test_detector_stabilizer_multiplication() -> None:
@@ -452,8 +493,11 @@ def test_detector_stabilizer_multiplication() -> None:
 @pytest.mark.parametrize(
     ("init_axis", "expected_stabilizer", "expected_determinism"),
     [
-        (Axis.X, {0: Axis.X}, True),
-        (Axis.Y, {0: Axis.Y}, True),
+        # Measuring X or Y on a node entangled with a neighbor is random: the
+        # entangling edge keeps Z support on the Z-measured |+> neighbor.
+        (Axis.X, {0: Axis.X, 1: Axis.Z}, False),
+        (Axis.Y, {0: Axis.Y, 1: Axis.Z}, False),
+        # A Z-initialized input keeps its single-qubit Z stabilizer.
         (Axis.Z, {0: Axis.Z}, True),
     ],
 )
@@ -478,8 +522,8 @@ def test_input_detector_stabilizer(
     assert pframe.detector_determinism() == [expected_determinism]
 
 
-def test_z_measurement_prevents_incident_support_cancellation() -> None:
-    """Removing Z-measured nodes from neighbor sets prevents support cancellation."""
+def test_z_initialization_prevents_incident_support_cancellation() -> None:
+    """Removing Z-initialized nodes from neighbor sets prevents support cancellation."""
     graph = GraphState()
     z_input = graph.add_node()
     neighbor = graph.add_node()
@@ -505,6 +549,85 @@ def test_input_initialization_can_make_detector_non_deterministic() -> None:
 
     assert pframe.detector_stabilizers() == [{z_input: Axis.Z}]
     assert pframe.detector_determinism() == [False]
+
+
+def test_z_initialized_neighbor_leaves_measurement_deterministic() -> None:
+    """A CZ edge to a Z-initialized node does not entangle, so X on the neighbor stays certain."""
+    graph = GraphState()
+    z_input = graph.add_node()
+    neighbor = graph.add_node()
+    graph.register_input(z_input, 0, init_axis=Axis.Z)
+    graph.add_edge(z_input, neighbor)
+    graph.assign_meas_basis(z_input, AxisMeasBasis(Axis.X, Sign.PLUS))
+    graph.assign_meas_basis(neighbor, AxisMeasBasis(Axis.X, Sign.PLUS))
+
+    pframe = PauliFrame(graph, xflow={}, zflow={}, parity_check_group=[{neighbor}])
+
+    assert pframe.detector_stabilizers() == [{neighbor: Axis.X}]
+    assert pframe.detector_determinism() == [True]
+
+
+def _assert_determinism_matches_stim(
+    edges: tuple[tuple[int, int], ...],
+    init_axes: tuple[Axis, ...],
+    meas_axes: tuple[Axis, ...],
+    groups: list[set[int]],
+) -> None:
+    """Compare `detector_determinism` with the stim expectation value oracle."""
+    stim = pytest.importorskip("stim")
+    reset_instr = {Axis.X: "RX", Axis.Y: "RY", Axis.Z: "R"}
+
+    graph = GraphState()
+    nodes = [graph.add_node() for _ in init_axes]
+    for qubit, init_axis in enumerate(init_axes):
+        if init_axis is not Axis.X:
+            graph.register_input(nodes[qubit], qubit, init_axis=init_axis)
+    for node0, node1 in edges:
+        graph.add_edge(nodes[node0], nodes[node1])
+    for qubit, meas_axis in enumerate(meas_axes):
+        graph.assign_meas_basis(nodes[qubit], AxisMeasBasis(meas_axis, Sign.PLUS))
+
+    pframe = PauliFrame(
+        graph,
+        xflow={},
+        zflow={},
+        parity_check_group=[{nodes[qubit] for qubit in group} for group in groups],
+    )
+
+    resets = "\n".join(f"{reset_instr[init_axis]} {qubit}" for qubit, init_axis in enumerate(init_axes))
+    entanglements = "\n".join(f"CZ {node0} {node1}" for node0, node1 in edges)
+    simulator = stim.TableauSimulator()
+    simulator.do(stim.Circuit(f"{resets}\n{entanglements}"))
+
+    for group, claimed in zip(groups, pframe.detector_determinism(), strict=True):
+        pauli = ["_"] * len(init_axes)
+        for qubit in group:
+            pauli[qubit] = meas_axes[qubit].name
+        expectation = simulator.peek_observable_expectation(stim.PauliString("".join(pauli)))
+        assert claimed == (expectation != 0), (
+            f"init={init_axes} meas={meas_axes} group={sorted(group)}: "
+            f"checker={claimed}, stim expectation={expectation}"
+        )
+
+
+@pytest.mark.parametrize("edges", [((0, 1),), ((0, 1), (1, 2))])
+def test_detector_determinism_matches_stim(edges: tuple[tuple[int, int], ...]) -> None:
+    """Sweep every init/measurement-axis combination and compare with stim.
+
+    The stim compiler prepares each node along its initialization axis and
+    applies CZ for every edge, so a detector is deterministic exactly when the
+    product of the measured Pauli axes on its group has a nonzero expectation
+    value on that resource state.
+    """
+    axes = [Axis.X, Axis.Y, Axis.Z]
+    num_nodes = max(max(edge) for edge in edges) + 1
+    groups = [
+        set(combo) for size in range(1, num_nodes + 1) for combo in itertools.combinations(range(num_nodes), size)
+    ]
+
+    for init_axes in itertools.product(axes, repeat=num_nodes):
+        for meas_axes in itertools.product(axes, repeat=num_nodes):
+            _assert_determinism_matches_stim(edges, init_axes, meas_axes, groups)
 
 
 def test_logical_observables_group() -> None:
