@@ -1,4 +1,4 @@
-"""Graph scheduler for measurement and preparation timing in MBQC patterns.
+"""Core graph scheduler for measurement and preparation timing in MBQC patterns.
 
 This module provides:
 
@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from graphqomb.feedforward import dag_from_flow
 from graphqomb.graphstate import unmeasured_output_nodes
-from graphqomb.greedy_scheduler import greedy_minimize_space, greedy_minimize_time
-from graphqomb.schedule_solver import ScheduleConfig, Strategy, solve_schedule
+from graphqomb.scheduler.greedy import greedy_minimize_space, greedy_minimize_time
+from graphqomb.scheduler.solver import ScheduleConfig, Strategy, solve_schedule
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -520,10 +520,11 @@ class Scheduler:
         Parameters
         ----------
         config : `ScheduleConfig` | `None`, optional
-            The scheduling configuration. If None, defaults to MINIMIZE_TIME strategy.
+            The scheduling configuration.
+            If None, defaults to the greedy MINIMIZE_TIME strategy.
         timeout : `int`, optional
             Maximum solve time in seconds for CP-SAT solver, by default 60.
-            Ignored when use_greedy=True.
+            Ignored by the greedy heuristics (the default).
 
         Returns
         -------

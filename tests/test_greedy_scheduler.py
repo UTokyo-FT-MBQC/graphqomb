@@ -4,12 +4,13 @@ import pytest
 
 from graphqomb.common import Plane, PlannerMeasBasis
 from graphqomb.graphstate import GraphState
-from graphqomb.greedy_scheduler import (
+from graphqomb.scheduler import (
+    ScheduleConfig,
+    Scheduler,
+    Strategy,
     greedy_minimize_space,
     greedy_minimize_time,
 )
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler
 
 
 def test_greedy_minimize_time_simple() -> None:

@@ -58,7 +58,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
     scheduler : `Scheduler` | `None`, optional
         scheduler to schedule the graph state preparation and measurements,
         if `None`, a `Scheduler` is constructed internally and solved with the
-        default ``MINIMIZE_TIME`` strategy before compiling the pattern,
+        default greedy ``MINIMIZE_TIME`` strategy before compiling the pattern,
         otherwise the provided scheduler is validated before compiling the pattern,
         by default `None`
 
@@ -103,7 +103,7 @@ def _qompile(
     scheduler : `Scheduler` | `None`, optional
         scheduler to schedule the graph state preparation and measurements,
         if `None`, a `Scheduler` is constructed internally and solved with the
-        default ``MINIMIZE_TIME`` strategy before compiling the pattern,
+        default greedy ``MINIMIZE_TIME`` strategy before compiling the pattern,
         otherwise the provided scheduler is validated before compiling the pattern,
         by default `None`
 

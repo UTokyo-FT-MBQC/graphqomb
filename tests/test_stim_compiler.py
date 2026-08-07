@@ -23,8 +23,7 @@ from graphqomb.noise_model import (
     PrepareEvent,
 )
 from graphqomb.qompiler import qompile
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler
+from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy
 from graphqomb.stim_glue.compiler import stim_compile
 
 if TYPE_CHECKING:

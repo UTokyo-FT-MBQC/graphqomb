@@ -373,6 +373,7 @@ def greedy_minimize_space(  # ruff:ignore[too-many-locals]
 
     This algorithm uses a greedy approach to minimize the number of active
     qubits at each time step:
+
     1. At each time step, select the next node to measure that minimizes the
        projected number of alive qubits after any required preparations.
     2. Prepare neighbors of the measured node just before measurement.

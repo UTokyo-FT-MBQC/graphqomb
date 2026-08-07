@@ -80,8 +80,10 @@ Lower these IR objects with :func:`graphqomb.qompiler.qompile`:
    print("pattern active volume:", pattern.active_volume)
 
 Passing ``scheduler`` is optional. If you omit it, :func:`graphqomb.qompiler.qompile`
-constructs a :class:`graphqomb.scheduler.Scheduler` internally, solves it with the
-default ``MINIMIZE_TIME`` strategy, and still emits `TICK`-delimited time slices.
+constructs a :class:`graphqomb.scheduler.core.Scheduler` internally, solves it with
+the default greedy ``MINIMIZE_TIME`` strategy, and still emits `TICK`-delimited time
+slices. Configure :class:`graphqomb.scheduler.solver.ScheduleConfig` with
+``use_greedy=False`` to solve for an optimal schedule with the CP-SAT solver instead.
 
 By default, :func:`graphqomb.qompiler.qompile` derives ``zflow`` from odd neighborhoods when you do not pass it explicitly. This is convenient for standard deterministic workflows, while still allowing explicit ``zflow`` control when you need a custom feedforward design.
 
