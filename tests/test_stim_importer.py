@@ -10,12 +10,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from graphqomb.command import M
+from graphqomb.command import E, M
 from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import is_runnable
 from graphqomb.ptn_format import dumps as ptn_dumps
 from graphqomb.qeccode import YFoliation
+from graphqomb.scheduler import ScheduleConfig, Strategy
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
 from graphqomb.stim_glue.compiler import stim_compile
@@ -1847,3 +1848,37 @@ def test_stim_import_export_round_trip_preserves_detector_tags() -> None:
 
     detector_tags = [instruction.tag for instruction in compiled if instruction.name == "DETECTOR"]
     assert detector_tags == ["type=flag", ""]
+
+
+def test_stim_text_to_pattern_schedule_config_solves_with_cpsat() -> None:
+    text = """
+        RX 0
+        R 1
+        TICK
+        CZ 0 1
+        TICK
+        M 1
+        DETECTOR rec[-1]
+        TICK
+        MX 0
+        """
+    default = stim_text_to_pattern(text)
+    solved = stim_text_to_pattern(
+        text,
+        schedule_config=ScheduleConfig(Strategy.MINIMIZE_TIME, use_greedy=False),
+    )
+
+    is_runnable(solved.pattern)
+    default_edges = {frozenset(command.nodes) for command in default.pattern.commands if isinstance(command, E)}
+    solved_edges = {frozenset(command.nodes) for command in solved.pattern.commands if isinstance(command, E)}
+    assert solved_edges == default_edges
+    compiled = stim.Circuit(stim_compile(solved.pattern))
+    assert not compiled.compile_detector_sampler().sample(shots=32).any()
+
+
+def test_stim_text_to_pattern_schedule_config_infeasible_raises() -> None:
+    with pytest.raises(ValueError, match="schedule_config"):
+        stim_text_to_pattern(
+            "RX 0\nR 1\nTICK\nCZ 0 1\nTICK\nM 1\nTICK\nMX 0",
+            schedule_config=ScheduleConfig(Strategy.MINIMIZE_TIME, max_qubit_count=1, use_greedy=False),
+        )
