@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (Breaking)
+
+- **Scheduler subpackage**: `graphqomb.scheduler`, `graphqomb.greedy_scheduler`, and `graphqomb.schedule_solver` moved to `graphqomb.scheduler.core`, `graphqomb.scheduler.greedy`, and `graphqomb.scheduler.solver`. The `graphqomb.scheduler` package re-exports the public API, so import everything scheduling-related from `graphqomb.scheduler`.
+- **Greedy scheduling by default**: `ScheduleConfig.use_greedy` now defaults to `True`. Pass `use_greedy=False` for the optimal CP-SAT solver.
+
 ## [0.5.2] - 2026-08-04
 
 ### Added

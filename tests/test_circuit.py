@@ -27,8 +27,7 @@ from graphqomb.gates import (
     Z,
 )
 from graphqomb.qompiler import qompile
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler
+from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy
 from graphqomb.simulator import CircuitSimulator, PatternSimulator, SimulatorBackend
 
 NON_PAULI_TEST_ANGLES = (0.2, 0.3, 0.7, 1.1, 0.25 * np.pi)

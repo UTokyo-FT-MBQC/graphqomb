@@ -10,8 +10,7 @@ from graphqomb.common import Plane, PlannerMeasBasis
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import print_pattern
 from graphqomb.qompiler import qompile
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler
+from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy
 
 # Create a simple graph state
 print("=== Entanglement Scheduling Demo ===\n")

@@ -3,14 +3,17 @@
 
 This example compares scheduling strategies, shows how they change depth and
 space usage, and illustrates how schedules become TICK-delimited pattern slices.
+
+By default, ``ScheduleConfig`` uses fast greedy heuristics (``use_greedy=True``).
+Pass ``use_greedy=False`` to solve for an optimal schedule with the CP-SAT solver,
+which also unlocks CP-SAT-only options such as ``max_time``.
 """
 
 # %%
 from graphqomb.pattern import Pattern, print_pattern
 from graphqomb.qompiler import qompile
 from graphqomb.random_objects import generate_random_flow_graph
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler
+from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy
 
 # %%
 # Create sample graph state and flow
@@ -23,13 +26,13 @@ print(f"   Output nodes: {list(graph.output_node_indices.keys())}")
 print(f"   Edges: {len(graph.edges)}")
 
 # %%
-# Demonstrate space-optimized scheduling
+# Demonstrate space-optimized scheduling (greedy heuristics by default)
 print("\n2. Space-optimized Scheduling:")
 print("=" * 40)
 
 scheduler_space = Scheduler(graph, xflow)
 space_config = ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE)
-success_space = scheduler_space.solve_schedule(space_config, timeout=10)
+success_space = scheduler_space.solve_schedule(space_config)
 pattern_space = None
 
 if success_space:
@@ -57,13 +60,13 @@ else:
     print("   Failed to find solution for Space-optimized strategy")
 
 # %%
-# Demonstrate time-optimized scheduling
+# Demonstrate time-optimized scheduling (greedy heuristics by default)
 print("\n3. Time-optimized Scheduling:")
 print("=" * 40)
 
 scheduler_time = Scheduler(graph, xflow)
 time_config = ScheduleConfig(strategy=Strategy.MINIMIZE_TIME)
-success_time = scheduler_time.solve_schedule(time_config, timeout=10)
+success_time = scheduler_time.solve_schedule(time_config)
 pattern_time = None
 
 if success_time:
@@ -91,8 +94,8 @@ else:
     print("   Failed to find solution for Time-optimized strategy")
 
 # %%
-# Demonstrate space-constrained time optimization using ScheduleConfig
-print("\n4. Space-constrained Time-optimized Scheduling (ScheduleConfig):")
+# Demonstrate space-constrained time optimization using the CP-SAT solver
+print("\n4. Space-constrained Time-optimized Scheduling (CP-SAT):")
 print("=" * 60)
 
 # Use ScheduleConfig for more detailed control
@@ -100,7 +103,8 @@ max_qubits = 5
 constrained_config = ScheduleConfig(
     strategy=Strategy.MINIMIZE_TIME,
     max_qubit_count=max_qubits,
-    max_time=20,  # Custom time limit
+    max_time=20,  # Custom time limit (CP-SAT only)
+    use_greedy=False,  # Use the CP-SAT solver for an optimal schedule
 )
 
 scheduler_constrained = Scheduler(graph, xflow)
@@ -138,13 +142,14 @@ else:
     print(f"   Failed to find solution with {max_qubits} qubits constraint")
 
 # %%
-# Demonstrate custom max_time using ScheduleConfig
-print("\n5. Custom max_time Scheduling (ScheduleConfig):")
+# Demonstrate custom max_time using the CP-SAT solver
+print("\n5. Custom max_time Scheduling (CP-SAT):")
 print("=" * 50)
 
 custom_time_config = ScheduleConfig(
     strategy=Strategy.MINIMIZE_SPACE,
-    max_time=15,  # Smaller time horizon for faster solving
+    max_time=15,  # Smaller time horizon for faster solving (CP-SAT only)
+    use_greedy=False,  # Use the CP-SAT solver for an optimal schedule
 )
 
 scheduler_custom = Scheduler(graph, xflow)

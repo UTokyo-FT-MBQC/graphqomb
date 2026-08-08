@@ -34,12 +34,26 @@ class Strategy(Enum):
 
 @dataclass
 class ScheduleConfig:
-    """Configuration for scheduling strategy, constraints, and parameters."""
+    """Configuration for scheduling strategy, constraints, and parameters.
+
+    Attributes
+    ----------
+    strategy : `Strategy`
+        The scheduling optimization strategy.
+    max_qubit_count : `int` | `None`
+        Maximum allowed number of active qubits. If `None`, no limit is enforced.
+        Ignored by the greedy ``MINIMIZE_SPACE`` heuristic.
+    max_time : `int` | `None`
+        Time horizon for the CP-SAT solver. Ignored by the greedy heuristics.
+    use_greedy : `bool`
+        If `True` (default), use the fast greedy heuristics.
+        If `False`, use the CP-SAT solver for an optimal schedule.
+    """
 
     strategy: Strategy
     max_qubit_count: int | None = None
     max_time: int | None = None
-    use_greedy: bool = False
+    use_greedy: bool = True
 
 
 @dataclass

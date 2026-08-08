@@ -1,15 +1,18 @@
 """Test greedy scheduling algorithms."""
 
+import itertools
+
 import pytest
 
 from graphqomb.common import Plane, PlannerMeasBasis
 from graphqomb.graphstate import GraphState
-from graphqomb.greedy_scheduler import (
+from graphqomb.scheduler import (
+    ScheduleConfig,
+    Scheduler,
+    Strategy,
     greedy_minimize_space,
     greedy_minimize_time,
 )
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler
 
 
 def test_greedy_minimize_time_simple() -> None:
@@ -110,8 +113,11 @@ def _compute_max_alive_qubits(
     """Compute the maximum number of alive qubits over time.
 
     A node is considered alive at time t if:
-    - It is an input node and t >= -1 and t < measurement time (if any), or
-    - It has a preparation time p and t >= p and t < measurement time (if any).
+    - It is an input node and t >= -1 and t <= measurement time (if any), or
+    - It has a preparation time p and t >= p and t <= measurement time (if any).
+
+    Measurements execute after preparations and entanglements within each time
+    slice, so a node measured at t still occupies capacity during slice t.
 
     Returns
     -------
@@ -134,7 +140,7 @@ def _compute_max_alive_qubits(
             # Determine measurement time (None for outputs or unscheduled)
             meas_t = measure_time.get(node)
 
-            if meas_t is None or t < meas_t:
+            if meas_t is None or t <= meas_t:
                 alive_nodes.add(node)
 
         max_alive = max(max_alive, len(alive_nodes))
@@ -174,6 +180,26 @@ def test_greedy_minimize_time_with_max_qubit_count_respects_limit() -> None:
     # Verify that the number of alive qubits never exceeds the limit
     max_alive = _compute_max_alive_qubits(graph, prepare_time, measure_time)
     assert max_alive <= 2
+
+
+def test_default_greedy_minimize_time_respects_limit_during_measurement_slices() -> None:
+    """Default greedy scheduling counts qubits measured at the end of a slice."""
+    graph = GraphState()
+    nodes = [graph.add_node() for _ in range(4)]
+    for node, successor in itertools.pairwise(nodes):
+        graph.add_edge(node, successor)
+
+    graph.register_input(nodes[0], 0)
+    graph.register_output(nodes[-1], 0)
+    flow = {node: {nodes[index + 1]} for index, node in enumerate(nodes[:-1])}
+
+    scheduler = Scheduler(graph, flow)
+    config = ScheduleConfig(strategy=Strategy.MINIMIZE_TIME, max_qubit_count=2)
+
+    assert scheduler.solve_schedule(config)
+    prepare_time = {node: time for node, time in scheduler.prepare_time.items() if time is not None}
+    measure_time = {node: time for node, time in scheduler.measure_time.items() if time is not None}
+    assert _compute_max_alive_qubits(graph, prepare_time, measure_time) <= 2
 
 
 def test_greedy_minimize_time_with_too_small_max_qubit_count_raises() -> None:

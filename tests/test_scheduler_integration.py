@@ -6,8 +6,7 @@ from graphqomb.command import TICK, E
 from graphqomb.common import Plane, PlannerMeasBasis
 from graphqomb.graphstate import GraphState
 from graphqomb.qompiler import qompile
-from graphqomb.schedule_solver import ScheduleConfig, Strategy
-from graphqomb.scheduler import Scheduler, compress_schedule
+from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy, compress_schedule
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 
 
@@ -90,7 +89,7 @@ def test_solve_scheduler_failure_handling() -> None:
     scheduler = Scheduler(graph, flow)
 
     # Solver should return False for unsolvable problems
-    config = ScheduleConfig(strategy=Strategy.MINIMIZE_TIME)
+    config = ScheduleConfig(strategy=Strategy.MINIMIZE_TIME, use_greedy=False)
     success = scheduler.solve_schedule(config, timeout=1)
     # Note: This might still succeed depending on the specific constraints
     # The test mainly checks that the method doesn't crash
@@ -125,8 +124,8 @@ def test_schedule_config_options() -> None:
     assert success
     time_slices = scheduler.num_slices()
 
-    # Test custom max_time
-    custom_time_config = ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE, max_time=10)
+    # Test custom max_time (CP-SAT only; the greedy heuristics ignore max_time)
+    custom_time_config = ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE, max_time=10, use_greedy=False)
     success = scheduler.solve_schedule(custom_time_config)
     assert success
 
@@ -150,7 +149,7 @@ def test_minimize_space_cpsat_prepares_node_before_measuring_it() -> None:
     gflow = {measured_node: {measured_node}}
     scheduler = Scheduler(graph, gflow)
 
-    success = scheduler.solve_schedule(ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE), timeout=10)
+    success = scheduler.solve_schedule(ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE, use_greedy=False), timeout=10)
 
     assert success
     prep_time = scheduler.prepare_time[measured_node]
@@ -205,7 +204,7 @@ def test_cpsat_rejects_initial_measured_outputs_exceeding_qubit_limit() -> None:
     scheduler = Scheduler(graph, {})
 
     success = scheduler.solve_schedule(
-        ScheduleConfig(strategy=Strategy.MINIMIZE_TIME, max_qubit_count=1),
+        ScheduleConfig(strategy=Strategy.MINIMIZE_TIME, max_qubit_count=1, use_greedy=False),
         timeout=10,
     )
 
@@ -570,7 +569,7 @@ def test_cpsat_input_input_entanglement_delays_input_measurement(strategy: Strat
     graph.assign_meas_basis(node1, PlannerMeasBasis(Plane.XY, 0.0))
 
     scheduler = Scheduler(graph, {})
-    success = scheduler.solve_schedule(ScheduleConfig(strategy=strategy), timeout=10)
+    success = scheduler.solve_schedule(ScheduleConfig(strategy=strategy, use_greedy=False), timeout=10)
 
     assert success
     edge = (node0, node1)
@@ -596,7 +595,7 @@ def test_cpsat_minimize_time_all_input_output_edge_is_scheduled() -> None:
     graph.register_output(node1, 1)
 
     scheduler = Scheduler(graph, {})
-    success = scheduler.solve_schedule(ScheduleConfig(strategy=Strategy.MINIMIZE_TIME), timeout=10)
+    success = scheduler.solve_schedule(ScheduleConfig(strategy=Strategy.MINIMIZE_TIME, use_greedy=False), timeout=10)
 
     assert success
     edge = (node0, node1)

@@ -20,7 +20,9 @@ Module reference
     ptn_format
     pauli_frame
     qompiler
-    scheduler
+    scheduler/core
+    scheduler/greedy
+    scheduler/solver
     qeccode
     stim_glue/mpp
     stim_glue/mpp_rewriter
