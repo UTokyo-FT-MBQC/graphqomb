@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Stim Import Scheduler Passthrough**: `stim_circuit_to_pattern()`, `stim_text_to_pattern()`, and `stim_file_to_pattern()` accept `schedule_config` and `schedule_timeout`. When a `ScheduleConfig` is given, the importer builds a `Scheduler` from the imported graph and flows, solves it with that configuration (e.g. `ScheduleConfig(Strategy.MINIMIZE_TIME, use_greedy=False)` for the CP-SAT solver), and compiles the pattern with the solved schedule; a `ValueError` is raised when no schedule is found. When omitted, `qompile` keeps scheduling with its default greedy strategy. This restores external control over the emitted command order — e.g. entangling-order studies that reorder `E` commands within contiguous runs can request the CP-SAT schedule instead of pinning an old library version.
+
 ### Changed (Breaking)
 
 - **Scheduler subpackage**: `graphqomb.scheduler`, `graphqomb.greedy_scheduler`, and `graphqomb.schedule_solver` moved to `graphqomb.scheduler.core`, `graphqomb.scheduler.greedy`, and `graphqomb.scheduler.solver`. The `graphqomb.scheduler` package re-exports the public API, so import everything scheduling-related from `graphqomb.scheduler`.
