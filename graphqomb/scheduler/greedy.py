@@ -104,7 +104,6 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
             neighbors_map=neighbors_map,
             input_nodes=input_nodes,
             prepared=prepared,
-            alive=alive,
             unmeasured=unmeasured_mut,
             measure_time=measure_time,
         )
@@ -120,6 +119,11 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
             criticality=criticality,
             prepare_time=prepare_time,
         )
+
+        # Preparations execute before measurements within a time slice (N -> E -> M),
+        # so nodes measured in this slice continue to consume capacity until all
+        # phase-2 preparations have been selected.
+        alive.difference_update(ready_to_measure)
 
         # Check if we made progress
         if not ready_to_measure and not prepared_in_phase2 and unmeasured_mut:
@@ -158,8 +162,11 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
         prepare_time=prepare_time,
     )
 
-    # Apply ALAP post-processing to minimize active volume
-    prepare_time = alap_prepare_times(graph, prepare_time, measure_time)
+    # Apply ALAP post-processing to minimize active volume when capacity is
+    # unbounded. With an explicit limit, moving preparations into later
+    # measurement slices can violate the N -> E -> M peak-capacity accounting.
+    if max_qubit_count is None:
+        prepare_time = alap_prepare_times(graph, prepare_time, measure_time)
 
     return prepare_time, measure_time
 
@@ -200,7 +207,6 @@ def _phase1_measure_ready_nodes(  # ruff:ignore[too-many-arguments]
     neighbors_map: Mapping[int, AbstractSet[int]],
     input_nodes: AbstractSet[int],
     prepared: set[int],
-    alive: set[int],
     unmeasured: set[int],
     measure_time: dict[int, int],
 ) -> set[int]:
@@ -220,7 +226,6 @@ def _phase1_measure_ready_nodes(  # ruff:ignore[too-many-arguments]
     for node in ready_to_measure:
         measure_time[node] = current_time
         unmeasured.remove(node)
-        alive.discard(node)
         for child in dag.get(node, ()):
             inv_dag[child].discard(node)
 
