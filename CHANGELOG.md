@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (Breaking)
 
-- **Scheduler modules consolidated under `graphqomb.scheduler`**: All scheduling code now lives in one subpackage. The `graphqomb.scheduler` module moved to `graphqomb.scheduler.core`, `graphqomb.greedy_scheduler` to `graphqomb.scheduler.greedy`, and `graphqomb.schedule_solver` to `graphqomb.scheduler.solver`. `graphqomb.scheduler` re-exports the public API (`Scheduler`, `compress_schedule`, `ScheduleTimings`, `TimeSlice`, `ScheduleConfig`, `Strategy`, `solve_schedule`, `greedy_minimize_time`, `greedy_minimize_space`, `alap_prepare_times`), so `from graphqomb.scheduler import Scheduler` keeps working and `from graphqomb.scheduler import ScheduleConfig, Strategy` replaces imports from the removed `graphqomb.schedule_solver` and `graphqomb.greedy_scheduler` modules.
-- **Greedy scheduling is the default**: `ScheduleConfig.use_greedy` now defaults to `True`, so `Scheduler.solve_schedule()` — including the scheduler `qompile` constructs when none is provided — runs the fast greedy heuristics instead of the CP-SAT solver. Pass `use_greedy=False` to solve for an optimal schedule with CP-SAT, which is also required for the CP-SAT-only `max_time` option and for `solve_schedule`'s `timeout` to take effect.
+- **Scheduler subpackage**: `graphqomb.scheduler`, `graphqomb.greedy_scheduler`, and `graphqomb.schedule_solver` moved to `graphqomb.scheduler.core`, `graphqomb.scheduler.greedy`, and `graphqomb.scheduler.solver`. The `graphqomb.scheduler` package re-exports the public API, so import everything scheduling-related from `graphqomb.scheduler`.
+- **Greedy scheduling by default**: `ScheduleConfig.use_greedy` now defaults to `True`. Pass `use_greedy=False` for the optimal CP-SAT solver.
 
 ## [0.5.2] - 2026-08-04
 
