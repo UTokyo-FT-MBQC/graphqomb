@@ -264,10 +264,11 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     """Import a supported Stim circuit into a GraphQOMB pattern.
 
     ``schedule_config`` controls how the imported pattern is scheduled: when
-    given, a `graphqomb.scheduler.Scheduler` is built from the imported graph
-    and flows, solved with that configuration (``schedule_timeout`` bounds the
-    CP-SAT solve time in seconds), and passed to `graphqomb.qompiler.qompile`;
-    when `None`, ``qompile`` schedules with its default greedy strategy.
+    given, a `graphqomb.scheduler.core.Scheduler` is built from the imported
+    graph and flows, solved with that configuration (``schedule_timeout``
+    bounds the CP-SAT solve time in seconds), and passed to
+    `graphqomb.qompiler.qompile`; when `None`, ``qompile`` schedules with its
+    default greedy strategy.
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
     Pauli measurement blocks. Stim ``R``, ``RX``, and ``RY`` instructions are
