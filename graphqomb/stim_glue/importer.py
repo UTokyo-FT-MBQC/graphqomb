@@ -16,6 +16,7 @@ from graphqomb.gates import CZ, J
 from graphqomb.graphstate import GraphState, compose, odd_neighbors
 from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
 from graphqomb.qompiler import qompile
+from graphqomb.scheduler import Scheduler
 from graphqomb.stim_glue._parse import (
     DIRECT_MEASUREMENT_AXES,
     MEASURE_RESET_AXES,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Set as AbstractSet
 
     from graphqomb.pattern import Pattern
+    from graphqomb.scheduler import ScheduleConfig
     from graphqomb.stim_glue._parse import RecordAnnotations
 
 
@@ -183,19 +185,22 @@ class _FragmentBuildResult:
     qubit_to_stim: dict[int, int]
 
 
-def stim_file_to_pattern(
+def stim_file_to_pattern(  # ruff:ignore[too-many-arguments]
     path: str | Path,
     *,
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
     merge_safe_ticks: bool = False,
+    schedule_config: ScheduleConfig | None = None,
+    schedule_timeout: int = 60,
 ) -> StimImportResult:
     """Import a supported Stim file into a GraphQOMB pattern.
 
     When ``merge_safe_ticks`` is true, TICK boundaries whose removal cannot
     change the imported semantics are dropped before import; see
-    `stim_circuit_to_pattern`.
+    `stim_circuit_to_pattern`. ``schedule_config`` and ``schedule_timeout``
+    select the pattern-level scheduler; see `stim_circuit_to_pattern`.
 
     Returns
     -------
@@ -208,22 +213,27 @@ def stim_file_to_pattern(
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
         merge_safe_ticks=merge_safe_ticks,
+        schedule_config=schedule_config,
+        schedule_timeout=schedule_timeout,
     )
 
 
-def stim_text_to_pattern(
+def stim_text_to_pattern(  # ruff:ignore[too-many-arguments]
     text: str,
     *,
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
     merge_safe_ticks: bool = False,
+    schedule_config: ScheduleConfig | None = None,
+    schedule_timeout: int = 60,
 ) -> StimImportResult:
     """Import supported Stim text into a GraphQOMB pattern.
 
     When ``merge_safe_ticks`` is true, TICK boundaries whose removal cannot
     change the imported semantics are dropped before import; see
-    `stim_circuit_to_pattern`.
+    `stim_circuit_to_pattern`. ``schedule_config`` and ``schedule_timeout``
+    select the pattern-level scheduler; see `stim_circuit_to_pattern`.
 
     Returns
     -------
@@ -236,18 +246,29 @@ def stim_text_to_pattern(
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
         merge_safe_ticks=merge_safe_ticks,
+        schedule_config=schedule_config,
+        schedule_timeout=schedule_timeout,
     )
 
 
-def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals]
+def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     circuit: stim.Circuit,
     *,
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
     merge_safe_ticks: bool = False,
+    schedule_config: ScheduleConfig | None = None,
+    schedule_timeout: int = 60,
 ) -> StimImportResult:
     """Import a supported Stim circuit into a GraphQOMB pattern.
+
+    ``schedule_config`` controls how the imported pattern is scheduled: when
+    given, a `graphqomb.scheduler.core.Scheduler` is built from the imported
+    graph and flows, solved with that configuration (``schedule_timeout``
+    bounds the CP-SAT solve time in seconds), and passed to
+    `graphqomb.qompiler.qompile`; when `None`, ``qompile`` schedules with its
+    default greedy strategy.
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
     Pauli measurement blocks. Stim ``R``, ``RX``, and ``RY`` instructions are
@@ -331,7 +352,8 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals]
     Raises
     ------
     ValueError
-        If the circuit uses unsupported instructions or invalid coordinates.
+        If the circuit uses unsupported instructions or invalid coordinates,
+        or if ``schedule_config`` is given and no schedule is found.
     """
     if coord_dims not in {2, 3}:
         msg = "coord_dims must be 2 or 3."
@@ -378,12 +400,21 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals]
         record_nodes=fragment.record_nodes,
         zero_record_indices=idealized.zero_record_indices,
     )
+    xflow, zflow = _flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices)
+    scheduler: Scheduler | None = None
+    if schedule_config is not None:
+        scheduler = Scheduler(fragment.graph, xflow, zflow)
+        if not scheduler.solve_schedule(schedule_config, timeout=schedule_timeout):
+            msg = "Scheduling the imported pattern failed with the requested schedule_config."
+            raise ValueError(msg)
     pattern = qompile(
         fragment.graph,
-        *_flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices),
+        xflow,
+        zflow,
         parity_check_group=parity_check_groups,
         logical_observables=logical_observables,
         parity_check_tags=parity_check_tags,
+        scheduler=scheduler,
     )
     return StimImportResult(
         pattern=pattern,
