@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **In-Place Graph Composition**: `graphstate.compose_into(graph1, graph2)` composes `graph2` into `graph1` by mutation with the same connection rule and validation as `compose`, keeping `graph1` node indices stable, plus `GraphState.unregister_output()` to drop an output registration. The Stim importer's fragment fold now uses it, replacing the per-step full-graph copy (quadratic in total) with a linear fold: on the 15-to-1 lattice-surgery proxy the compose stage drops from 5.0 s to 0.4 s (k=1, 23k nodes) and 54 s to 3.3 s (k=2, 101k nodes) — end-to-end import from 175 s to 82 s at k=2. The composed graph is identical up to node relabeling.
+
 - **Stim Import Scheduler Passthrough**: `stim_circuit_to_pattern()`, `stim_text_to_pattern()`, and `stim_file_to_pattern()` accept `schedule_config` and `schedule_timeout`. When a `ScheduleConfig` is given, the importer builds a `Scheduler` from the imported graph and flows, solves it with that configuration (e.g. `ScheduleConfig(Strategy.MINIMIZE_TIME, use_greedy=False)` for the CP-SAT solver), and compiles the pattern with the solved schedule; a `ValueError` is raised when no schedule is found. When omitted, `qompile` keeps scheduling with its default greedy strategy. This restores external control over the emitted command order — e.g. entangling-order studies that reorder `E` commands within contiguous runs can request the CP-SAT schedule instead of pinning an old library version.
 
 ### Changed (Breaking)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from graphqomb.common import Axis, Plane, PlannerMeasBasis
-from graphqomb.graphstate import BaseGraphState, GraphState, compose
+from graphqomb.graphstate import BaseGraphState, GraphState, compose, compose_into
 
 
 def create_simple_graph(input_qindices: list[int], output_qindices: list[int]) -> GraphState:
@@ -268,3 +268,155 @@ def test_compose_empty_connection() -> None:
     total_original_nodes: int = len(graph1.nodes) + len(graph2.nodes)
     # No nodes should be excluded since no connections are made
     assert len(composed.nodes) == total_original_nodes
+
+
+def create_rich_graph_pair() -> tuple[GraphState, GraphState]:
+    """Create a graph pair covering connections, coordinates, and measured inputs.
+
+    Returns
+    -------
+    tuple[GraphState, GraphState]
+        graph1 with outputs [1, 2] (qindex 2 measured, unconnected) and
+        graph2 with inputs [1, 3], one of them measured, plus coordinates.
+    """
+    graph1 = GraphState()
+    g1_in = graph1.add_node(coordinate=(0.0, 0.0, 0.0))
+    g1_boundary = graph1.add_node(coordinate=(1.0, 0.0, 0.0))
+    g1_measured_out = graph1.add_node()
+    graph1.add_edge(g1_in, g1_boundary)
+    graph1.add_edge(g1_in, g1_measured_out)
+    graph1.register_input(g1_in, 0, init_axis=Axis.Y)
+    graph1.register_output(g1_boundary, 1)
+    graph1.register_output(g1_measured_out, 2)
+    graph1.assign_meas_basis(g1_in, PlannerMeasBasis(Plane.XY, 0.1))
+
+    graph2 = GraphState()
+    # A connected input carrying a measurement basis and coordinate, as the
+    # importer's reuse fragments produce.
+    g2_in_connected = graph2.add_node(coordinate=(1.0, 0.0, 5.0))
+    g2_in_survives = graph2.add_node()
+    g2_out = graph2.add_node(coordinate=(2.0, 0.0, 5.0))
+    graph2.add_edge(g2_in_connected, g2_out)
+    graph2.add_edge(g2_in_survives, g2_out)
+    graph2.register_input(g2_in_connected, 1)
+    graph2.register_input(g2_in_survives, 3, init_axis=Axis.Z)
+    graph2.register_output(g2_out, 4)
+    graph2.assign_meas_basis(g2_in_connected, PlannerMeasBasis(Plane.XY, 0.2))
+    graph2.assign_meas_basis(g2_in_survives, PlannerMeasBasis(Plane.XY, 0.3))
+
+    return graph1, graph2
+
+
+def canonical_composition(
+    graph: BaseGraphState,
+    node_map1: dict[int, int],
+    node_map2: dict[int, int],
+) -> tuple[object, ...]:
+    """Relabel a composition result by node origin so results can be compared.
+
+    Returns
+    -------
+    tuple[object, ...]
+        Origin-labeled nodes, edges, inputs, initialization axes, and outputs.
+    """
+    label: dict[int, tuple[str, int]] = {}
+    for old, new in node_map1.items():
+        label[new] = ("g1", old)
+    for old, new in node_map2.items():
+        # The connected boundary node appears in both maps; the g2 label wins
+        # so both composition variants name it the same way.
+        label[new] = ("g2", old)
+
+    def basis_key(node: int) -> tuple[Plane, float] | None:
+        basis = graph.meas_bases.get(node)
+        if basis is None:
+            return None
+        assert isinstance(basis, PlannerMeasBasis)
+        return (basis.plane, basis.angle)
+
+    nodes = {label[n]: (basis_key(n), graph.coordinates.get(n)) for n in graph.nodes}
+    edges = {frozenset((label[u], label[v])) for u, v in graph.edges}
+    inputs = {label[n]: q for n, q in graph.input_node_indices.items()}
+    init_axes = {label[n]: axis for n, axis in graph.input_initialization_axes.items()}
+    outputs = {label[n]: q for n, q in graph.output_node_indices.items()}
+    return (nodes, edges, inputs, init_axes, outputs)
+
+
+def test_compose_into_matches_compose() -> None:
+    """compose_into produces the same graph as compose up to node relabeling."""
+    graph1_copied, graph2 = create_rich_graph_pair()
+    graph1_mutated, _ = create_rich_graph_pair()
+    graph1_nodes_before = set(graph1_mutated.nodes)
+
+    composed, node_map1, node_map2 = compose(graph1_copied, graph2)
+    node_map2_into = compose_into(graph1_mutated, graph2)
+    identity_map1 = {node: node for node in graph1_nodes_before}
+
+    assert canonical_composition(composed, node_map1, node_map2) == canonical_composition(
+        graph1_mutated, identity_map1, node_map2_into
+    )
+
+
+def test_compose_into_keeps_graph1_node_ids() -> None:
+    """compose_into keeps graph1 node ids stable and consumes the boundary output."""
+    graph1, graph2 = create_rich_graph_pair()
+    boundary_node = next(node for node, q_index in graph1.output_node_indices.items() if q_index == 1)
+    nodes_before = set(graph1.nodes)
+
+    node_map2 = compose_into(graph1, graph2)
+
+    assert nodes_before <= graph1.nodes
+    # The boundary output became the connected node: no longer an output, and
+    # it took over the graph2 input's measurement basis and coordinate.
+    connected_input = next(node for node, q_index in graph2.input_node_indices.items() if q_index == 1)
+    assert node_map2[connected_input] == boundary_node
+    assert boundary_node not in graph1.output_node_indices
+    assert graph1.meas_bases[boundary_node] == graph2.meas_bases[connected_input]
+    assert graph1.coordinates[boundary_node] == graph2.coordinates[connected_input]
+    assert set(graph1.output_node_indices.values()) == {2, 4}
+
+
+def test_compose_into_qindex_conflict() -> None:
+    """compose_into rejects qindex conflicts like compose."""
+    graph1: GraphState = create_simple_graph([0], [1])
+    graph2: GraphState = create_simple_graph([2], [0])
+
+    with pytest.raises(ValueError, match="Qindex conflicts detected"):
+        compose_into(graph1, graph2)
+
+
+def test_compose_into_rejects_connection_through_measured_output() -> None:
+    """compose_into rejects composing through a measured output like compose."""
+    graph1: GraphState = create_simple_graph([0], [1])
+    measured_output = next(node for node, q_index in graph1.output_node_indices.items() if q_index == 1)
+    graph1.assign_meas_basis(measured_output, PlannerMeasBasis(Plane.XY, 0.0))
+
+    graph2: GraphState = create_simple_graph([1], [2])
+
+    with pytest.raises(ValueError, match="measured output qubit indices"):
+        compose_into(graph1, graph2)
+
+
+def test_unregister_output_keeps_node() -> None:
+    """unregister_output drops only the output marking."""
+    graph = GraphState()
+    node_a = graph.add_node(coordinate=(1.0, 2.0))
+    node_b = graph.add_node()
+    graph.add_edge(node_a, node_b)
+    graph.register_output(node_a, 0)
+
+    graph.unregister_output(node_a)
+
+    assert node_a not in graph.output_node_indices
+    assert node_a in graph.nodes
+    assert graph.has_edge(node_a, node_b)
+    assert graph.coordinates[node_a] == (1.0, 2.0)
+
+
+def test_unregister_output_rejects_non_output() -> None:
+    """unregister_output raises for a node that is not an output."""
+    graph = GraphState()
+    node = graph.add_node()
+
+    with pytest.raises(ValueError, match="not registered as an output"):
+        graph.unregister_output(node)
