@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import stim
 
 from graphqomb.circuit import Circuit, CircuitScheduleStrategy, circuit2graph
-from graphqomb.common import Axis, AxisMeasBasis, Sign
+from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
 from graphqomb.gates import CZ, J
 from graphqomb.graphstate import GraphState, compose, odd_neighbors
 from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
@@ -115,8 +115,7 @@ class _Fragment:
 class _ImportContext:
     stim_to_qubit: Mapping[int, int]
     coordinate_by_stim_id: Mapping[int, tuple[float, ...]]
-    input_initialization_axes: Mapping[int, Axis]
-    input_initialization_tags: Mapping[int, str]
+    input_initializations: Mapping[int, Initialization]
     detector_record_indices: Sequence[frozenset[int]]
     detector_tags: Sequence[str]
     logical_observable_record_indices: Mapping[int, frozenset[int]]
@@ -178,8 +177,7 @@ class _DirectMeasurement:
 class _CircuitAnalysis:
     blocks: tuple[tuple[_AnalyzedInstruction, ...], ...]
     measurement_count: int
-    input_initialization_axes: dict[int, Axis]
-    input_initialization_tags: dict[int, str]
+    input_initializations: dict[int, Initialization]
     direct_measurements: tuple[_DirectMeasurement, ...]
 
 
@@ -384,8 +382,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     context = _ImportContext(
         stim_to_qubit=stim_to_qubit,
         coordinate_by_stim_id=coordinate_by_stim_id,
-        input_initialization_axes=analysis.input_initialization_axes,
-        input_initialization_tags=analysis.input_initialization_tags,
+        input_initializations=analysis.input_initializations,
         detector_record_indices=annotations.detectors,
         detector_tags=annotations.detector_tags,
         logical_observable_record_indices=annotations.logical_observables,
@@ -958,8 +955,7 @@ class _CircuitAnalyzer:
         self.blocks: list[tuple[_AnalyzedInstruction, ...]] = []
         self.current_block: list[_AnalyzedInstruction] = []
         self.measurement_count = 0
-        self.input_initialization_axes: dict[int, Axis] = {}
-        self.input_initialization_tags: dict[int, str] = {}
+        self.input_initializations: dict[int, Initialization] = {}
         self.direct_measurements: list[_DirectMeasurement] = []
         self.block_has_unitary = False
         self.block_has_pauli_measurement = False
@@ -1009,10 +1005,10 @@ class _CircuitAnalyzer:
         )
         reset_axis = RESET_AXES.get(instruction.name)
         if reset_axis is not None:
-            self.input_initialization_axes.update(dict.fromkeys(instruction_qubits, reset_axis))
-            # The last leading reset determines the initialization, so its tag
-            # overwrites earlier ones even when it is empty.
-            self.input_initialization_tags.update(dict.fromkeys(instruction_qubits, instruction.tag))
+            # The last leading reset determines the initialization, so it
+            # overwrites earlier ones even when its tag is empty.
+            initialization = Initialization(axis=reset_axis, tag=instruction.tag)
+            self.input_initializations.update(dict.fromkeys(instruction_qubits, initialization))
 
         if instruction.name in DIRECT_MEASUREMENT_AXES:
             self.direct_measurements.extend(_direct_measurements_from_instruction(analyzed))
@@ -1028,8 +1024,7 @@ class _CircuitAnalyzer:
         return _CircuitAnalysis(
             blocks=tuple(self.blocks),
             measurement_count=self.measurement_count,
-            input_initialization_axes=self.input_initialization_axes,
-            input_initialization_tags=self.input_initialization_tags,
+            input_initializations=self.input_initializations,
             direct_measurements=tuple(self.direct_measurements),
         )
 
@@ -1332,8 +1327,7 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
         graph.register_input(
             continuation_node,
             new_qubit,
-            init_axis=measurement.axis,
-            init_tag=measurement.tag if measurement.resets else "",
+            init=Initialization(axis=measurement.axis, tag=measurement.tag if measurement.resets else ""),
         )
         graph.register_output(continuation_node, new_qubit)
         if measurement.resets:
@@ -1395,12 +1389,7 @@ def _identity_fragment(context: _ImportContext) -> _Fragment:
             continue
         coord = context.coordinate_by_stim_id.get(stim_id)
         node = graph.add_node(coordinate=_coordinate_at_z(coord, 0) if coord is not None else None)
-        graph.register_input(
-            node,
-            qubit_index,
-            init_axis=context.input_initialization_axes.get(stim_id, Axis.X),
-            init_tag=context.input_initialization_tags.get(stim_id, ""),
-        )
+        graph.register_input(node, qubit_index, init=context.input_initializations.get(stim_id))
         graph.register_output(node, qubit_index)
     return _Fragment(
         graph=graph,
@@ -1434,12 +1423,7 @@ def _new_wire_fragment(
         coord = context.coordinate_by_stim_id.get(stim_id)
         node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
         qubit = stim_to_qubit[stim_id]
-        graph.register_input(
-            node,
-            qubit,
-            init_axis=context.input_initialization_axes[stim_id],
-            init_tag=context.input_initialization_tags.get(stim_id, ""),
-        )
+        graph.register_input(node, qubit, init=context.input_initializations[stim_id])
         graph.register_output(node, qubit)
     return _Fragment(graph=graph, xflow={}, record_nodes={})
 

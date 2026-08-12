@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from graphqomb.common import Axis, Plane, PlannerMeasBasis
+from graphqomb.common import Axis, Initialization, Plane, PlannerMeasBasis
 from graphqomb.euler import LocalClifford
 from graphqomb.graphstate import GraphState, bipartite_edges, compose, odd_neighbors
 
@@ -103,58 +103,47 @@ def test_add_node_input_output(graph: GraphState) -> None:
     assert graph.output_node_indices[node_index] == q_index
 
 
-def test_register_input_defaults_to_x_initialization_axis(graph: GraphState) -> None:
-    """Input nodes default to positive X-basis initialization."""
+def test_register_input_defaults_to_untagged_x_initialization(graph: GraphState) -> None:
+    """Input nodes default to an untagged positive X-eigenstate initialization."""
     node_index = graph.add_node()
 
     graph.register_input(node_index, 0)
 
-    assert graph.input_initialization_axes == {node_index: Axis.X}
+    assert graph.input_initializations == {node_index: Initialization()}
 
 
-def test_register_input_accepts_pauli_initialization_axis(graph: GraphState) -> None:
-    """Input nodes can be initialized in a positive Pauli eigenstate."""
+def test_register_input_accepts_initialization(graph: GraphState) -> None:
+    """Input nodes can carry a Pauli axis and a Stim-style tag."""
     node_index = graph.add_node()
 
-    graph.register_input(node_index, 0, init_axis=Axis.Y)
+    graph.register_input(node_index, 0, init=Initialization(axis=Axis.Y, tag="init_data"))
 
-    assert graph.input_initialization_axes == {node_index: Axis.Y}
+    assert graph.input_initializations == {node_index: Initialization(axis=Axis.Y, tag="init_data")}
 
 
-def test_register_input_rejects_non_axis_initialization(graph: GraphState) -> None:
-    """Input registration rejects values outside the Axis enum."""
+def test_register_input_rejects_non_initialization(graph: GraphState) -> None:
+    """Input registration rejects values that are not an Initialization."""
     node_index = graph.add_node()
+    invalid_init: Any = Axis.Y
+
+    with pytest.raises(TypeError, match="Input initialization must be an Initialization"):
+        graph.register_input(node_index, 0, init=invalid_init)
+
+
+def test_initialization_rejects_non_axis() -> None:
+    """Initialization rejects axes outside the Axis enum."""
     invalid_axis: Any = "X"
 
-    with pytest.raises(TypeError, match="Input initialization axis must be one of"):
-        graph.register_input(node_index, 0, init_axis=invalid_axis)
+    with pytest.raises(TypeError, match="Initialization axis must be one of"):
+        Initialization(axis=invalid_axis)
 
 
-def test_register_input_defaults_to_untagged_initialization(graph: GraphState) -> None:
-    """Input nodes default to an untagged initialization."""
-    node_index = graph.add_node()
-
-    graph.register_input(node_index, 0)
-
-    assert graph.input_initialization_tags == {node_index: ""}
-
-
-def test_register_input_accepts_initialization_tag(graph: GraphState) -> None:
-    """Input nodes can carry a Stim-style initialization tag."""
-    node_index = graph.add_node()
-
-    graph.register_input(node_index, 0, init_tag="init_data")
-
-    assert graph.input_initialization_tags == {node_index: "init_data"}
-
-
-def test_register_input_rejects_non_str_initialization_tag(graph: GraphState) -> None:
-    """Input registration rejects non-string initialization tags."""
-    node_index = graph.add_node()
+def test_initialization_rejects_non_str_tag() -> None:
+    """Initialization rejects non-string tags."""
     invalid_tag: Any = 7
 
-    with pytest.raises(TypeError, match="Input initialization tag must be a str"):
-        graph.register_input(node_index, 0, init_tag=invalid_tag)
+    with pytest.raises(TypeError, match="Initialization tag must be a str"):
+        Initialization(tag=invalid_tag)
 
 
 def test_ensure_node_exists_raises(graph: GraphState) -> None:

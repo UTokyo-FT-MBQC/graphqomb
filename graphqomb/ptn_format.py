@@ -26,6 +26,7 @@ from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.common import (
     Axis,
     AxisMeasBasis,
+    Initialization,
     MeasBasis,
     Plane,
     PlannerMeasBasis,
@@ -194,7 +195,7 @@ def _required_version(pattern: Pattern) -> int:
         Minimum version required to parse the serialized pattern.
     """
     frame = pattern.pauli_frame
-    has_tagged_input = any(pattern.input_initialization_tags.get(node, "") for node in pattern.input_node_indices)
+    has_tagged_input = any(init.tag for init in pattern.input_initializations.values())
     if has_tagged_input:
         return _INPUT_TAG_VERSION
     has_tagged_detector = any(
@@ -217,16 +218,16 @@ def _write_header(out: StringIO, pattern: Pattern) -> None:
         ]
         out.write(f".input {' '.join(input_parts)}\n")
         input_basis_parts = [
-            f"{node}:{axis.name}"
+            f"{node}:{init.axis.name}"
             for node, _qidx in sorted(pattern.input_node_indices.items(), key=operator.itemgetter(1))
-            if (axis := pattern.input_initialization_axes.get(node, Axis.X)) is not Axis.X
+            if (init := pattern.input_initializations.get(node)) is not None and init.axis is not Axis.X
         ]
         if input_basis_parts:
             out.write(f".input_basis {' '.join(input_basis_parts)}\n")
         out.writelines(
-            f".input_tag[{escape_tag(tag)}] {node}\n"
+            f".input_tag[{escape_tag(init.tag)}] {node}\n"
             for node, _qidx in sorted(pattern.input_node_indices.items(), key=operator.itemgetter(1))
-            if (tag := pattern.input_initialization_tags.get(node, ""))
+            if (init := pattern.input_initializations.get(node)) is not None and init.tag
         )
 
     if pattern.output_node_indices:
@@ -574,8 +575,7 @@ class _LoadedGraphState(BaseGraphState):
     _edges: set[tuple[int, int]]
     _meas_bases: dict[int, MeasBasis]
     _coordinates: dict[int, tuple[float, ...]]
-    _input_initialization_axes: dict[int, Axis]
-    _input_initialization_tags: dict[int, str]
+    _input_initializations: dict[int, Initialization]
     _neighbors: dict[int, set[int]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -585,8 +585,7 @@ class _LoadedGraphState(BaseGraphState):
         self._edges = {(node1, node2) if node1 < node2 else (node2, node1) for node1, node2 in self._edges}
         self._meas_bases = dict(self._meas_bases)
         self._coordinates = dict(self._coordinates)
-        self._input_initialization_axes = dict(self._input_initialization_axes)
-        self._input_initialization_tags = dict(self._input_initialization_tags)
+        self._input_initializations = dict(self._input_initializations)
         self._neighbors: dict[int, set[int]] = {node: set() for node in self._nodes}
         for node1, node2 in self._edges:
             self._neighbors.setdefault(node1, set()).add(node2)
@@ -599,13 +598,8 @@ class _LoadedGraphState(BaseGraphState):
 
     @property
     @typing_extensions.override
-    def input_initialization_axes(self) -> dict[int, Axis]:
-        return self._input_initialization_axes.copy()
-
-    @property
-    @typing_extensions.override
-    def input_initialization_tags(self) -> dict[int, str]:
-        return self._input_initialization_tags.copy()
+    def input_initializations(self) -> dict[int, Initialization]:
+        return self._input_initializations.copy()
 
     @property
     @typing_extensions.override
@@ -643,7 +637,7 @@ class _LoadedGraphState(BaseGraphState):
         raise NotImplementedError(msg)
 
     @typing_extensions.override
-    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X, init_tag: str = "") -> None:
+    def register_input(self, node: int, q_index: int, *, init: Initialization | None = None) -> None:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
@@ -687,46 +681,35 @@ def _command_nodes(cmd: Command) -> set[int]:
     return set()
 
 
-def _input_initialization_axes_from_data(data: _PatternData) -> dict[int, Axis]:
-    r"""Validate and normalize parsed input initialization axes.
+def _input_initializations_from_data(data: _PatternData) -> dict[int, Initialization]:
+    r"""Validate the parsed .input_basis/.input_tag pairs and merge them.
 
     Returns
     -------
-    `dict`\[`int`, `Axis`\]
-        Normalized input initialization axes.
+    `dict`\[`int`, `Initialization`\]
+        Initialization of every input node.
 
     Raises
     ------
     ValueError
-        If an input basis is specified for a non-input node.
+        If an input basis or tag is specified for a non-input node.
     """
     non_input_basis_nodes = set(data.input_initialization_axes) - set(data.input_node_indices)
     if non_input_basis_nodes:
         msg = f"Input basis specified for non-input node(s): {sorted(non_input_basis_nodes)}"
         raise ValueError(msg)
-
-    return {node: data.input_initialization_axes.get(node, Axis.X) for node in data.input_node_indices}
-
-
-def _input_initialization_tags_from_data(data: _PatternData) -> dict[int, str]:
-    r"""Validate and normalize parsed input initialization tags.
-
-    Returns
-    -------
-    `dict`\[`int`, `str`\]
-        Normalized input initialization tags.
-
-    Raises
-    ------
-    ValueError
-        If an input tag is specified for a non-input node.
-    """
     non_input_tag_nodes = set(data.input_initialization_tags) - set(data.input_node_indices)
     if non_input_tag_nodes:
         msg = f"Input tag specified for non-input node(s): {sorted(non_input_tag_nodes)}"
         raise ValueError(msg)
 
-    return {node: data.input_initialization_tags.get(node, "") for node in data.input_node_indices}
+    return {
+        node: Initialization(
+            axis=data.input_initialization_axes.get(node, Axis.X),
+            tag=data.input_initialization_tags.get(node, ""),
+        )
+        for node in data.input_node_indices
+    }
 
 
 def _build_pattern(data: _PatternData) -> Pattern:
@@ -742,8 +725,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
     ValueError
         If parsed commands contain invalid graph structure.
     """
-    input_initialization_axes = _input_initialization_axes_from_data(data)
-    input_initialization_tags = _input_initialization_tags_from_data(data)
+    input_initializations = _input_initializations_from_data(data)
 
     nodes: set[int] = set(data.input_node_indices) | set(data.output_node_indices) | set(data.input_coordinates)
     edges: set[tuple[int, int]] = set()
@@ -782,8 +764,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         _edges=edges,
         _meas_bases=meas_bases,
         _coordinates=coordinates,
-        _input_initialization_axes=input_initialization_axes,
-        _input_initialization_tags=input_initialization_tags,
+        _input_initializations=input_initializations,
     )
     pauli_frame = PauliFrame(
         graphstate,
@@ -799,8 +780,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         commands=tuple(data.commands),
         pauli_frame=pauli_frame,
         input_coordinates=dict(data.input_coordinates),
-        input_initialization_axes=input_initialization_axes,
-        input_initialization_tags=input_initialization_tags,
+        input_initializations=input_initializations,
     )
 
 

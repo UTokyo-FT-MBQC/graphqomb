@@ -5,6 +5,7 @@ This module provides:
 - `Plane`: Measurement planes for the MBQC.
 - `Axis`: Measurement axis.
 - `Sign`: Measurement sign.
+- `Initialization`: Input-node initialization (Pauli axis and Stim-style tag).
 - `MeasBasis`: Abstract class to represent a measurement basis.
 - `PlannerMeasBasis`: Class to represent a planner measurement basis.
 - `AxisMeasBasis`: Class to represent an axis measurement basis.
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import abc
 import cmath
+import dataclasses
 import enum
 import math
 from abc import ABC
@@ -56,6 +58,36 @@ class Sign(Enum):
 
     PLUS = enum.auto()
     MINUS = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True)
+class Initialization:
+    """Input-node initialization: a positive Pauli eigenstate with an optional tag.
+
+    Attributes
+    ----------
+    axis : `Axis`
+        Pauli axis of the prepared positive eigenstate, by default Axis.X.
+    tag : `str`
+        Stim-style instruction tag of the initialization, by default ""
+        (untagged).
+
+    Raises
+    ------
+    TypeError
+        If ``axis`` is not an `Axis` value or ``tag`` is not a `str`.
+    """
+
+    axis: Axis = Axis.X
+    tag: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.axis, Axis):
+            msg = "Initialization axis must be one of Axis.X, Axis.Y, Axis.Z"
+            raise TypeError(msg)
+        if not isinstance(self.tag, str):
+            msg = "Initialization tag must be a str"
+            raise TypeError(msg)
 
 
 class MeasBasis(ABC):

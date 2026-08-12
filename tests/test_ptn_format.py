@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
+from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import Pattern
 from graphqomb.pauli_frame import PauliFrame
@@ -104,8 +104,7 @@ def assert_pattern_equivalent(actual: Pattern, expected: Pattern) -> None:
     assert actual.input_node_indices == expected.input_node_indices
     assert actual.output_node_indices == expected.output_node_indices
     assert actual.input_coordinates == expected.input_coordinates
-    assert actual.input_initialization_axes == expected.input_initialization_axes
-    assert actual.input_initialization_tags == expected.input_initialization_tags
+    assert actual.input_initializations == expected.input_initializations
     assert actual.pauli_frame.xflow == expected.pauli_frame.xflow
     assert actual.pauli_frame.zflow == expected.pauli_frame.zflow
     assert actual.pauli_frame.parity_check_group == expected.pauli_frame.parity_check_group
@@ -141,8 +140,8 @@ def test_ptn_roundtrip_preserves_input_initialization_axes() -> None:
     out0 = graph.add_node()
     out1 = graph.add_node()
 
-    graph.register_input(in0, 0, init_axis=Axis.Y)
-    graph.register_input(in1, 1, init_axis=Axis.Z)
+    graph.register_input(in0, 0, init=Initialization(axis=Axis.Y))
+    graph.register_input(in1, 1, init=Initialization(axis=Axis.Z))
     graph.register_output(out0, 0)
     graph.register_output(out1, 1)
     graph.add_edge(in0, out0)
@@ -155,7 +154,7 @@ def test_ptn_roundtrip_preserves_input_initialization_axes() -> None:
     loaded = loads(ptn_str)
 
     assert ".input_basis" in ptn_str
-    assert loaded.input_initialization_axes == {in0: Axis.Y, in1: Axis.Z}
+    assert loaded.input_initializations == {in0: Initialization(axis=Axis.Y), in1: Initialization(axis=Axis.Z)}
 
 
 def test_ptn_loads_legacy_input_without_input_basis_as_x() -> None:
@@ -174,7 +173,7 @@ M 0 X +
 
     loaded = loads(ptn_str)
 
-    assert loaded.input_initialization_axes == {0: Axis.X}
+    assert loaded.input_initializations == {0: Initialization()}
 
 
 def test_ptn_load_rejects_input_basis_for_non_input_node() -> None:
@@ -207,7 +206,7 @@ def create_tagged_input_pattern(tag: str) -> Pattern:
     graph = GraphState()
     in_node = graph.add_node()
     out_node = graph.add_node()
-    graph.register_input(in_node, 0, init_tag=tag)
+    graph.register_input(in_node, 0, init=Initialization(tag=tag))
     graph.register_output(out_node, 0)
     graph.add_edge(in_node, out_node)
     graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))
@@ -238,7 +237,7 @@ def test_ptn_roundtrip_preserves_input_initialization_tags(tag: str) -> None:
     ptn_str = dumps(pattern)
     loaded = loads(ptn_str)
 
-    assert loaded.input_initialization_tags == pattern.input_initialization_tags
+    assert loaded.input_initializations == pattern.input_initializations
     assert dumps(loaded) == ptn_str
 
 
@@ -330,7 +329,7 @@ M 0 X +
 
     loaded = loads(ptn_str)
 
-    assert loaded.input_initialization_tags == {0: "tag # not comment"}
+    assert loaded.input_initializations == {0: Initialization(tag="tag # not comment")}
 
 
 def test_ptn_load_rejects_input_basis_in_legacy_version() -> None:

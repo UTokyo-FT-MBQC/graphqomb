@@ -13,7 +13,16 @@ from typing import TYPE_CHECKING
 
 from graphqomb._tag import escape_tag
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, AxisMeasBasis, MeasBasis, Plane, Sign, determine_pauli_axis, is_close_angle
+from graphqomb.common import (
+    Axis,
+    AxisMeasBasis,
+    Initialization,
+    MeasBasis,
+    Plane,
+    Sign,
+    determine_pauli_axis,
+    is_close_angle,
+)
 from graphqomb.noise_model import (
     Coordinate,
     EntangleEvent,
@@ -101,9 +110,8 @@ class _StimCompiler:
         coordinates = self._pattern.input_coordinates if self._emit_qubit_coords else None
         for node in self._pattern.input_node_indices:
             coord = coordinates.get(node) if coordinates else None
-            axis = self._pattern.input_initialization_axes.get(node, Axis.X)
-            tag = self._pattern.input_initialization_tags.get(node, "")
-            self._process_prepare(node, coord, is_input=True, init_axis=axis, init_tag=tag)
+            init = self._pattern.input_initializations.get(node, Initialization())
+            self._process_prepare(node, coord, is_input=True, init=init)
 
     def _process_commands(self) -> None:
         for cmd in self._pattern:
@@ -125,8 +133,7 @@ class _StimCompiler:
         coordinate: tuple[float, ...] | None,
         *,
         is_input: bool,
-        init_axis: Axis = Axis.X,
-        init_tag: str = "",
+        init: Initialization | None = None,
     ) -> None:
         event = PrepareEvent(time=self._tick, node=self._node_info(node), is_input=is_input)
         ops = self._validate_ops_for_event(event, self._collect_noise_ops_from_models(lambda m: m.on_prepare(event)))
@@ -136,8 +143,10 @@ class _StimCompiler:
         coord = coordinate if self._emit_qubit_coords else None
         if coord is not None:
             self._stim_io.write(f"QUBIT_COORDS({', '.join(str(c) for c in coord)}) {node}\n")
-        reset_instr = {Axis.X: "RX", Axis.Y: "RY", Axis.Z: "R"}[init_axis]
-        tag_suffix = f"[{escape_tag(init_tag)}]" if init_tag else ""
+        if init is None:
+            init = Initialization()
+        reset_instr = {Axis.X: "RX", Axis.Y: "RY", Axis.Z: "R"}[init.axis]
+        tag_suffix = f"[{escape_tag(init.tag)}]" if init.tag else ""
         self._stim_io.write(f"{reset_instr}{tag_suffix} {node}\n")
 
         self._rec_index += self._emit_noise_ops(ops, NoisePlacement.AFTER, default_placement)

@@ -9,7 +9,7 @@ import pytest
 import typing_extensions
 
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign
+from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign
 from graphqomb.graphstate import GraphState
 from graphqomb.noise_model import (
     DepolarizingNoiseModel,
@@ -150,7 +150,7 @@ def test_stim_compile_uses_input_initialization_axis(init_axis: Axis, expected_r
     in_node = graph.add_node()
     out_node = graph.add_node()
 
-    graph.register_input(in_node, 0, init_axis=init_axis)
+    graph.register_input(in_node, 0, init=Initialization(axis=init_axis))
     graph.register_output(out_node, 0)
     graph.add_edge(in_node, out_node)
     graph.assign_meas_basis(in_node, AxisMeasBasis(Axis.X, Sign.PLUS))
@@ -168,7 +168,7 @@ def test_stim_compile_keeps_non_input_preparations_in_x_basis() -> None:
     mid_node = graph.add_node()
     out_node = graph.add_node()
 
-    graph.register_input(in_node, 0, init_axis=Axis.Z)
+    graph.register_input(in_node, 0, init=Initialization(axis=Axis.Z))
     graph.register_output(out_node, 0)
     graph.add_edge(in_node, mid_node)
     graph.add_edge(mid_node, out_node)
@@ -922,7 +922,7 @@ def create_tagged_input_pattern(tag: str, init_axis: Axis = Axis.X) -> Pattern:
     graph = GraphState()
     in_node = graph.add_node()
     out_node = graph.add_node()
-    graph.register_input(in_node, 0, init_axis=init_axis, init_tag=tag)
+    graph.register_input(in_node, 0, init=Initialization(axis=init_axis, tag=tag))
     graph.register_output(out_node, 0)
     graph.add_edge(in_node, out_node)
     graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphqomb.common import Axis, Plane, PlannerMeasBasis
+from graphqomb.common import Axis, Initialization, Plane, PlannerMeasBasis
 from graphqomb.graphstate import BaseGraphState, GraphState, compose
 
 
@@ -195,13 +195,13 @@ def test_compose_preserves_measurement_bases() -> None:
     assert composed.meas_bases[mapped_node2] == meas_basis
 
 
-def test_compose_preserves_surviving_input_initialization_axes() -> None:
-    """Composition preserves initialization axes for inputs that remain inputs."""
+def test_compose_preserves_surviving_input_initializations() -> None:
+    """Composition preserves initializations for inputs that remain inputs."""
     graph1 = GraphState()
     g1_in = graph1.add_node()
     g1_out = graph1.add_node()
     graph1.add_edge(g1_in, g1_out)
-    graph1.register_input(g1_in, 0, init_axis=Axis.Y)
+    graph1.register_input(g1_in, 0, init=Initialization(axis=Axis.Y, tag="first"))
     graph1.register_output(g1_out, 1)
     graph1.assign_meas_basis(g1_in, PlannerMeasBasis(Plane.XY, 0.0))
 
@@ -211,47 +211,17 @@ def test_compose_preserves_surviving_input_initialization_axes() -> None:
     g2_out = graph2.add_node()
     graph2.add_edge(g2_in_connected, g2_out)
     graph2.add_edge(g2_in_survives, g2_out)
-    graph2.register_input(g2_in_connected, 1, init_axis=Axis.Z)
-    graph2.register_input(g2_in_survives, 2, init_axis=Axis.Z)
+    graph2.register_input(g2_in_connected, 1, init=Initialization(axis=Axis.Z, tag="dropped"))
+    graph2.register_input(g2_in_survives, 2, init=Initialization(axis=Axis.Z, tag="second"))
     graph2.register_output(g2_out, 3)
     graph2.assign_meas_basis(g2_in_connected, PlannerMeasBasis(Plane.XY, 0.0))
     graph2.assign_meas_basis(g2_in_survives, PlannerMeasBasis(Plane.XY, 0.0))
 
     composed, node_map1, node_map2 = compose(graph1, graph2)
 
-    assert composed.input_initialization_axes == {
-        node_map1[g1_in]: Axis.Y,
-        node_map2[g2_in_survives]: Axis.Z,
-    }
-
-
-def test_compose_preserves_surviving_input_initialization_tags() -> None:
-    """Composition preserves initialization tags for inputs that remain inputs."""
-    graph1 = GraphState()
-    g1_in = graph1.add_node()
-    g1_out = graph1.add_node()
-    graph1.add_edge(g1_in, g1_out)
-    graph1.register_input(g1_in, 0, init_tag="first")
-    graph1.register_output(g1_out, 1)
-    graph1.assign_meas_basis(g1_in, PlannerMeasBasis(Plane.XY, 0.0))
-
-    graph2 = GraphState()
-    g2_in_connected = graph2.add_node()
-    g2_in_survives = graph2.add_node()
-    g2_out = graph2.add_node()
-    graph2.add_edge(g2_in_connected, g2_out)
-    graph2.add_edge(g2_in_survives, g2_out)
-    graph2.register_input(g2_in_connected, 1, init_tag="dropped")
-    graph2.register_input(g2_in_survives, 2, init_tag="second")
-    graph2.register_output(g2_out, 3)
-    graph2.assign_meas_basis(g2_in_connected, PlannerMeasBasis(Plane.XY, 0.0))
-    graph2.assign_meas_basis(g2_in_survives, PlannerMeasBasis(Plane.XY, 0.0))
-
-    composed, node_map1, node_map2 = compose(graph1, graph2)
-
-    assert composed.input_initialization_tags == {
-        node_map1[g1_in]: "first",
-        node_map2[g2_in_survives]: "second",
+    assert composed.input_initializations == {
+        node_map1[g1_in]: Initialization(axis=Axis.Y, tag="first"),
+        node_map2[g2_in_survives]: Initialization(axis=Axis.Z, tag="second"),
     }
 
 
