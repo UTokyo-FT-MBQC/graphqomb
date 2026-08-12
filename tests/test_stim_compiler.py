@@ -909,3 +909,51 @@ def test_stim_compile_escapes_detector_tags(tag: str) -> None:
     circuit = stim.Circuit(stim_str)
     detector_tags = [instruction.tag for instruction in circuit if instruction.name == "DETECTOR"]
     assert detector_tags == [tag]
+
+
+def create_tagged_input_pattern(tag: str, init_axis: Axis = Axis.X) -> Pattern:
+    """Create a pattern whose single input carries an initialization tag.
+
+    Returns
+    -------
+    Pattern
+        Compiled pattern with a tagged input initialization.
+    """
+    graph = GraphState()
+    in_node = graph.add_node()
+    out_node = graph.add_node()
+    graph.register_input(in_node, 0, init_axis=init_axis, init_tag=tag)
+    graph.register_output(out_node, 0)
+    graph.add_edge(in_node, out_node)
+    graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(out_node, PlannerMeasBasis(Plane.XY, 0.0))
+
+    return qompile(graph, {in_node: {out_node}})
+
+
+@pytest.mark.parametrize(
+    ("init_axis", "reset_name"),
+    [(Axis.X, "RX"), (Axis.Y, "RY"), (Axis.Z, "R")],
+)
+def test_stim_compile_emits_input_initialization_tag(init_axis: Axis, reset_name: str) -> None:
+    stim_str = stim_compile(create_tagged_input_pattern("init_data", init_axis=init_axis))
+
+    assert f"{reset_name}[init_data]" in stim_str
+
+
+def test_stim_compile_leaves_untagged_input_initialization_bare() -> None:
+    stim_str = stim_compile(create_tagged_input_pattern(""))
+
+    input_reset_line = next(line for line in stim_str.splitlines() if line.startswith("RX"))
+    assert input_reset_line.startswith("RX ")
+
+
+@pytest.mark.parametrize("tag", ["a]b", "back\\slash", "new\nline", "cr\rreturn", "sp ace#hash"])
+def test_stim_compile_escapes_input_initialization_tags(tag: str) -> None:
+    stim = pytest.importorskip("stim")
+    stim_str = stim_compile(create_tagged_input_pattern(tag))
+
+    circuit = stim.Circuit(stim_str)
+    # Non-input node preparations also emit RX, so keep the tagged ones only.
+    reset_tags = [instruction.tag for instruction in circuit if instruction.name == "RX" and instruction.tag]
+    assert reset_tags == [tag]

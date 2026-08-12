@@ -62,6 +62,18 @@ class BaseGraphState(ABC):
         return dict.fromkeys(self.input_node_indices, Axis.X)
 
     @property
+    def input_initialization_tags(self) -> dict[int, str]:
+        r"""Stim-style instruction tags of input initializations.
+
+        Returns
+        -------
+        `dict`\[`int`, `str`\]
+            map of input nodes to initialization tags; the empty string means
+            untagged.
+        """
+        return dict.fromkeys(self.input_node_indices, "")
+
+    @property
     @abc.abstractmethod
     def output_node_indices(self) -> dict[int, int]:
         r"""Map of output nodes to logical qubit indices.
@@ -186,7 +198,7 @@ class BaseGraphState(ABC):
         return len(self.edges)
 
     @abc.abstractmethod
-    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X) -> None:
+    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X, init_tag: str = "") -> None:
         """Mark the node as an input node.
 
         Parameters
@@ -197,6 +209,9 @@ class BaseGraphState(ABC):
             logical qubit index
         init_axis : `Axis`, optional
             Pauli axis for positive-eigenstate initialization, by default Axis.X
+        init_tag : `str`, optional
+            Stim-style instruction tag of the initialization, by default ""
+            (untagged)
         """
 
     @abc.abstractmethod
@@ -259,6 +274,7 @@ class GraphState(BaseGraphState):
 
     __input_node_indices: dict[int, int]
     __input_initialization_axes: dict[int, Axis]
+    __input_initialization_tags: dict[int, str]
     __output_node_indices: dict[int, int]
     __nodes: set[int]
     __neighbors: dict[int, set[int]]
@@ -273,6 +289,7 @@ class GraphState(BaseGraphState):
     def __init__(self) -> None:
         self.__input_node_indices = {}
         self.__input_initialization_axes = {}
+        self.__input_initialization_tags = {}
         self.__output_node_indices = {}
         self.__nodes = set()
         self.__neighbors = {}
@@ -305,6 +322,19 @@ class GraphState(BaseGraphState):
             map of input nodes to Pauli initialization axes.
         """
         return self.__input_initialization_axes.copy()
+
+    @property
+    @typing_extensions.override
+    def input_initialization_tags(self) -> dict[int, str]:
+        r"""Stim-style instruction tags of input initializations.
+
+        Returns
+        -------
+        `dict`\[`int`, `str`\]
+            map of input nodes to initialization tags; the empty string means
+            untagged.
+        """
+        return self.__input_initialization_tags.copy()
 
     @property
     @typing_extensions.override
@@ -542,7 +572,7 @@ class GraphState(BaseGraphState):
         self.__neighbors[node2] -= {node1}
 
     @typing_extensions.override
-    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X) -> None:
+    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X, init_tag: str = "") -> None:
         """Mark the node as an input node.
 
         Parameters
@@ -553,11 +583,15 @@ class GraphState(BaseGraphState):
             logical qubit index
         init_axis : `Axis`, optional
             Pauli axis for positive-eigenstate initialization, by default Axis.X
+        init_tag : `str`, optional
+            Stim-style instruction tag of the initialization, by default ""
+            (untagged)
 
         Raises
         ------
         TypeError
-            If ``init_axis`` is not an `Axis` value.
+            If ``init_axis`` is not an `Axis` value, or ``init_tag`` is not a
+            `str`.
         ValueError
             If the node is already registered as an input node.
         """
@@ -571,8 +605,12 @@ class GraphState(BaseGraphState):
         if not isinstance(init_axis, Axis):
             msg = "Input initialization axis must be one of Axis.X, Axis.Y, Axis.Z"
             raise TypeError(msg)
+        if not isinstance(init_tag, str):
+            msg = "Input initialization tag must be a str"
+            raise TypeError(msg)
         self.__input_node_indices[node] = q_index
         self.__input_initialization_axes[node] = init_axis
+        self.__input_initialization_tags[node] = init_tag
 
     @typing_extensions.override
     def register_output(self, node: int, q_index: int) -> None:
@@ -714,17 +752,21 @@ class GraphState(BaseGraphState):
         node_index_addition_map: dict[int, LocalCliffordExpansion] = {}
         new_input_indices: dict[int, int] = {}
         new_input_initialization_axes: dict[int, Axis] = {}
+        new_input_initialization_tags: dict[int, str] = {}
         for input_node, q_index in self.input_node_indices.items():
             init_axis = self.input_initialization_axes[input_node]
+            init_tag = self.input_initialization_tags[input_node]
             lc = self._pop_local_clifford(input_node)
             if lc is None:
                 new_input_indices[input_node] = q_index
                 new_input_initialization_axes[input_node] = init_axis
+                new_input_initialization_tags[input_node] = init_tag
                 continue
 
             new_node_index0 = self.add_node()
             new_input_indices[new_node_index0] = q_index
             new_input_initialization_axes[new_node_index0] = init_axis
+            new_input_initialization_tags[new_node_index0] = init_tag
             new_node_index1 = self.add_node()
             new_node_index2 = self.add_node()
 
@@ -742,11 +784,13 @@ class GraphState(BaseGraphState):
 
         self.__input_node_indices = {}
         self.__input_initialization_axes = {}
+        self.__input_initialization_tags = {}
         for new_input_index, q_index in new_input_indices.items():
             self.register_input(
                 new_input_index,
                 q_index,
                 init_axis=new_input_initialization_axes[new_input_index],
+                init_tag=new_input_initialization_tags[new_input_index],
             )
 
         return node_index_addition_map
@@ -800,6 +844,7 @@ class GraphState(BaseGraphState):
         meas_bases: Mapping[NodeT, MeasBasis] | None = None,
         coordinates: Mapping[NodeT, tuple[float, ...]] | None = None,
         input_initialization_axes: Mapping[NodeT, Axis] | None = None,
+        input_initialization_tags: Mapping[NodeT, str] | None = None,
     ) -> tuple[GraphState, dict[NodeT, int]]:
         r"""Create a graph state from nodes and edges with arbitrary node types.
 
@@ -826,6 +871,9 @@ class GraphState(BaseGraphState):
             Coordinates for nodes (2D or 3D). Default is None (no coordinates).
         input_initialization_axes : `collections.abc.Mapping`\[NodeT, `Axis`\] | `None`, optional
             Pauli initialization axes for input nodes. Default is None (all inputs use Axis.X).
+        input_initialization_tags : `collections.abc.Mapping`\[NodeT, `str`\] | `None`, optional
+            Stim-style instruction tags for input initializations. Default is
+            None (all inputs untagged).
 
         Returns
         -------
@@ -837,7 +885,7 @@ class GraphState(BaseGraphState):
         ------
         ValueError
             If duplicate nodes, invalid edges, invalid input/output nodes, or
-            initialization axes are specified for non-input nodes.
+            initialization axes or tags are specified for non-input nodes.
         """
         # Convert nodes to list to preserve order
         nodes_list = list(nodes)
@@ -856,11 +904,11 @@ class GraphState(BaseGraphState):
                     msg = f"Input node {input_node} not in nodes collection"
                     raise ValueError(msg)
         input_set: set[NodeT] = set() if inputs is None else set(inputs)
-        if input_initialization_axes is not None:
-            non_input_initialization_nodes = set(input_initialization_axes) - input_set
+        for label, mapping in (("axes", input_initialization_axes), ("tags", input_initialization_tags)):
+            non_input_initialization_nodes = set(mapping or ()) - input_set
             if non_input_initialization_nodes:
                 msg = (
-                    "Input initialization axes specified for non-input node(s): "
+                    f"Input initialization {label} specified for non-input node(s): "
                     f"{sorted(non_input_initialization_nodes, key=repr)}"
                 )
                 raise ValueError(msg)
@@ -905,7 +953,8 @@ class GraphState(BaseGraphState):
                 init_axis = (
                     Axis.X if input_initialization_axes is None else input_initialization_axes.get(input_node, Axis.X)
                 )
-                graph_state.register_input(node_map[input_node], q_index, init_axis=init_axis)
+                init_tag = "" if input_initialization_tags is None else input_initialization_tags.get(input_node, "")
+                graph_state.register_input(node_map[input_node], q_index, init_axis=init_axis, init_tag=init_tag)
 
         # Register outputs with sequential qubit indices
         if outputs is not None:
@@ -973,6 +1022,7 @@ class GraphState(BaseGraphState):
                 node_map[input_node],
                 q_index,
                 init_axis=base.input_initialization_axes.get(input_node, Axis.X),
+                init_tag=base.input_initialization_tags.get(input_node, ""),
             )
 
         # Register outputs with same qubit indices
@@ -1099,6 +1149,7 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
             node_map1[input_node],
             q_index,
             init_axis=graph1.input_initialization_axes.get(input_node, Axis.X),
+            init_tag=graph1.input_initialization_tags.get(input_node, ""),
         )
 
     for input_node, q_index in graph2.input_node_indices.items():
@@ -1107,6 +1158,7 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
                 node_map2[input_node],
                 q_index,
                 init_axis=graph2.input_initialization_axes.get(input_node, Axis.X),
+                init_tag=graph2.input_initialization_tags.get(input_node, ""),
             )
 
     # Register output nodes with preserved qindices

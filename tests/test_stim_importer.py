@@ -1850,6 +1850,85 @@ def test_stim_import_export_round_trip_preserves_detector_tags() -> None:
     assert detector_tags == ["type=flag", ""]
 
 
+@pytest.mark.parametrize(
+    ("instruction", "reset_name"),
+    [("R[init] 0", "R"), ("RX[init] 0", "RX"), ("RY[init] 0", "RY")],
+)
+def test_stim_text_to_pattern_preserves_initial_reset_tag(instruction: str, reset_name: str) -> None:
+    result = stim_text_to_pattern(instruction)
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert result.pattern.input_initialization_tags[input_node] == "init"
+    assert f"{reset_name}[init] {input_node}" in stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
+
+
+def test_stim_text_to_pattern_last_leading_reset_tag_wins() -> None:
+    result = stim_text_to_pattern("R[first] 0\nRY[second] 0")
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert result.pattern.input_initialization_tags[input_node] == "second"
+
+
+def test_stim_text_to_pattern_untagged_last_leading_reset_clears_tag() -> None:
+    result = stim_text_to_pattern("R[first] 0\nRY 0")
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert not result.pattern.input_initialization_tags[input_node]
+
+
+def test_stim_text_to_pattern_keeps_reset_tag_through_clifford_folding() -> None:
+    result = stim_text_to_pattern("R[init] 0\nH 0")
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert result.pattern.input_initialization_axes[input_node] == Axis.X
+    assert result.pattern.input_initialization_tags[input_node] == "init"
+
+
+def test_stim_text_to_pattern_fresh_wire_keeps_mid_circuit_reset_tag() -> None:
+    result = stim_text_to_pattern("M 0\nR[again] 0\nTICK\nM 0\nDETECTOR rec[-1]")
+    fresh_input = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
+
+    assert result.pattern.input_initialization_tags[fresh_input] == "again"
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
+    tagged_resets = [instruction.tag for instruction in compiled if instruction.name == "R" and instruction.tag]
+    assert tagged_resets == ["again"]
+
+
+def test_stim_text_to_pattern_measure_reset_tag_marks_continuation() -> None:
+    result = stim_text_to_pattern("MR[mr] 0\nTICK\nH 0")
+    graph = result.pattern.pauli_frame.graphstate
+    continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
+
+    assert graph.input_initialization_tags[continuation_node] == "mr"
+
+
+def test_stim_text_to_pattern_plain_measurement_reuse_leaves_continuation_untagged() -> None:
+    result = stim_text_to_pattern("M[m] 0\nTICK\nH 0")
+    graph = result.pattern.pauli_frame.graphstate
+    continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
+
+    assert not graph.input_initialization_tags[continuation_node]
+
+
+def test_stim_import_export_round_trip_preserves_reset_tags() -> None:
+    result = stim_text_to_pattern(
+        """
+        R[data] 0
+        RX[ancilla] 1
+        TICK
+        CZ 0 1
+        TICK
+        MX 0 1
+        DETECTOR rec[-1] rec[-2]
+        """
+    )
+
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    reset_tags = {instruction.name: instruction.tag for instruction in compiled if instruction.tag}
+    assert reset_tags == {"R": "data", "RX": "ancilla"}
+
+
 def test_stim_text_to_pattern_schedule_config_solves_with_cpsat() -> None:
     text = """
         RX 0

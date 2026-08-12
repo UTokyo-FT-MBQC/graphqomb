@@ -130,6 +130,33 @@ def test_register_input_rejects_non_axis_initialization(graph: GraphState) -> No
         graph.register_input(node_index, 0, init_axis=invalid_axis)
 
 
+def test_register_input_defaults_to_untagged_initialization(graph: GraphState) -> None:
+    """Input nodes default to an untagged initialization."""
+    node_index = graph.add_node()
+
+    graph.register_input(node_index, 0)
+
+    assert graph.input_initialization_tags == {node_index: ""}
+
+
+def test_register_input_accepts_initialization_tag(graph: GraphState) -> None:
+    """Input nodes can carry a Stim-style initialization tag."""
+    node_index = graph.add_node()
+
+    graph.register_input(node_index, 0, init_tag="init_data")
+
+    assert graph.input_initialization_tags == {node_index: "init_data"}
+
+
+def test_register_input_rejects_non_str_initialization_tag(graph: GraphState) -> None:
+    """Input registration rejects non-string initialization tags."""
+    node_index = graph.add_node()
+    invalid_tag: Any = 7
+
+    with pytest.raises(TypeError, match="Input initialization tag must be a str"):
+        graph.register_input(node_index, 0, init_tag=invalid_tag)
+
+
 def test_ensure_node_exists_raises(graph: GraphState) -> None:
     """Test ensuring a node exists in the graph."""
     with pytest.raises(ValueError, match="Node does not exist node=1"):

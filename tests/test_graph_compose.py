@@ -225,6 +225,36 @@ def test_compose_preserves_surviving_input_initialization_axes() -> None:
     }
 
 
+def test_compose_preserves_surviving_input_initialization_tags() -> None:
+    """Composition preserves initialization tags for inputs that remain inputs."""
+    graph1 = GraphState()
+    g1_in = graph1.add_node()
+    g1_out = graph1.add_node()
+    graph1.add_edge(g1_in, g1_out)
+    graph1.register_input(g1_in, 0, init_tag="first")
+    graph1.register_output(g1_out, 1)
+    graph1.assign_meas_basis(g1_in, PlannerMeasBasis(Plane.XY, 0.0))
+
+    graph2 = GraphState()
+    g2_in_connected = graph2.add_node()
+    g2_in_survives = graph2.add_node()
+    g2_out = graph2.add_node()
+    graph2.add_edge(g2_in_connected, g2_out)
+    graph2.add_edge(g2_in_survives, g2_out)
+    graph2.register_input(g2_in_connected, 1, init_tag="dropped")
+    graph2.register_input(g2_in_survives, 2, init_tag="second")
+    graph2.register_output(g2_out, 3)
+    graph2.assign_meas_basis(g2_in_connected, PlannerMeasBasis(Plane.XY, 0.0))
+    graph2.assign_meas_basis(g2_in_survives, PlannerMeasBasis(Plane.XY, 0.0))
+
+    composed, node_map1, node_map2 = compose(graph1, graph2)
+
+    assert composed.input_initialization_tags == {
+        node_map1[g1_in]: "first",
+        node_map2[g2_in_survives]: "second",
+    }
+
+
 def test_compose_full_connection() -> None:
     """Test compose where all outputs of graph1 connect to inputs of graph2."""
     # Create graph1: input [0] -> output [1, 2]

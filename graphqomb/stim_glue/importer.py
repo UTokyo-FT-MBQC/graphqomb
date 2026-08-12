@@ -116,6 +116,7 @@ class _ImportContext:
     stim_to_qubit: Mapping[int, int]
     coordinate_by_stim_id: Mapping[int, tuple[float, ...]]
     input_initialization_axes: Mapping[int, Axis]
+    input_initialization_tags: Mapping[int, str]
     detector_record_indices: Sequence[frozenset[int]]
     detector_tags: Sequence[str]
     logical_observable_record_indices: Mapping[int, frozenset[int]]
@@ -168,6 +169,9 @@ class _DirectMeasurement:
     # True for measure-reset gates: the wire re-prepares the positive
     # eigenstate of `axis` unconditionally instead of keeping the outcome.
     resets: bool = False
+    # Stim instruction tag; carried to the re-prepared continuation only for
+    # measure-reset gates, whose reset half exists in the original circuit.
+    tag: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,6 +179,7 @@ class _CircuitAnalysis:
     blocks: tuple[tuple[_AnalyzedInstruction, ...], ...]
     measurement_count: int
     input_initialization_axes: dict[int, Axis]
+    input_initialization_tags: dict[int, str]
     direct_measurements: tuple[_DirectMeasurement, ...]
 
 
@@ -380,6 +385,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         stim_to_qubit=stim_to_qubit,
         coordinate_by_stim_id=coordinate_by_stim_id,
         input_initialization_axes=analysis.input_initialization_axes,
+        input_initialization_tags=analysis.input_initialization_tags,
         detector_record_indices=annotations.detectors,
         detector_tags=annotations.detector_tags,
         logical_observable_record_indices=annotations.logical_observables,
@@ -464,7 +470,8 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
     for instruction in iter_instructions(circuit):
         gate_data = stim.gate_data(instruction.name)
         if instruction.name in DIRECT_MEASUREMENT_AXES:
-            result.append(instruction.name, instruction.targets_copy())
+            # Re-appending by name drops noise arguments but must keep the tag.
+            result.append(instruction.name, instruction.targets_copy(), tag=instruction.tag)
         elif instruction.name in _PAULI_PRODUCT_MEASUREMENT_GATES:
             _append_ideal_pauli_measurements(result, instruction)
         elif instruction.name == "MPAD":
@@ -952,6 +959,7 @@ class _CircuitAnalyzer:
         self.current_block: list[_AnalyzedInstruction] = []
         self.measurement_count = 0
         self.input_initialization_axes: dict[int, Axis] = {}
+        self.input_initialization_tags: dict[int, str] = {}
         self.direct_measurements: list[_DirectMeasurement] = []
         self.block_has_unitary = False
         self.block_has_pauli_measurement = False
@@ -1002,6 +1010,9 @@ class _CircuitAnalyzer:
         reset_axis = RESET_AXES.get(instruction.name)
         if reset_axis is not None:
             self.input_initialization_axes.update(dict.fromkeys(instruction_qubits, reset_axis))
+            # The last leading reset determines the initialization, so its tag
+            # overwrites earlier ones even when it is empty.
+            self.input_initialization_tags.update(dict.fromkeys(instruction_qubits, instruction.tag))
 
         if instruction.name in DIRECT_MEASUREMENT_AXES:
             self.direct_measurements.extend(_direct_measurements_from_instruction(analyzed))
@@ -1018,6 +1029,7 @@ class _CircuitAnalyzer:
             blocks=tuple(self.blocks),
             measurement_count=self.measurement_count,
             input_initialization_axes=self.input_initialization_axes,
+            input_initialization_tags=self.input_initialization_tags,
             direct_measurements=tuple(self.direct_measurements),
         )
 
@@ -1100,7 +1112,7 @@ def _direct_measurements_from_instruction(
             raise ValueError(msg)
         seen_qubits.add(stim_id)
         sign = Sign.MINUS if target.is_inverted_result_target else Sign.PLUS
-        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign, resets=resets))
+        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign, resets=resets, tag=instruction.tag))
     return measurements
 
 
@@ -1314,7 +1326,15 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
         graph.assign_meas_basis(measured_node, AxisMeasBasis(measurement.axis, measurement.sign))
         coord = context.coordinate_by_stim_id.get(measurement.stim_id)
         continuation_node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
-        graph.register_input(continuation_node, new_qubit, init_axis=measurement.axis)
+        # Only a measure-reset's re-preparation exists as a reset in the
+        # original circuit; a plain measurement's continuation is synthesized,
+        # so its measurement tag is not an initialization tag.
+        graph.register_input(
+            continuation_node,
+            new_qubit,
+            init_axis=measurement.axis,
+            init_tag=measurement.tag if measurement.resets else "",
+        )
         graph.register_output(continuation_node, new_qubit)
         if measurement.resets:
             # A measure-reset gate re-prepares the positive eigenstate no
@@ -1379,6 +1399,7 @@ def _identity_fragment(context: _ImportContext) -> _Fragment:
             node,
             qubit_index,
             init_axis=context.input_initialization_axes.get(stim_id, Axis.X),
+            init_tag=context.input_initialization_tags.get(stim_id, ""),
         )
         graph.register_output(node, qubit_index)
     return _Fragment(
@@ -1413,7 +1434,12 @@ def _new_wire_fragment(
         coord = context.coordinate_by_stim_id.get(stim_id)
         node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
         qubit = stim_to_qubit[stim_id]
-        graph.register_input(node, qubit, init_axis=context.input_initialization_axes[stim_id])
+        graph.register_input(
+            node,
+            qubit,
+            init_axis=context.input_initialization_axes[stim_id],
+            init_tag=context.input_initialization_tags.get(stim_id, ""),
+        )
         graph.register_output(node, qubit)
     return _Fragment(graph=graph, xflow={}, record_nodes={})
 

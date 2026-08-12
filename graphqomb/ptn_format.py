@@ -41,13 +41,15 @@ from graphqomb.pauli_frame import PauliFrame
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-PTN_VERSION = 3
-SUPPORTED_PTN_VERSIONS = frozenset({1, 2, PTN_VERSION})
-# Version 3 added detector tags (".detector[tag] ..."). A file is written with
-# the smallest version whose grammar it uses, so external parsers that only
-# know version 2 keep reading tag-free files, and a tagged file announces
+PTN_VERSION = 4
+SUPPORTED_PTN_VERSIONS = frozenset({1, 2, 3, PTN_VERSION})
+# Version 3 added detector tags (".detector[tag] ...") and version 4 added
+# input initialization tags (".input_tag[tag] node ..."). A file is written
+# with the smallest version whose grammar it uses, so external parsers that
+# only know version 2 keep reading tag-free files, and a tagged file announces
 # itself with a version those parsers reject up front.
 _DETECTOR_TAG_VERSION = 3
+_INPUT_TAG_VERSION = 4
 _BASE_VERSION = 2
 
 # A timeslice marker may skip ahead of the previous one, and every skipped slice becomes a TICK
@@ -192,6 +194,9 @@ def _required_version(pattern: Pattern) -> int:
         Minimum version required to parse the serialized pattern.
     """
     frame = pattern.pauli_frame
+    has_tagged_input = any(pattern.input_initialization_tags.get(node, "") for node in pattern.input_node_indices)
+    if has_tagged_input:
+        return _INPUT_TAG_VERSION
     has_tagged_detector = any(
         tag and group for group, tag in zip(frame.parity_check_group, frame.parity_check_tags, strict=True)
     )
@@ -218,6 +223,11 @@ def _write_header(out: StringIO, pattern: Pattern) -> None:
         ]
         if input_basis_parts:
             out.write(f".input_basis {' '.join(input_basis_parts)}\n")
+        out.writelines(
+            f".input_tag[{escape_tag(tag)}] {node}\n"
+            for node, _qidx in sorted(pattern.input_node_indices.items(), key=operator.itemgetter(1))
+            if (tag := pattern.input_initialization_tags.get(node, ""))
+        )
 
     if pattern.output_node_indices:
         output_parts = [
@@ -330,9 +340,10 @@ def dumps(pattern: Pattern) -> str:
     """Serialize a pattern to a .ptn format string.
 
     The header declares the smallest format version whose grammar the file
-    uses: version 3 when a parity check group carries a detector tag
-    (``.detector[tag] ...``), version 2 otherwise, so tag-free files stay
-    readable by version 2 parsers.
+    uses: version 4 when an input initialization carries a tag
+    (``.input_tag[tag] node``), version 3 when a parity check group carries a
+    detector tag (``.detector[tag] ...``), version 2 otherwise, so tag-free
+    files stay readable by version 2 parsers.
 
     Parameters
     ----------
@@ -524,6 +535,9 @@ class _PatternData:
         Coordinates for input nodes.
     input_initialization_axes : `dict`[`int`, `Axis`]
         Pauli initialization axes for input nodes.
+    input_initialization_tags : `dict`[`int`, `str`]
+        Stim-style instruction tags of input initializations; the empty
+        string means untagged.
     commands : `list`[`Command`]
         List of quantum commands.
     xflow : `dict`[`int`, `set`[`int`]]
@@ -541,6 +555,7 @@ class _PatternData:
     output_node_indices: dict[int, int] = field(default_factory=dict[int, int])
     input_coordinates: dict[int, tuple[float, ...]] = field(default_factory=dict[int, tuple[float, ...]])
     input_initialization_axes: dict[int, Axis] = field(default_factory=dict[int, Axis])
+    input_initialization_tags: dict[int, str] = field(default_factory=dict[int, str])
     commands: list[Command] = field(default_factory=list[Command])
     xflow: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
     zflow: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
@@ -560,6 +575,7 @@ class _LoadedGraphState(BaseGraphState):
     _meas_bases: dict[int, MeasBasis]
     _coordinates: dict[int, tuple[float, ...]]
     _input_initialization_axes: dict[int, Axis]
+    _input_initialization_tags: dict[int, str]
     _neighbors: dict[int, set[int]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -570,6 +586,7 @@ class _LoadedGraphState(BaseGraphState):
         self._meas_bases = dict(self._meas_bases)
         self._coordinates = dict(self._coordinates)
         self._input_initialization_axes = dict(self._input_initialization_axes)
+        self._input_initialization_tags = dict(self._input_initialization_tags)
         self._neighbors: dict[int, set[int]] = {node: set() for node in self._nodes}
         for node1, node2 in self._edges:
             self._neighbors.setdefault(node1, set()).add(node2)
@@ -584,6 +601,11 @@ class _LoadedGraphState(BaseGraphState):
     @typing_extensions.override
     def input_initialization_axes(self) -> dict[int, Axis]:
         return self._input_initialization_axes.copy()
+
+    @property
+    @typing_extensions.override
+    def input_initialization_tags(self) -> dict[int, str]:
+        return self._input_initialization_tags.copy()
 
     @property
     @typing_extensions.override
@@ -621,7 +643,7 @@ class _LoadedGraphState(BaseGraphState):
         raise NotImplementedError(msg)
 
     @typing_extensions.override
-    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X) -> None:
+    def register_input(self, node: int, q_index: int, *, init_axis: Axis = Axis.X, init_tag: str = "") -> None:
         msg = "Loaded .ptn graph states are read-only"
         raise NotImplementedError(msg)
 
@@ -686,6 +708,27 @@ def _input_initialization_axes_from_data(data: _PatternData) -> dict[int, Axis]:
     return {node: data.input_initialization_axes.get(node, Axis.X) for node in data.input_node_indices}
 
 
+def _input_initialization_tags_from_data(data: _PatternData) -> dict[int, str]:
+    r"""Validate and normalize parsed input initialization tags.
+
+    Returns
+    -------
+    `dict`\[`int`, `str`\]
+        Normalized input initialization tags.
+
+    Raises
+    ------
+    ValueError
+        If an input tag is specified for a non-input node.
+    """
+    non_input_tag_nodes = set(data.input_initialization_tags) - set(data.input_node_indices)
+    if non_input_tag_nodes:
+        msg = f"Input tag specified for non-input node(s): {sorted(non_input_tag_nodes)}"
+        raise ValueError(msg)
+
+    return {node: data.input_initialization_tags.get(node, "") for node in data.input_node_indices}
+
+
 def _build_pattern(data: _PatternData) -> Pattern:
     """Build a Pattern from parsed .ptn data.
 
@@ -700,6 +743,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         If parsed commands contain invalid graph structure.
     """
     input_initialization_axes = _input_initialization_axes_from_data(data)
+    input_initialization_tags = _input_initialization_tags_from_data(data)
 
     nodes: set[int] = set(data.input_node_indices) | set(data.output_node_indices) | set(data.input_coordinates)
     edges: set[tuple[int, int]] = set()
@@ -739,6 +783,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         _meas_bases=meas_bases,
         _coordinates=coordinates,
         _input_initialization_axes=input_initialization_axes,
+        _input_initialization_tags=input_initialization_tags,
     )
     pauli_frame = PauliFrame(
         graphstate,
@@ -755,13 +800,14 @@ def _build_pattern(data: _PatternData) -> Pattern:
         pauli_frame=pauli_frame,
         input_coordinates=dict(data.input_coordinates),
         input_initialization_axes=input_initialization_axes,
+        input_initialization_tags=input_initialization_tags,
     )
 
 
 def _strip_comment(raw_line: str) -> str:
-    r"""Strip a ``#`` comment, keeping ``#`` inside a .detector tag bracket.
+    r"""Strip a ``#`` comment, keeping ``#`` inside a .detector or .input_tag bracket.
 
-    Detector tags use Stim's tag escape language, in which a literal ``]``
+    Tags use Stim's tag escape language, in which a literal ``]``
     is escaped as ``\\C``, so the first ``]`` always closes the tag.
 
     Returns
@@ -770,7 +816,7 @@ def _strip_comment(raw_line: str) -> str:
         Line content without its trailing comment.
     """
     stripped = raw_line.lstrip()
-    if stripped.startswith(".detector["):
+    if stripped.startswith((".detector[", ".input_tag[")):
         closing = stripped.find("]")
         if closing != -1:
             return stripped[: closing + 1] + stripped[closing + 1 :].split("#", 1)[0]
@@ -786,6 +832,7 @@ class _Parser:
         self.version: int | None = None
         self.tick_budget = _IMPLICIT_TICK_SLACK
         self.uses_detector_tag_syntax = False
+        self.uses_input_tag_syntax = False
 
     def parse(self, s: str) -> Pattern:
         r"""Parse the input string and return Pattern.
@@ -818,6 +865,9 @@ class _Parser:
             raise ValueError(msg)
         if self.version < _DETECTOR_TAG_VERSION and self.uses_detector_tag_syntax:
             msg = f".detector tags require .ptn version {_DETECTOR_TAG_VERSION} or later"
+            raise ValueError(msg)
+        if self.version < _INPUT_TAG_VERSION and self.uses_input_tag_syntax:
+            msg = f".input_tag requires .ptn version {_INPUT_TAG_VERSION} or later"
             raise ValueError(msg)
 
         return _build_pattern(self.result)
@@ -856,10 +906,7 @@ class _Parser:
         ValueError
             If the directive is invalid.
         """
-        if line.startswith(".detector"):
-            # Handled before whitespace splitting because a detector tag
-            # (".detector[type=flag] 1 2") may itself contain whitespace.
-            self._handle_detector(line[len(".detector") :])
+        if self._dispatch_bracketed_directive(line):
             return
 
         parts = line.split(maxsplit=1)
@@ -889,6 +936,23 @@ class _Parser:
             msg = f"Unknown directive: {directive}"
             raise ValueError(msg)
 
+    def _dispatch_bracketed_directive(self, line: str) -> bool:
+        """Dispatch a directive whose tag bracket may contain whitespace.
+
+        Handled before whitespace splitting because a tag
+        (``.detector[type=flag] 1 2``) may itself contain whitespace.
+
+        Returns
+        -------
+        `bool`
+            Whether the line was handled.
+        """
+        for prefix, handler in ((".detector", self._handle_detector), (".input_tag", self._handle_input_tag)):
+            if line.startswith(prefix):
+                handler(line[len(prefix) :])
+                return True
+        return False
+
     def _handle_detector(self, rest: str) -> None:
         """Handle a .detector directive with an optional bracketed tag.
 
@@ -916,6 +980,43 @@ class _Parser:
             raise ValueError(msg)
         self.result.parity_check_groups.append(_parse_node_set(rest.split(), ".detector"))
         self.result.parity_check_tags.append(tag)
+
+    def _handle_input_tag(self, rest: str) -> None:
+        """Handle an .input_tag directive with its bracketed tag.
+
+        Raises
+        ------
+        ValueError
+            If the directive or its tag is malformed, or a node already has a
+            tag.
+        """
+        if not rest.startswith("["):
+            if rest and not rest[0].isspace():
+                msg = f"Unknown directive: .input_tag{rest.split(maxsplit=1)[0]}"
+                raise ValueError(msg)
+            msg = ".input_tag requires a bracketed tag"
+            raise ValueError(msg)
+        # The bracketed grammar itself is version 4, even when it holds an
+        # empty tag, so record its use rather than relying on the tag text.
+        self.uses_input_tag_syntax = True
+        closing = rest.find("]")
+        if closing == -1:
+            msg = ".input_tag tag is missing its closing ']'"
+            raise ValueError(msg)
+        tag = unescape_tag(rest[1:closing])
+        rest = rest[closing + 1 :]
+        if rest and not rest[0].isspace():
+            msg = ".input_tag tag must be followed by whitespace"
+            raise ValueError(msg)
+        nodes = _parse_node_set(rest.split(), ".input_tag")
+        if not nodes:
+            msg = ".input_tag requires at least one node"
+            raise ValueError(msg)
+        already_tagged = nodes & set(self.result.input_initialization_tags)
+        if already_tagged:
+            msg = f".input_tag specified more than once for node(s): {sorted(already_tagged)}"
+            raise ValueError(msg)
+        self.result.input_initialization_tags.update(dict.fromkeys(nodes, tag))
 
     def _handle_version(self, content: str) -> None:
         r"""Handle .version directive.

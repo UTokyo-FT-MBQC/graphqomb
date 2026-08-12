@@ -44,6 +44,9 @@ class Pattern(Sequence[Command]):
         Coordinates for input nodes (2D or 3D)
     input_initialization_axes : `dict`\[`int`, `Axis`\]
         Pauli initialization axes for input nodes. Missing inputs default to Axis.X.
+    input_initialization_tags : `dict`\[`int`, `str`\]
+        Stim-style instruction tags of input initializations. Missing inputs
+        default to "" (untagged).
     """
 
     input_node_indices: dict[int, int]
@@ -52,6 +55,7 @@ class Pattern(Sequence[Command]):
     pauli_frame: PauliFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initialization_axes: dict[int, Axis] = dataclasses.field(default_factory=dict[int, Axis])
+    input_initialization_tags: dict[int, str] = dataclasses.field(default_factory=dict[int, str])
 
     @typing_extensions.override
     def __len__(self) -> int:
