@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import typing_extensions
 
 from graphqomb.command import TICK, Command, E, M, N
-from graphqomb.common import Axis
+from graphqomb.common import Initialization
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -42,8 +42,9 @@ class Pattern(Sequence[Command]):
         Pauli frame of the pattern to track the Pauli state of each node
     input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes (2D or 3D)
-    input_initialization_axes : `dict`\[`int`, `Axis`\]
-        Pauli initialization axes for input nodes. Missing inputs default to Axis.X.
+    input_initializations : `dict`\[`int`, `Initialization`\]
+        Initializations for input nodes. Missing inputs default to the
+        untagged positive X eigenstate.
     """
 
     input_node_indices: dict[int, int]
@@ -51,7 +52,7 @@ class Pattern(Sequence[Command]):
     commands: tuple[Command, ...]
     pauli_frame: PauliFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
-    input_initialization_axes: dict[int, Axis] = dataclasses.field(default_factory=dict[int, Axis])
+    input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
 
     @typing_extensions.override
     def __len__(self) -> int:

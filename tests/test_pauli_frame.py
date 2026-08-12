@@ -7,7 +7,7 @@ import math
 
 import pytest
 
-from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign
+from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign
 from graphqomb.graphstate import GraphState
 from graphqomb.pauli_frame import PauliFrame
 
@@ -510,7 +510,7 @@ def test_input_detector_stabilizer(
     graph = GraphState()
     input_node = graph.add_node()
     neighbor = graph.add_node()
-    graph.register_input(input_node, 0, init_axis=init_axis)
+    graph.register_input(input_node, 0, init=Initialization(axis=init_axis))
     graph.add_edge(input_node, neighbor)
     graph.assign_meas_basis(input_node, AxisMeasBasis(init_axis, Sign.PLUS))
     graph.assign_meas_basis(neighbor, AxisMeasBasis(Axis.Z, Sign.PLUS))
@@ -527,7 +527,7 @@ def test_z_initialization_prevents_incident_support_cancellation() -> None:
     graph = GraphState()
     z_input = graph.add_node()
     neighbor = graph.add_node()
-    graph.register_input(z_input, 0, init_axis=Axis.Z)
+    graph.register_input(z_input, 0, init=Initialization(axis=Axis.Z))
     graph.add_edge(z_input, neighbor)
     graph.assign_meas_basis(z_input, AxisMeasBasis(Axis.Z, Sign.PLUS))
     graph.assign_meas_basis(neighbor, AxisMeasBasis(Axis.X, Sign.PLUS))
@@ -542,7 +542,7 @@ def test_input_initialization_can_make_detector_non_deterministic() -> None:
     """A detector is non-deterministic when its measurement disagrees with input preparation."""
     graph = GraphState()
     z_input = graph.add_node()
-    graph.register_input(z_input, 0, init_axis=Axis.Z)
+    graph.register_input(z_input, 0, init=Initialization(axis=Axis.Z))
     graph.assign_meas_basis(z_input, AxisMeasBasis(Axis.X, Sign.PLUS))
 
     pframe = PauliFrame(graph, xflow={}, zflow={}, parity_check_group=[{z_input}])
@@ -556,7 +556,7 @@ def test_z_initialized_neighbor_leaves_measurement_deterministic() -> None:
     graph = GraphState()
     z_input = graph.add_node()
     neighbor = graph.add_node()
-    graph.register_input(z_input, 0, init_axis=Axis.Z)
+    graph.register_input(z_input, 0, init=Initialization(axis=Axis.Z))
     graph.add_edge(z_input, neighbor)
     graph.assign_meas_basis(z_input, AxisMeasBasis(Axis.X, Sign.PLUS))
     graph.assign_meas_basis(neighbor, AxisMeasBasis(Axis.X, Sign.PLUS))
@@ -581,7 +581,7 @@ def _assert_determinism_matches_stim(
     nodes = [graph.add_node() for _ in init_axes]
     for qubit, init_axis in enumerate(init_axes):
         if init_axis is not Axis.X:
-            graph.register_input(nodes[qubit], qubit, init_axis=init_axis)
+            graph.register_input(nodes[qubit], qubit, init=Initialization(axis=init_axis))
     for node0, node1 in edges:
         graph.add_edge(nodes[node0], nodes[node1])
     for qubit, meas_axis in enumerate(meas_axes):

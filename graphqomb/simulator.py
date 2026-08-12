@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, MeasBasis, Plane
+from graphqomb.common import Axis, Initialization, MeasBasis, Plane
 from graphqomb.gates import MultiGate, SingleGate, TwoQubitGate
 from graphqomb.pattern import is_runnable
 from graphqomb.rng import ensure_rng
@@ -155,7 +155,7 @@ class PatternSimulator:
 
         if backend == SimulatorBackend.StateVector:
             input_states = [
-                _INPUT_STATE_VECTORS[self.__pattern.input_initialization_axes.get(node, Axis.X)]
+                _INPUT_STATE_VECTORS[self.__pattern.input_initializations.get(node, Initialization()).axis]
                 for node in self.node_indices
             ]
             self.state = StateVector.from_product_states(input_states)

@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Initialization Tags**: Stim reset instruction tags (`R[tag]`, `RX[tag]`, `RY[tag]`) survive the import/export round trip, mirroring detector tags. The new `Initialization` dataclass (axis + tag) is carried from `register_input(init=...)` through `Pattern.input_initializations`, and `stim_compile` re-emits each input's tag on its reset instruction. The `.ptn` format serializes tags as `.input_tag[tag] node` lines under new format version 4.
+
 - **Stim Import Scheduler Passthrough**: `stim_circuit_to_pattern()`, `stim_text_to_pattern()`, and `stim_file_to_pattern()` accept `schedule_config` and `schedule_timeout`. When a `ScheduleConfig` is given, the importer builds a `Scheduler` from the imported graph and flows, solves it with that configuration (e.g. `ScheduleConfig(Strategy.MINIMIZE_TIME, use_greedy=False)` for the CP-SAT solver), and compiles the pattern with the solved schedule; a `ValueError` is raised when no schedule is found. When omitted, `qompile` keeps scheduling with its default greedy strategy. This restores external control over the emitted command order — e.g. entangling-order studies that reorder `E` commands within contiguous runs can request the CP-SAT schedule instead of pinning an old library version.
 
 ### Changed (Breaking)
 
+- **Input initialization API**: `register_input(init_axis=...)` is now `register_input(init=Initialization(axis, tag))`, and the `input_initialization_axes` properties on graph states and `Pattern` (and the matching `from_graph` argument) are replaced by `input_initializations` holding `Initialization` values.
 - **Scheduler subpackage**: `graphqomb.scheduler`, `graphqomb.greedy_scheduler`, and `graphqomb.schedule_solver` moved to `graphqomb.scheduler.core`, `graphqomb.scheduler.greedy`, and `graphqomb.scheduler.solver`. The `graphqomb.scheduler` package re-exports the public API, so import everything scheduling-related from `graphqomb.scheduler`.
 - **Greedy scheduling by default**: `ScheduleConfig.use_greedy` now defaults to `True`. Pass `use_greedy=False` for the optimal CP-SAT solver.
 

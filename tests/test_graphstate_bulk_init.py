@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from graphqomb.common import Axis, Plane, PlannerMeasBasis
+from graphqomb.common import Axis, Initialization, Plane, PlannerMeasBasis
 from graphqomb.graphstate import GraphState
 
 
@@ -76,8 +76,8 @@ def test_from_graph_with_multiple_inputs_outputs() -> None:
     assert gs.output_node_indices == {node_map[outputs[0]]: 0, node_map[outputs[1]]: 1}
 
 
-def test_from_graph_with_input_initialization_axes() -> None:
-    """Test from_graph() preserves specified input initialization axes."""
+def test_from_graph_with_input_initializations() -> None:
+    """Test from_graph() preserves specified input initializations."""
     nodes = ["a", "b", "c"]
     edges = [("a", "c"), ("b", "c")]
     inputs = ["a", "b"]
@@ -86,30 +86,33 @@ def test_from_graph_with_input_initialization_axes() -> None:
         nodes=nodes,
         edges=edges,
         inputs=inputs,
-        input_initialization_axes={"a": Axis.Y, "b": Axis.Z},
+        input_initializations={"a": Initialization(axis=Axis.Y), "b": Initialization(axis=Axis.Z, tag="anc")},
     )
 
-    assert gs.input_initialization_axes == {node_map["a"]: Axis.Y, node_map["b"]: Axis.Z}
+    assert gs.input_initializations == {
+        node_map["a"]: Initialization(axis=Axis.Y),
+        node_map["b"]: Initialization(axis=Axis.Z, tag="anc"),
+    }
 
 
-def test_from_graph_rejects_initialization_axis_for_non_input_node() -> None:
-    """Input initialization axes cannot silently target non-input nodes."""
+def test_from_graph_rejects_initialization_for_non_input_node() -> None:
+    """Input initializations cannot silently target non-input nodes."""
     with pytest.raises(ValueError, match="specified for non-input node"):
         GraphState.from_graph(
             nodes=["input", "not-input"],
             edges=[],
             inputs=["input"],
-            input_initialization_axes={"not-input": Axis.Z},
+            input_initializations={"not-input": Initialization(axis=Axis.Z)},
         )
 
 
-def test_from_graph_rejects_initialization_axes_without_inputs() -> None:
-    """Initialization axes require corresponding input registrations."""
+def test_from_graph_rejects_initializations_without_inputs() -> None:
+    """Initializations require corresponding input registrations."""
     with pytest.raises(ValueError, match="specified for non-input node"):
         GraphState.from_graph(
             nodes=["node"],
             edges=[],
-            input_initialization_axes={"node": Axis.Y},
+            input_initializations={"node": Initialization(axis=Axis.Y)},
         )
 
 
@@ -250,17 +253,20 @@ def test_from_base_graph_state_preserves_indices() -> None:
     assert dst.output_node_indices[node_map[n1]] == 10
 
 
-def test_from_base_graph_state_preserves_input_initialization_axes() -> None:
-    """Test from_base_graph_state() preserves input initialization axes."""
+def test_from_base_graph_state_preserves_input_initializations() -> None:
+    """Test from_base_graph_state() preserves input initializations."""
     src = GraphState()
     n0 = src.add_node()
     n1 = src.add_node()
-    src.register_input(n0, 0, init_axis=Axis.Y)
-    src.register_input(n1, 1, init_axis=Axis.Z)
+    src.register_input(n0, 0, init=Initialization(axis=Axis.Y))
+    src.register_input(n1, 1, init=Initialization(axis=Axis.Z, tag="anc"))
 
     dst, node_map = GraphState.from_base_graph_state(src)
 
-    assert dst.input_initialization_axes == {node_map[n0]: Axis.Y, node_map[n1]: Axis.Z}
+    assert dst.input_initializations == {
+        node_map[n0]: Initialization(axis=Axis.Y),
+        node_map[n1]: Initialization(axis=Axis.Z, tag="anc"),
+    }
 
 
 def test_from_base_graph_state_independence() -> None:

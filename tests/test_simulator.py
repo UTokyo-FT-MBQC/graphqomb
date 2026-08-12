@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, AxisMeasBasis, Sign
+from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import Pattern
 from graphqomb.pauli_frame import PauliFrame
@@ -24,7 +24,7 @@ def _single_output_pattern(
 ) -> tuple[Pattern, int]:
     graph = GraphState()
     node = graph.add_node()
-    graph.register_input(node, 0, init_axis=init_axis)
+    graph.register_input(node, 0, init=Initialization(axis=init_axis))
     graph.register_output(node, 0)
 
     pauli_frame = PauliFrame(graph, xflow={}, zflow={})
@@ -34,7 +34,7 @@ def _single_output_pattern(
         output_node_indices=graph.output_node_indices,
         commands=commands,
         pauli_frame=pauli_frame,
-        input_initialization_axes=graph.input_initialization_axes,
+        input_initializations=graph.input_initializations,
     )
     return pattern, node
 
@@ -45,7 +45,7 @@ def _deterministic_non_output_measurement_pattern() -> tuple[Pattern, int]:
     input_node = graph.add_node()
     output_node = graph.add_node()
     graph.add_edge(input_node, output_node)
-    graph.register_input(input_node, 0, init_axis=Axis.Z)
+    graph.register_input(input_node, 0, init=Initialization(axis=Axis.Z))
     graph.register_output(output_node, 0)
     graph.assign_meas_basis(input_node, AxisMeasBasis(Axis.Z, Sign.PLUS))
 
@@ -59,7 +59,7 @@ def _deterministic_non_output_measurement_pattern() -> tuple[Pattern, int]:
             TICK(),
         ),
         pauli_frame=PauliFrame(graph, xflow={}, zflow={input_node: {output_node}}),
-        input_initialization_axes=graph.input_initialization_axes,
+        input_initializations=graph.input_initializations,
     )
     return pattern, input_node
 
@@ -109,8 +109,8 @@ def test_pattern_simulator_reorders_mixed_input_axes_by_logical_qindex() -> None
     graph = GraphState()
     y_input = graph.add_node()
     z_input = graph.add_node()
-    graph.register_input(y_input, 1, init_axis=Axis.Y)
-    graph.register_input(z_input, 0, init_axis=Axis.Z)
+    graph.register_input(y_input, 1, init=Initialization(axis=Axis.Y))
+    graph.register_input(z_input, 0, init=Initialization(axis=Axis.Z))
     graph.register_output(y_input, 1)
     graph.register_output(z_input, 0)
     pattern = Pattern(
@@ -118,7 +118,7 @@ def test_pattern_simulator_reorders_mixed_input_axes_by_logical_qindex() -> None
         output_node_indices=graph.output_node_indices,
         commands=(),
         pauli_frame=PauliFrame(graph, xflow={}, zflow={}),
-        input_initialization_axes=graph.input_initialization_axes,
+        input_initializations=graph.input_initializations,
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
 
@@ -145,14 +145,14 @@ def test_pattern_simulator_samples_y_initialized_non_output_exactly() -> None:
     """A Y-initialized input measured in Y has a deterministic positive outcome."""
     graph = GraphState()
     input_node = graph.add_node()
-    graph.register_input(input_node, 0, init_axis=Axis.Y)
+    graph.register_input(input_node, 0, init=Initialization(axis=Axis.Y))
     graph.assign_meas_basis(input_node, AxisMeasBasis(Axis.Y, Sign.PLUS))
     pattern = Pattern(
         input_node_indices=graph.input_node_indices,
         output_node_indices={},
         commands=(M(input_node, graph.meas_bases[input_node]),),
         pauli_frame=PauliFrame(graph, xflow={}, zflow={}),
-        input_initialization_axes=graph.input_initialization_axes,
+        input_initializations=graph.input_initializations,
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
 
