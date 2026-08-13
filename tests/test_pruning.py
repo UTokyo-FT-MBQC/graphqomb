@@ -11,8 +11,19 @@ from graphqomb.pruning import prune_isolated_components, prune_z_nodes
 from graphqomb.qompiler import qompile
 
 
+def _z_measurement_graph(output_init: Initialization | None = None) -> tuple[GraphState, int, int]:
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_z, node_out)
+    if output_init is not None:
+        graph.register_input(node_out, 0, init=output_init)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    return graph, node_z, node_out
+
+
 def test_prune_z_measured_node() -> None:
-    """A Z-measured non-input node disappears from the graph, flows, checks, and observables."""
     graph = GraphState()
     node_in = graph.add_node()
     node_z = graph.add_node()
@@ -44,7 +55,6 @@ def test_prune_z_measured_node() -> None:
 
 
 def test_prune_z_measured_node_any_representation() -> None:
-    """Sign-flipped and planner Z bases are recognized as Z measurements."""
     graph = GraphState()
     node_minus = graph.add_node()
     node_planner = graph.add_node()
@@ -62,7 +72,6 @@ def test_prune_z_measured_node_any_representation() -> None:
 
 
 def test_prune_z_prep_input() -> None:
-    """A Z-prepared input node is pruned regardless of its measurement basis."""
     graph = GraphState()
     node_zprep = graph.add_node()
     node_in = graph.add_node()
@@ -84,15 +93,9 @@ def test_prune_z_prep_input() -> None:
 
 
 def test_uncorrected_z_measurement_is_kept() -> None:
-    """A Z-measured node whose byproduct is not corrected by the flows stays."""
     # Without a Z correction on node_out the original output is |+> or |->
     # depending on the measurement outcome; pruning would fix one branch.
-    graph = GraphState()
-    node_z = graph.add_node()
-    node_out = graph.add_node()
-    graph.add_edge(node_z, node_out)
-    graph.register_output(node_out, 0)
-    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    graph, node_z, node_out = _z_measurement_graph()
 
     result = prune_z_nodes(graph, xflow={})
 
@@ -101,7 +104,6 @@ def test_uncorrected_z_measurement_is_kept() -> None:
 
 
 def test_z_neighbors_need_no_correction() -> None:
-    """Z byproducts landing on other Z-basis nodes are vacuous, so a Z cluster prunes without flow."""
     graph = GraphState()
     node_za = graph.add_node()
     node_zb = graph.add_node()
@@ -118,7 +120,6 @@ def test_z_neighbors_need_no_correction() -> None:
 
 
 def test_stabilizer_equivalent_correction_is_recognized() -> None:
-    """A byproduct correction expressed through an X flow entry qualifies as well."""
     # X^m on node_w times the byproduct Z^m on node_v is the graph stabilizer
     # X_w Z_v of the chain z - v - w, so the correction cancels the byproduct.
     graph = GraphState()
@@ -139,7 +140,6 @@ def test_stabilizer_equivalent_correction_is_recognized() -> None:
 
 
 def test_prune_preparations_and_measurements_flags() -> None:
-    """Preparation and measurement pruning can be disabled independently."""
     graph = GraphState()
     node_prep = graph.add_node()
     node_meas = graph.add_node()
@@ -160,7 +160,6 @@ def test_prune_preparations_and_measurements_flags() -> None:
 
 
 def test_keep_preparation_tags() -> None:
-    """Z-prepared inputs with a protected initialization tag survive pruning."""
     graph = GraphState()
     node_plain = graph.add_node()
     node_tagged = graph.add_node()
@@ -181,7 +180,6 @@ def test_keep_preparation_tags() -> None:
 
 
 def test_z_prepared_and_measured_node_counts_as_preparation() -> None:
-    """A node that is both Z-prepared and Z-measured is governed by the preparation controls."""
     graph = GraphState()
     node_both = graph.add_node()
     node_out = graph.add_node()
@@ -195,46 +193,31 @@ def test_z_prepared_and_measured_node_counts_as_preparation() -> None:
     assert kept.removed_nodes == frozenset()
 
 
-def test_y_initialized_correction_target_is_checked() -> None:
-    """X corrections onto a Y-initialized node follow its Y-type stabilizer generator."""
-    graph = GraphState()
-    node_z = graph.add_node()
-    node_y = graph.add_node()
-    graph.add_edge(node_z, node_y)
-    graph.register_input(node_y, 0, init=Initialization(axis=Axis.Y))
-    graph.register_output(node_y, 0)
-    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+@pytest.mark.parametrize(
+    ("axis", "apply_x", "apply_z", "is_pruned"),
+    [
+        pytest.param(Axis.Y, True, True, False, id="y-xz-kept"),
+        pytest.param(Axis.Y, False, True, True, id="y-z-pruned"),
+        pytest.param(Axis.Z, False, False, True, id="z-byproduct-vacuous"),
+        pytest.param(Axis.Z, True, False, False, id="z-x-kept"),
+    ],
+)
+def test_initialized_correction_target(
+    axis: Axis,
+    apply_x: bool,
+    apply_z: bool,
+    is_pruned: bool,
+) -> None:
+    graph, node_z, node_out = _z_measurement_graph(Initialization(axis=axis))
+    xflow = {node_z: {node_out}} if apply_x else {}
+    zflow = {node_z: {node_out}} if apply_z else {}
 
-    # X^m Z^m on node_y leaves a net X^m after the byproduct Z^m, which maps
-    # the Y eigenstate to the orthogonal one; the Y-type generator would need
-    # an extra Z on node_y, so node_z must be kept.
-    kept = prune_z_nodes(graph, xflow={node_z: {node_y}}, zflow={node_z: {node_y}})
-    assert kept.removed_nodes == frozenset()
+    result = prune_z_nodes(graph, xflow=xflow, zflow=zflow)
 
-    # A plain Z correction cancels the byproduct for any initialization.
-    pruned = prune_z_nodes(graph, xflow={}, zflow={node_z: {node_y}})
-    assert pruned.removed_nodes == {node_z}
-
-
-def test_z_initialized_output_neighbor() -> None:
-    """Z byproducts on a Z-initialized output are vacuous, but X corrections onto it never qualify."""
-    graph = GraphState()
-    node_z = graph.add_node()
-    node_w = graph.add_node()
-    graph.add_edge(node_z, node_w)
-    graph.register_input(node_w, 0, init=Initialization(axis=Axis.Z))
-    graph.register_output(node_w, 0)
-    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
-
-    pruned = prune_z_nodes(graph, xflow={})
-    assert pruned.removed_nodes == {node_z}
-
-    kept = prune_z_nodes(graph, xflow={node_z: {node_w}})
-    assert kept.removed_nodes == frozenset()
+    assert (node_z in result.removed_nodes) is is_pruned
 
 
 def test_x_and_y_initialized_inputs_are_kept() -> None:
-    """Non-Z initializations do not qualify a non-Z-measured input for pruning."""
     graph = GraphState()
     node_x = graph.add_node()
     node_y = graph.add_node()
@@ -254,7 +237,6 @@ def test_x_and_y_initialized_inputs_are_kept() -> None:
 
 
 def test_output_nodes_are_kept() -> None:
-    """Output nodes stay even when they are Z-prepared inputs."""
     graph = GraphState()
     node = graph.add_node()
     graph.register_input(node, 0, init=Initialization(axis=Axis.Z))
@@ -268,7 +250,6 @@ def test_output_nodes_are_kept() -> None:
 
 
 def test_node_attributes_survive_pruning() -> None:
-    """Kept nodes preserve indices, coordinates, initializations, and bases."""
     graph = GraphState()
     node_in = graph.add_node(coordinate=(0.0, 0.0))
     node_z = graph.add_node(coordinate=(1.0, 0.0))
@@ -289,7 +270,6 @@ def test_node_attributes_survive_pruning() -> None:
 
 
 def test_zflow_derived_from_source_graph() -> None:
-    """When zflow is omitted it is derived by odd neighbors before pruning."""
     graph = GraphState()
     node_in = graph.add_node()
     node_z = graph.add_node()
@@ -319,7 +299,6 @@ def test_misaligned_parity_check_tags_raise() -> None:
 
 
 def test_prune_isolated_component_without_logical_or_output() -> None:
-    """A component with neither outputs nor observable seeds disappears with its checks and flows."""
     graph = GraphState()
     node_in = graph.add_node()
     node_out = graph.add_node()
@@ -351,7 +330,6 @@ def test_prune_isolated_component_without_logical_or_output() -> None:
 
 
 def test_components_with_observable_seed_or_output_are_kept() -> None:
-    """Observable seeds and output nodes both make a component relevant."""
     graph = GraphState()
     seed_component = graph.add_node()
     output_component = graph.add_node()
@@ -364,60 +342,46 @@ def test_components_with_observable_seed_or_output_are_kept() -> None:
     assert result.graph.nodes == {seed_component, output_component}
 
 
-def test_flow_coupled_component_is_kept() -> None:
-    """A component feeding a correction into a relevant component is classically coupled and stays."""
+@pytest.mark.parametrize(
+    ("flow_kind", "direction"),
+    [
+        pytest.param("x", "source", id="xflow-source"),
+        pytest.param("x", "target", id="xflow-target"),
+        pytest.param("z", "source", id="zflow-source"),
+    ],
+)
+def test_flow_coupled_component_is_kept(flow_kind: str, direction: str) -> None:
     graph = GraphState()
+    node_in = graph.add_node()
     node_out = graph.add_node()
     node_ctrl = graph.add_node()
     iso_a = graph.add_node()
     iso_b = graph.add_node()
+    graph.add_edge(node_in, node_out)
     graph.add_edge(iso_a, iso_b)
+    graph.register_input(node_in, 0)
     graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_in, default_meas_basis())
     graph.assign_meas_basis(node_ctrl, default_meas_basis())
     graph.assign_meas_basis(iso_a, default_meas_basis())
     graph.assign_meas_basis(iso_b, default_meas_basis())
 
-    result = prune_isolated_components(graph, xflow={node_ctrl: {node_out}, iso_a: {iso_b}})
+    xflow = {node_in: {node_out}, iso_a: {iso_b}}
+    zflow = None
+    if flow_kind == "z":
+        zflow = {node_ctrl: {node_out}}
+    elif direction == "source":
+        xflow[node_ctrl] = {node_out}
+    else:
+        xflow[node_in].add(node_ctrl)
+
+    result = prune_isolated_components(graph, xflow=xflow, zflow=zflow)
 
     assert result.removed_nodes == {iso_a, iso_b}
-    assert result.graph.nodes == {node_out, node_ctrl}
-    assert result.xflow == {node_ctrl: {node_out}}
-
-
-def test_flow_target_component_is_kept() -> None:
-    """A component receiving a correction from a relevant component stays as well."""
-    graph = GraphState()
-    node_in = graph.add_node()
-    node_out = graph.add_node()
-    stray = graph.add_node()
-    graph.add_edge(node_in, node_out)
-    graph.register_input(node_in, 0)
-    graph.register_output(node_out, 0)
-    graph.assign_meas_basis(node_in, default_meas_basis())
-    graph.assign_meas_basis(stray, default_meas_basis())
-
-    result = prune_isolated_components(graph, xflow={node_in: {node_out, stray}})
-
-    assert result.removed_nodes == frozenset()
-    assert result.graph.nodes == {node_in, node_out, stray}
-
-
-def test_zflow_coupling_counts_for_relevance() -> None:
-    """An explicit zflow entry into a kept component keeps the source component too."""
-    graph = GraphState()
-    node_out = graph.add_node()
-    node_ctrl = graph.add_node()
-    graph.register_output(node_out, 0)
-    graph.assign_meas_basis(node_ctrl, default_meas_basis())
-
-    result = prune_isolated_components(graph, xflow={}, zflow={node_ctrl: {node_out}})
-
-    assert result.removed_nodes == frozenset()
-    assert result.graph.nodes == {node_out, node_ctrl}
+    assert result.graph.nodes == {node_in, node_out, node_ctrl}
 
 
 def test_prune_everything_without_outputs_and_observables() -> None:
-    """With no outputs and no observables, every component is irrelevant by definition."""
     graph = GraphState()
     node_a = graph.add_node()
     node_b = graph.add_node()
@@ -432,7 +396,6 @@ def test_prune_everything_without_outputs_and_observables() -> None:
 
 
 def test_z_prune_then_isolated_prune_compiles() -> None:
-    """Z-pruning may disconnect the graph; chaining both prunes feeds qompile."""
     # node_z bridges the logical wire (node_in - node_out) and a hanging pair
     # (iso_a - iso_b); Z-pruning node_z leaves the pair isolated.
     graph = GraphState()
@@ -485,37 +448,3 @@ def test_z_prune_then_isolated_prune_compiles() -> None:
     )
     prepared_or_measured = {cmd.node for cmd in pattern.commands if isinstance(cmd, (N, M))}
     assert prepared_or_measured.isdisjoint({node_z, iso_a, iso_b})
-
-
-def test_pruned_result_compiles() -> None:
-    """The pruned pieces feed directly into qompile."""
-    graph = GraphState()
-    node_in = graph.add_node()
-    node_z = graph.add_node()
-    node_out = graph.add_node()
-    graph.add_edge(node_in, node_out)
-    graph.add_edge(node_z, node_out)
-    graph.register_input(node_in, 0)
-    graph.register_output(node_out, 0)
-    graph.assign_meas_basis(node_in, default_meas_basis())
-    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
-
-    result = prune_z_nodes(
-        graph,
-        xflow={node_in: {node_out}},
-        zflow={node_in: set(), node_z: {node_out}},
-        parity_check_group=[{node_z}],
-        logical_observables={0: {node_in, node_z}},
-    )
-
-    pattern = qompile(
-        result.graph,
-        result.xflow,
-        result.zflow,
-        parity_check_group=result.parity_check_group,
-        parity_check_tags=result.parity_check_tags,
-        logical_observables=result.logical_observables,
-    )
-
-    prepared_or_measured = {cmd.node for cmd in pattern.commands if isinstance(cmd, (N, M))}
-    assert node_z not in prepared_or_measured

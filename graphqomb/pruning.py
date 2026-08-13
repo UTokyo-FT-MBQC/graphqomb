@@ -1,36 +1,8 @@
-"""Pruning of MBQC compile inputs.
+"""Prune graph-state compile inputs before passing them to ``qompile``.
 
-Measuring a graph-state node in the Z basis disentangles it while leaving a Z
-byproduct on its neighbors, and a Z-prepared input never interacts with its CZ
-edges. Any Z-prepared input, and any Z-measured node whose byproduct is
-corrected by the flows, can therefore be deleted from the resource graph
-before compilation. Dropping such a node from the correction flows, parity
-checks, and logical observables at the same time preserves the semantics of
-the pattern: in the pruned pattern the node is never prepared or entangled,
-and every parity-check or observable product loses exactly the Z factor that
-the deleted node supplied. A Z-measured node whose byproduct is not corrected
-is kept, since deleting it would silently select one branch of its
-measurement outcome.
-
-Deleting Z-basis nodes can disconnect the graph. A component that contains
-neither an output node nor a logical observable seed cannot influence the
-logical outcome, so it can be deleted as well. Components are taken over graph
-edges and correction-flow entries together: a flow entry classically couples
-the measurement outcome of its source node to its targets (for example
-circuit-imported record-controlled Paulis), so nodes joined only by flow are
-still kept or pruned as one component. A deleted component is then neither
-entangled with nor classically coupled to the rest of the graph, so a
-deterministic parity check that mixes its records with kept records factors
-into two independently deterministic halves and stays deterministic after the
-deleted half is dropped.
-
-This module provides:
-
-- `PruneResult`: Result of pruning nodes from a set of compile inputs.
-- `prune_z_nodes`: Remove Z-prepared/Z-measured nodes from a graph state and
-  the associated flows, parity checks, and logical observables.
-- `prune_isolated_components`: Remove components that touch neither an output
-  node nor a logical observable seed.
+``prune_z_nodes`` removes eligible Z-basis nodes, while
+``prune_isolated_components`` removes components unrelated to outputs or
+logical observables. Both update all compile inputs and preserve node indices.
 """
 
 from __future__ import annotations
@@ -48,32 +20,10 @@ if TYPE_CHECKING:
 
 
 class PruneResult(NamedTuple):
-    r"""Result of pruning nodes from a set of compile inputs.
+    """Pruned compile inputs and the nodes removed from the source graph.
 
-    Node indices are preserved: every kept node keeps the index, qubit index,
-    initialization, measurement basis, and coordinate it had in the source
-    graph.
-
-    Attributes
-    ----------
-    graph : `GraphState`
-        Pruned copy of the source graph state.
-    xflow : `dict`\[`int`, `set`\[`int`\]\]
-        X correction flow without the pruned nodes.
-    zflow : `dict`\[`int`, `set`\[`int`\]\]
-        Z correction flow without the pruned nodes.
-    parity_check_group : `list`\[`set`\[`int`\]\]
-        Parity check groups without the pruned nodes. Groups whose every node
-        was pruned are dropped entirely.
-    parity_check_tags : `list`\[`str`\]
-        Tags aligned with ``parity_check_group`` after empty groups are
-        dropped.
-    logical_observables : `dict`\[`int`, `set`\[`int`\]\]
-        Logical observable seed nodes without the pruned nodes. Entries are
-        kept even when their seed set becomes empty so that logical indices
-        stay stable.
-    removed_nodes : `frozenset`\[`int`\]
-        Nodes removed from the source graph.
+    Empty parity checks are dropped with their tags. Logical-observable entries
+    remain present when their seed sets become empty, preserving logical indices.
     """
 
     graph: GraphState
@@ -97,58 +47,38 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     prune_measurements: bool = True,
     keep_preparation_tags: AbstractSet[str] | None = None,
 ) -> PruneResult:
-    r"""Remove Z-prepared/Z-measured nodes from a set of compile inputs.
+    """Remove eligible Z-prepared and Z-measured nodes from compile inputs.
 
-    A node is pruned when it is not an output node and it is either an input
-    node initialized in the positive or negative Z eigenstate or a node
-    measured along the Pauli-Z axis whose measurement byproduct is corrected
-    by the flows (see Notes). The pruned node disappears from the graph
-    together with its edges, from the flows both as a corrector and as a
-    correction target, and from every parity check group and logical
-    observable seed set. Output nodes are always kept so that the pattern
-    keeps its logical qubit interface.
-
-    The two kinds of pruning can be disabled independently with
-    ``prune_preparations`` and ``prune_measurements``, and Z-prepared inputs
-    whose initialization tag is listed in ``keep_preparation_tags`` are kept.
-    A node that is both Z-prepared and Z-measured counts as a preparation.
-
-    The pieces returned by this function can be passed directly to
-    `graphqomb.qompiler.qompile` or to `prune_isolated_components`.
+    Output nodes are always kept. Preparation and measurement pruning can be
+    disabled independently, and ``keep_preparation_tags`` protects matching
+    Z-prepared inputs. A node both prepared and measured in Z is governed by
+    the preparation controls.
 
     Parameters
     ----------
-    graph : `BaseGraphState`
-        graph state
-    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        x correction flow
-    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
-        z correction flow
-        if `None`, it is generated from xflow by odd neighbors of the source
-        graph before pruning
-    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
-        parity check group for FTQC, by default `None` (no parity checks)
-    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
-        Stim-style tag per parity check group, aligned with
-        ``parity_check_group``. If `None`, every group is untagged.
-    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
-        logical observables represented by logical index and seed nodes,
-        by default `None` (no logical observables)
-    prune_preparations : `bool`
-        Whether to prune Z-prepared inputs, by default `True`.
-    prune_measurements : `bool`
-        Whether to prune byproduct-corrected Z-measured nodes, by default
-        `True`.
-    keep_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
-        Initialization tags that protect a Z-prepared input from pruning
-        (e.g. carried through the Stim importer from a tagged reset
-        instruction such as ``R[keep]``). If `None`, no preparation is
-        protected.
+    graph : BaseGraphState
+        Source graph state.
+    xflow : Mapping[int, AbstractSet[int]]
+        X correction flow.
+    zflow : Mapping[int, AbstractSet[int]] | None
+        Z correction flow, derived from ``xflow`` when omitted.
+    parity_check_group : Sequence[AbstractSet[int]] | None
+        Parity checks to update.
+    parity_check_tags : Sequence[str] | None
+        Tags aligned with ``parity_check_group``.
+    logical_observables : Mapping[int, AbstractSet[int]] | None
+        Logical-observable seed nodes to update.
+    prune_preparations : bool
+        Whether to remove Z-prepared inputs.
+    prune_measurements : bool
+        Whether to remove corrected Z measurements.
+    keep_preparation_tags : AbstractSet[str] | None
+        Initialization tags that protect Z-prepared inputs.
 
     Returns
     -------
-    `PruneResult`
-        Pruned graph, flows, parity checks, and logical observables.
+    PruneResult
+        Pruned inputs suitable for ``qompile`` or further pruning.
 
     Raises
     ------
@@ -158,20 +88,10 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
 
     Notes
     -----
-    A Z measurement leaves a Z byproduct on every neighbor of the measured
-    node, so a Z-measured node is pruned only when the corrections it
-    sources cancel that byproduct: the conditional Pauli X on
-    ``xflow[node]`` and Z on ``zflow[node]``, multiplied by Z on the node's
-    neighbors, must form a stabilizer of the initialized graph state, up to
-    Z factors on Z-basis nodes, where a Z acts trivially. The stabilizer
-    generators follow the input initializations: an X-initialized (default)
-    node contributes X on itself and Z on its neighbors, a Y-initialized
-    node carries an extra Z on itself, and a Z-initialized node admits no X
-    at all, so X corrections onto Z-initialized nodes never qualify. In
-    particular a node whose neighbors are all Z-basis nodes needs no
-    corrections, and ``zflow[node]`` covering exactly the non-Z-basis
-    neighbors always qualifies. Z-measured nodes without such corrections
-    are kept.
+    A Z-measured node is removed only when its sourced corrections, multiplied
+    by the Z byproducts on its neighbors, form a stabilizer of the initialized
+    graph state up to vacuous Z factors on Z-basis nodes. Otherwise it is kept
+    to avoid selecting a measurement branch.
 
     A Z-prepared input never entangles, so its record is independent of the
     rest of the pattern and the node is pruned unconditionally. Corrections
@@ -217,52 +137,31 @@ def prune_isolated_components(  # ruff:ignore[too-many-arguments]
     parity_check_tags: Sequence[str] | None = None,
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
 ) -> PruneResult:
-    r"""Remove components that touch neither an output node nor a logical observable seed.
+    """Remove components unrelated to outputs or logical-observable seeds.
 
-    Components are computed over graph edges and correction-flow entries
-    together: a flow entry classically couples the measurement outcome of its
-    source node to its targets, so a component that feeds corrections into a
-    relevant component (or receives corrections from one) is itself kept.
-
-    Every node of a pruned component is dropped from the graph, from the
-    flows, and from every parity check group; parity checks contained entirely
-    in a pruned component disappear, including ``type=flag`` checks, so
-    pruning can change the acceptance rate of post-selected sampling (only by
-    dropping flags whose firing cannot affect the logical outcome). Logical
-    observable seed sets are unchanged by construction.
-
-    Note that when the inputs declare no logical observables and the graph has
-    no output nodes, every component is considered irrelevant and the whole
-    graph is pruned. This function is meant for compile inputs whose semantics
-    are carried by logical observables or output qubits, not for
-    detector-only experiments.
-
-    The pieces returned by this function can be passed directly to
-    `graphqomb.qompiler.qompile`.
+    Graph edges and correction-flow entries both connect nodes. With no output
+    nodes or logical observables, every component is removed; this operation is
+    therefore not intended for detector-only experiments.
 
     Parameters
     ----------
-    graph : `BaseGraphState`
-        graph state
-    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        x correction flow
-    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
-        z correction flow
-        if `None`, it is generated from xflow by odd neighbors of the source
-        graph before pruning
-    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
-        parity check group for FTQC, by default `None` (no parity checks)
-    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
-        Stim-style tag per parity check group, aligned with
-        ``parity_check_group``. If `None`, every group is untagged.
-    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
-        logical observables represented by logical index and seed nodes,
-        by default `None` (no logical observables)
+    graph : BaseGraphState
+        Source graph state.
+    xflow : Mapping[int, AbstractSet[int]]
+        X correction flow.
+    zflow : Mapping[int, AbstractSet[int]] | None
+        Explicit Z correction flow, if any.
+    parity_check_group : Sequence[AbstractSet[int]] | None
+        Parity checks to update.
+    parity_check_tags : Sequence[str] | None
+        Tags aligned with ``parity_check_group``.
+    logical_observables : Mapping[int, AbstractSet[int]] | None
+        Logical-observable seeds that make components relevant.
 
     Returns
     -------
-    `PruneResult`
-        Pruned graph, flows, parity checks, and logical observables.
+    PruneResult
+        Pruned inputs suitable for ``qompile``.
 
     Raises
     ------
@@ -279,10 +178,7 @@ def prune_isolated_components(  # ruff:ignore[too-many-arguments]
     # anything beyond graph edges and xflow entries.
     flows = [xflow] if zflow is None else [xflow, zflow]
 
-    removed_nodes: set[int] = set()
-    for component in _connected_components(graph, flows):
-        if not (component & relevant_nodes):
-            removed_nodes |= component
+    removed_nodes = graph.nodes - _reachable_nodes(graph, flows, relevant_nodes)
 
     return _pruned_inputs(
         graph,
@@ -305,37 +201,6 @@ def _pruned_inputs(  # ruff:ignore[too-many-arguments]
     parity_check_tags: Sequence[str] | None,
     logical_observables: Mapping[int, AbstractSet[int]] | None,
 ) -> PruneResult:
-    r"""Drop the given nodes from every compile input.
-
-    Parameters
-    ----------
-    graph : `BaseGraphState`
-        graph state
-    removed_nodes : `collections.abc.Set`\[`int`\]
-        nodes to drop
-    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        x correction flow
-    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
-        z correction flow, derived by odd neighbors of the source graph when
-        `None`
-    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
-        parity check group for FTQC
-    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
-        Stim-style tag per parity check group
-    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
-        logical observables represented by logical index and seed nodes
-
-    Returns
-    -------
-    `PruneResult`
-        Pruned graph, flows, parity checks, and logical observables.
-
-    Raises
-    ------
-    ValueError
-        If ``parity_check_tags`` is given but not aligned with
-        ``parity_check_group``.
-    """
     if parity_check_group is None:
         parity_check_group = []
     if parity_check_tags is None:
@@ -384,35 +249,6 @@ def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
     prune_measurements: bool,
     keep_preparation_tags: AbstractSet[str] | None,
 ) -> set[int]:
-    r"""Collect the Z-basis nodes that can be pruned.
-
-    Z-prepared inputs never entangle, so removing them is exact; they are
-    prunable unless disabled or protected by their initialization tag.
-    Z-measured nodes are prunable only when the corrections they source
-    cancel the Z byproduct their measurement leaves on their neighbors;
-    otherwise removing them would silently select one branch of the
-    measurement outcome.
-
-    Parameters
-    ----------
-    graph : `BaseGraphState`
-        graph state
-    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        x correction flow
-    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        z correction flow
-    prune_preparations : `bool`
-        whether Z-prepared inputs are prunable
-    prune_measurements : `bool`
-        whether byproduct-corrected Z-measured nodes are prunable
-    keep_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
-        initialization tags that protect a Z-prepared input
-
-    Returns
-    -------
-    `set`\[`int`\]
-        Nodes to prune.
-    """
     input_initializations = graph.input_initializations
     z_basis_nodes = _z_basis_nodes(graph)
     prunable: set[int] = set()
@@ -434,36 +270,6 @@ def _z_byproduct_corrected(
     zflow: Mapping[int, AbstractSet[int]],
     z_basis_nodes: set[int],
 ) -> bool:
-    r"""Check whether the corrections sourced at a Z-measured node cancel its byproduct.
-
-    Measuring ``node`` in the Z basis leaves a Z byproduct on each of its
-    neighbors. The conditional corrections sourced at the node (X on
-    ``xflow[node]``, Z on ``zflow[node]``) cancel the byproduct exactly when
-    their product with it is a stabilizer of the initialized graph state, up
-    to Z factors on nodes where a Z acts trivially (Z-basis nodes, and
-    ``node`` itself). The generator of an X-initialized (default) node is X
-    on itself and Z on its neighbors, a Y-initialized node's generator
-    carries an extra Z on itself, and a Z-initialized node has no X-type
-    generator, so X corrections onto Z-initialized nodes never qualify.
-
-    Parameters
-    ----------
-    node : `int`
-        Z-measured node
-    graph : `BaseGraphState`
-        graph state
-    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        x correction flow
-    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        z correction flow
-    z_basis_nodes : `set`\[`int`\]
-        all Z-prepared/Z-measured non-output nodes
-
-    Returns
-    -------
-    `bool`
-        Whether the byproduct is cancelled.
-    """
     input_initializations = graph.input_initializations
     applied_x = set(xflow.get(node, ())) - {node}
     applied_z = set(zflow.get(node, ())) - {node}
@@ -477,18 +283,6 @@ def _z_byproduct_corrected(
 
 
 def _z_basis_nodes(graph: BaseGraphState) -> set[int]:
-    r"""Collect the non-output nodes that are Z-prepared or Z-measured.
-
-    Parameters
-    ----------
-    graph : `BaseGraphState`
-        graph state
-
-    Returns
-    -------
-    `set`\[`int`\]
-        Nodes to prune.
-    """
     input_initializations = graph.input_initializations
     meas_bases = graph.meas_bases
     removed: set[int] = set()
@@ -503,59 +297,26 @@ def _z_basis_nodes(graph: BaseGraphState) -> set[int]:
     return removed
 
 
-def _connected_components(graph: BaseGraphState, flows: Sequence[Mapping[int, AbstractSet[int]]]) -> list[set[int]]:
-    r"""Split the nodes into components connected by graph edges or flow entries.
-
-    A correction-flow entry classically couples the measurement outcome of its
-    source node to its target nodes, so flow entries count as connections in
-    addition to graph edges.
-
-    Parameters
-    ----------
-    graph : `BaseGraphState`
-        graph state
-    flows : `collections.abc.Sequence`\[`collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]\]
-        correction flows whose entries also connect nodes
-
-    Returns
-    -------
-    `list`\[`set`\[`int`\]\]
-        Node sets of the components.
-    """
+def _reachable_nodes(
+    graph: BaseGraphState,
+    flows: Sequence[Mapping[int, AbstractSet[int]]],
+    seeds: AbstractSet[int],
+) -> set[int]:
     adjacency: dict[int, set[int]] = {node: set(graph.neighbors(node)) for node in graph.nodes}
     for flow in flows:
         for source, targets in flow.items():
             for target in targets:
                 adjacency[source].add(target)
                 adjacency[target].add(source)
-    components: list[set[int]] = []
-    unvisited = set(adjacency)
-    while unvisited:
-        component = {unvisited.pop()}
-        frontier = set(component)
-        while frontier:
-            frontier = {neighbor for node in frontier for neighbor in adjacency[node] if neighbor in unvisited}
-            unvisited -= frontier
-            component |= frontier
-        components.append(component)
-    return components
+    reachable = set(seeds) & adjacency.keys()
+    frontier = set(reachable)
+    while frontier:
+        frontier = {neighbor for node in frontier for neighbor in adjacency[node] if neighbor not in reachable}
+        reachable |= frontier
+    return reachable
 
 
 def _copy_graph_without(graph: BaseGraphState, removed_nodes: AbstractSet[int]) -> GraphState:
-    r"""Copy a graph state while skipping the given nodes, preserving node indices.
-
-    Parameters
-    ----------
-    graph : `BaseGraphState`
-        source graph state
-    removed_nodes : `collections.abc.Set`\[`int`\]
-        nodes to skip
-
-    Returns
-    -------
-    `GraphState`
-        Copied graph state without the given nodes.
-    """
     coordinates = graph.coordinates
     pruned = GraphState()
     for node in graph.nodes - removed_nodes:
@@ -570,17 +331,6 @@ def _copy_graph_without(graph: BaseGraphState, removed_nodes: AbstractSet[int]) 
 
 
 def _copy_node_annotations(graph: BaseGraphState, pruned: GraphState, removed_nodes: AbstractSet[int]) -> None:
-    r"""Copy input registrations, measurement bases, and local Cliffords of kept nodes.
-
-    Parameters
-    ----------
-    graph : `BaseGraphState`
-        source graph state
-    pruned : `GraphState`
-        destination graph state holding the kept nodes
-    removed_nodes : `collections.abc.Set`\[`int`\]
-        nodes skipped in the destination graph
-    """
     input_initializations = graph.input_initializations
     for input_node, q_index in graph.input_node_indices.items():
         if input_node not in removed_nodes:
@@ -595,21 +345,4 @@ def _copy_node_annotations(graph: BaseGraphState, pruned: GraphState, removed_no
 
 
 def _prune_flow(flow: Mapping[int, AbstractSet[int]], removed_nodes: AbstractSet[int]) -> dict[int, set[int]]:
-    r"""Drop pruned nodes from a correction flow.
-
-    Pruned nodes are dropped both as correctors (their entry disappears) and
-    as correction targets (they are discarded from every target set).
-
-    Parameters
-    ----------
-    flow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        correction flow
-    removed_nodes : `collections.abc.Set`\[`int`\]
-        nodes to drop
-
-    Returns
-    -------
-    `dict`\[`int`, `set`\[`int`\]\]
-        Pruned correction flow.
-    """
     return {node: set(targets) - removed_nodes for node, targets in flow.items() if node not in removed_nodes}
