@@ -45,12 +45,12 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
     prune_preparations: bool = True,
     prune_measurements: bool = True,
-    keep_preparation_tags: AbstractSet[str] | None = None,
+    protected_preparation_tags: AbstractSet[str] | None = None,
 ) -> PruneResult:
     """Remove eligible Z-prepared and Z-measured nodes from compile inputs.
 
     Output nodes are always kept. Preparation and measurement pruning can be
-    disabled independently, and ``keep_preparation_tags`` protects matching
+    disabled independently, and ``protected_preparation_tags`` protects matching
     Z-prepared inputs. A node both prepared and measured in Z is governed by
     the preparation controls.
 
@@ -72,7 +72,7 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
         Whether to remove Z-prepared inputs.
     prune_measurements : bool
         Whether to remove corrected Z measurements.
-    keep_preparation_tags : AbstractSet[str] | None
+    protected_preparation_tags : AbstractSet[str] | None
         Initialization tags that protect Z-prepared inputs.
 
     Returns
@@ -88,24 +88,16 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
 
     Notes
     -----
-    A Z-measured node is removed only when its sourced corrections, multiplied
-    by the Z byproducts on its neighbors, form a stabilizer of the initialized
-    graph state up to vacuous Z factors on Z-basis nodes. Otherwise it is kept
-    to avoid selecting a measurement branch.
+    A Z-measured node is removed only when its sourced corrections times the
+    Z byproducts on its neighbors form a stabilizer of the initialized graph
+    state, up to vacuous Z factors on Z-basis nodes; otherwise removal would
+    select a measurement branch.
 
-    A Z-prepared input never entangles, so its record is independent of the
-    rest of the pattern and the node is pruned unconditionally. Corrections
-    sourced at it are dropped with the node, which amounts to fixing the
-    branch of the dropped record: every parity check and logical observable
-    keeps its value, but output qubits carry the state of that single
-    branch instead of the mixture over branches.
-
-    A pruned record whose value is the deterministic constant 1 (for
-    example a MINUS-sign Z eigenstate measured along the positive Z axis)
-    contributes a constant flip to every parity check or observable that
-    contains it, so those parities are preserved only up to a deterministic
-    inversion. The recompiled pattern remains deterministic and
-    self-consistent.
+    A Z-prepared input never entangles, so it is pruned unconditionally along
+    with its sourced corrections, fixing the branch of the dropped record:
+    parity checks and logical observables keep their values (up to a
+    deterministic flip when the record is the constant 1), while outputs
+    carry that single branch instead of the mixture over branches.
     """  # ruff:ignore[docstring-extraneous-exception]
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
@@ -115,7 +107,7 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
         zflow,
         prune_preparations=prune_preparations,
         prune_measurements=prune_measurements,
-        keep_preparation_tags=keep_preparation_tags,
+        protected_preparation_tags=protected_preparation_tags,
     )
     return _pruned_inputs(
         graph,
@@ -247,7 +239,7 @@ def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
     *,
     prune_preparations: bool,
     prune_measurements: bool,
-    keep_preparation_tags: AbstractSet[str] | None,
+    protected_preparation_tags: AbstractSet[str] | None,
 ) -> set[int]:
     input_initializations = graph.input_initializations
     z_basis_nodes = _z_basis_nodes(graph)
@@ -255,8 +247,8 @@ def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
     for node in z_basis_nodes:
         initialization = input_initializations.get(node)
         if initialization is not None and initialization.axis == Axis.Z:
-            kept_by_tag = keep_preparation_tags is not None and initialization.tag in keep_preparation_tags
-            if prune_preparations and not kept_by_tag:
+            protected = protected_preparation_tags is not None and initialization.tag in protected_preparation_tags
+            if prune_preparations and not protected:
                 prunable.add(node)
         elif prune_measurements and _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes):
             prunable.add(node)

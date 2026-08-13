@@ -159,7 +159,7 @@ def test_prune_preparations_and_measurements_flags() -> None:
     assert no_measurements.removed_nodes == {node_prep}
 
 
-def test_keep_preparation_tags() -> None:
+def test_protected_preparation_tags() -> None:
     graph = GraphState()
     node_plain = graph.add_node()
     node_tagged = graph.add_node()
@@ -172,7 +172,7 @@ def test_keep_preparation_tags() -> None:
     graph.assign_meas_basis(node_plain, default_meas_basis())
     graph.assign_meas_basis(node_tagged, default_meas_basis())
 
-    result = prune_z_nodes(graph, xflow={}, keep_preparation_tags={"keep"})
+    result = prune_z_nodes(graph, xflow={}, protected_preparation_tags={"keep"})
 
     assert result.removed_nodes == {node_plain}
     assert result.graph.nodes == {node_tagged, node_out}
