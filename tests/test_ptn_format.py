@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
+from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import Pattern
 from graphqomb.pauli_frame import PauliFrame
@@ -104,7 +104,7 @@ def assert_pattern_equivalent(actual: Pattern, expected: Pattern) -> None:
     assert actual.input_node_indices == expected.input_node_indices
     assert actual.output_node_indices == expected.output_node_indices
     assert actual.input_coordinates == expected.input_coordinates
-    assert actual.input_initialization_axes == expected.input_initialization_axes
+    assert actual.input_initializations == expected.input_initializations
     assert actual.pauli_frame.xflow == expected.pauli_frame.xflow
     assert actual.pauli_frame.zflow == expected.pauli_frame.zflow
     assert actual.pauli_frame.parity_check_group == expected.pauli_frame.parity_check_group
@@ -140,8 +140,8 @@ def test_ptn_roundtrip_preserves_input_initialization_axes() -> None:
     out0 = graph.add_node()
     out1 = graph.add_node()
 
-    graph.register_input(in0, 0, init_axis=Axis.Y)
-    graph.register_input(in1, 1, init_axis=Axis.Z)
+    graph.register_input(in0, 0, init=Initialization(axis=Axis.Y))
+    graph.register_input(in1, 1, init=Initialization(axis=Axis.Z))
     graph.register_output(out0, 0)
     graph.register_output(out1, 1)
     graph.add_edge(in0, out0)
@@ -154,7 +154,7 @@ def test_ptn_roundtrip_preserves_input_initialization_axes() -> None:
     loaded = loads(ptn_str)
 
     assert ".input_basis" in ptn_str
-    assert loaded.input_initialization_axes == {in0: Axis.Y, in1: Axis.Z}
+    assert loaded.input_initializations == {in0: Initialization(axis=Axis.Y), in1: Initialization(axis=Axis.Z)}
 
 
 def test_ptn_loads_legacy_input_without_input_basis_as_x() -> None:
@@ -173,7 +173,7 @@ M 0 X +
 
     loaded = loads(ptn_str)
 
-    assert loaded.input_initialization_axes == {0: Axis.X}
+    assert loaded.input_initializations == {0: Initialization()}
 
 
 def test_ptn_load_rejects_input_basis_for_non_input_node() -> None:
@@ -193,6 +193,143 @@ M 0 X +
 
     with pytest.raises(ValueError, match="Input basis specified for non-input node"):
         loads(ptn_str)
+
+
+def create_tagged_input_pattern(tag: str) -> Pattern:
+    """Create a compiled pattern whose single input carries an initialization tag.
+
+    Returns
+    -------
+    Pattern
+        Compiled pattern with a tagged input initialization.
+    """
+    graph = GraphState()
+    in_node = graph.add_node()
+    out_node = graph.add_node()
+    graph.register_input(in_node, 0, init=Initialization(tag=tag))
+    graph.register_output(out_node, 0)
+    graph.add_edge(in_node, out_node)
+    graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))
+
+    return qompile(graph, {in_node: {out_node}})
+
+
+def test_dumps_omits_untagged_input_tag_and_keeps_base_version() -> None:
+    """Untagged input initializations stay off the file and off version 4."""
+    ptn_str = dumps(create_simple_pattern())
+
+    assert ".input_tag" not in ptn_str
+    assert ".version 2" in ptn_str
+
+
+def test_dumps_writes_input_tag_with_version_4() -> None:
+    """A tagged input initialization uses the version 4 grammar."""
+    ptn_str = dumps(create_tagged_input_pattern("init_data"))
+
+    assert ".version 4" in ptn_str
+    assert ".input_tag[init_data] 0" in ptn_str
+
+
+@pytest.mark.parametrize("tag", ["init_data", "a]b", "back\\slash", "new\nline", "sp ace#hash"])
+def test_ptn_roundtrip_preserves_input_initialization_tags(tag: str) -> None:
+    """Input initialization tags survive a .ptn roundtrip, including escapes."""
+    pattern = create_tagged_input_pattern(tag)
+    ptn_str = dumps(pattern)
+    loaded = loads(ptn_str)
+
+    assert loaded.input_initializations == pattern.input_initializations
+    assert dumps(loaded) == ptn_str
+
+
+def test_ptn_load_rejects_input_tag_for_non_input_node() -> None:
+    """Input tag directives can only reference input nodes."""
+    ptn_str = """# GraphQOMB Pattern Format v4
+.version 4
+.input 0:0
+.input_tag[init] 1
+.output 1:0
+
+[0]
+E 0 1
+M 0 X +
+
+.xflow 0 -> 1
+"""
+
+    with pytest.raises(ValueError, match="Input tag specified for non-input node"):
+        loads(ptn_str)
+
+
+def test_ptn_load_rejects_input_tag_in_older_version() -> None:
+    """Version 3 .ptn files cannot use the version 4 input-tag directive."""
+    ptn_str = """# GraphQOMB Pattern Format v3
+.version 3
+.input 0:0
+.input_tag[init] 0
+.output 1:0
+
+[0]
+E 0 1
+M 0 X +
+
+.xflow 0 -> 1
+"""
+
+    with pytest.raises(ValueError, match=r"\.input_tag requires \.ptn version 4"):
+        loads(ptn_str)
+
+
+def test_ptn_load_rejects_input_tag_without_bracket() -> None:
+    """The .input_tag directive requires a bracketed tag."""
+    ptn_str = """.version 4
+.input 0:0
+.input_tag 0
+.output 1:0
+
+[0]
+E 0 1
+M 0 X +
+"""
+
+    with pytest.raises(ValueError, match=r"\.input_tag requires a bracketed tag"):
+        loads(ptn_str)
+
+
+def test_ptn_load_rejects_unclosed_input_tag() -> None:
+    """The .input_tag bracket must be closed."""
+    with pytest.raises(ValueError, match=r"\.input_tag tag is missing its closing"):
+        loads(".version 4\n.input 0:0\n.input_tag[init 0\n")
+
+
+def test_ptn_load_rejects_duplicate_input_tag() -> None:
+    """A node may carry at most one input tag."""
+    ptn_str = """.version 4
+.input 0:0
+.input_tag[first] 0
+.input_tag[second] 0
+"""
+
+    with pytest.raises(ValueError, match=r"\.input_tag specified more than once"):
+        loads(ptn_str)
+
+
+def test_ptn_load_keeps_hash_inside_input_tag() -> None:
+    """A ``#`` inside the tag bracket is tag text, not a comment."""
+    ptn_str = """.version 4
+.input 0:0
+.input_tag[tag # not comment] 0
+.output 1:0
+
+[0]
+E 0 1
+M 0 X +
+
+.xflow 0 -> 1
+"""
+
+    loaded = loads(ptn_str)
+
+    assert loaded.input_initializations == {0: Initialization(tag="tag # not comment")}
 
 
 def test_ptn_load_rejects_input_basis_in_legacy_version() -> None:

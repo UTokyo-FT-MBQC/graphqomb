@@ -1185,7 +1185,7 @@ def test_stim_text_to_pattern_imports_initial_reset(
     result = stim_text_to_pattern(instruction)
     input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
 
-    assert result.pattern.input_initialization_axes[input_node] == expected_axis
+    assert result.pattern.input_initializations[input_node].axis == expected_axis
     assert compiled_instruction in stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
 
 
@@ -1204,8 +1204,8 @@ def test_stim_text_to_pattern_folds_initial_h_into_rx_and_aligns_input_z() -> No
 
     assert graph.number_of_nodes() == 2
     assert graph.number_of_edges() == 0
-    assert graph.input_initialization_axes[input_nodes[0]] == Axis.Z
-    assert graph.input_initialization_axes[input_nodes[1]] == Axis.X
+    assert graph.input_initializations[input_nodes[0]].axis == Axis.Z
+    assert graph.input_initializations[input_nodes[1]].axis == Axis.X
     assert graph.coordinates[input_nodes[0]] == (0.0, 0.0, 0.0)
     assert graph.coordinates[input_nodes[1]] == (1.0, 0.0, 0.0)
     assert f"R {input_nodes[0]}" in compiled
@@ -1218,7 +1218,7 @@ def test_stim_text_to_pattern_removes_clifford_preserving_initial_reset_state() 
     input_node = next(iter(graph.input_node_indices))
 
     assert graph.number_of_nodes() == 1
-    assert graph.input_initialization_axes[input_node] == Axis.Z
+    assert graph.input_initializations[input_node].axis == Axis.Z
     assert graph.coordinates[input_node] == (0.0, 0.0, 0.0)
 
 
@@ -1226,14 +1226,14 @@ def test_stim_text_to_pattern_uses_last_leading_reset() -> None:
     result = stim_text_to_pattern("R 0\nRY 0\nH 0")
     input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
 
-    assert result.pattern.input_initialization_axes[input_node] == Axis.Y
+    assert result.pattern.input_initializations[input_node].axis == Axis.Y
 
 
 def test_stim_text_to_pattern_allows_initial_reset_after_other_qubit_operation() -> None:
     result = stim_text_to_pattern("H 0\nR 1")
     input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
 
-    assert result.pattern.input_initialization_axes[input_node] == Axis.Z
+    assert result.pattern.input_initializations[input_node].axis == Axis.Z
 
 
 @pytest.mark.parametrize(
@@ -1248,7 +1248,7 @@ def test_stim_text_to_pattern_reinitializes_measured_qubit_on_fresh_wire(
     assert result.stim_to_qubit == {0: 0}
     assert result.qubit_to_stim == {0: 0, 1: 0}
     fresh_input = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
-    assert result.pattern.input_initialization_axes[fresh_input] == axis
+    assert result.pattern.input_initializations[fresh_input].axis == axis
     compiled = stim.Circuit(stim_compile(result.pattern))
     assert not compiled.compile_detector_sampler().sample(shots=32).any()
 
@@ -1369,7 +1369,7 @@ def test_stim_text_to_pattern_uses_last_reset_before_reuse() -> None:
 
     assert result.qubit_to_stim == {0: 0, 1: 0}
     fresh_input = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
-    assert result.pattern.input_initialization_axes[fresh_input] == Axis.X
+    assert result.pattern.input_initializations[fresh_input].axis == Axis.X
     compiled = stim.Circuit(stim_compile(result.pattern))
     assert not compiled.compile_detector_sampler().sample(shots=32).any()
 
@@ -1435,7 +1435,7 @@ def test_stim_text_to_pattern_repeated_measurement_outcomes_agree(
 
     graph = stim_text_to_pattern(f"{measurement} 0\nTICK\n{measurement} 0").pattern.pauli_frame.graphstate
     continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
-    assert graph.input_initialization_axes[continuation_node] == expected_axis
+    assert graph.input_initializations[continuation_node].axis == expected_axis
 
 
 @pytest.mark.parametrize(
@@ -1507,7 +1507,7 @@ def test_stim_text_to_pattern_reuses_qubit_after_measure_reset(measurement: str,
 
     assert result.qubit_to_stim == {0: 0, 1: 0}
     continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
-    assert graph.input_initialization_axes[continuation_node] == reset_axis
+    assert graph.input_initializations[continuation_node].axis == reset_axis
 
 
 def test_stim_text_to_pattern_measure_reset_continuation_is_outcome_independent() -> None:
@@ -1848,6 +1848,85 @@ def test_stim_import_export_round_trip_preserves_detector_tags() -> None:
 
     detector_tags = [instruction.tag for instruction in compiled if instruction.name == "DETECTOR"]
     assert detector_tags == ["type=flag", ""]
+
+
+@pytest.mark.parametrize(
+    ("instruction", "reset_name"),
+    [("R[init] 0", "R"), ("RX[init] 0", "RX"), ("RY[init] 0", "RY")],
+)
+def test_stim_text_to_pattern_preserves_initial_reset_tag(instruction: str, reset_name: str) -> None:
+    result = stim_text_to_pattern(instruction)
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert result.pattern.input_initializations[input_node].tag == "init"
+    assert f"{reset_name}[init] {input_node}" in stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
+
+
+def test_stim_text_to_pattern_last_leading_reset_tag_wins() -> None:
+    result = stim_text_to_pattern("R[first] 0\nRY[second] 0")
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert result.pattern.input_initializations[input_node].tag == "second"
+
+
+def test_stim_text_to_pattern_untagged_last_leading_reset_clears_tag() -> None:
+    result = stim_text_to_pattern("R[first] 0\nRY 0")
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert not result.pattern.input_initializations[input_node].tag
+
+
+def test_stim_text_to_pattern_keeps_reset_tag_through_clifford_folding() -> None:
+    result = stim_text_to_pattern("R[init] 0\nH 0")
+    input_node = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 0)
+
+    assert result.pattern.input_initializations[input_node].axis == Axis.X
+    assert result.pattern.input_initializations[input_node].tag == "init"
+
+
+def test_stim_text_to_pattern_fresh_wire_keeps_mid_circuit_reset_tag() -> None:
+    result = stim_text_to_pattern("M 0\nR[again] 0\nTICK\nM 0\nDETECTOR rec[-1]")
+    fresh_input = next(node for node, q_index in result.pattern.input_node_indices.items() if q_index == 1)
+
+    assert result.pattern.input_initializations[fresh_input].tag == "again"
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
+    tagged_resets = [instruction.tag for instruction in compiled if instruction.name == "R" and instruction.tag]
+    assert tagged_resets == ["again"]
+
+
+def test_stim_text_to_pattern_measure_reset_tag_marks_continuation() -> None:
+    result = stim_text_to_pattern("MR[mr] 0\nTICK\nH 0")
+    graph = result.pattern.pauli_frame.graphstate
+    continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
+
+    assert graph.input_initializations[continuation_node].tag == "mr"
+
+
+def test_stim_text_to_pattern_plain_measurement_reuse_leaves_continuation_untagged() -> None:
+    result = stim_text_to_pattern("M[m] 0\nTICK\nH 0")
+    graph = result.pattern.pauli_frame.graphstate
+    continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
+
+    assert not graph.input_initializations[continuation_node].tag
+
+
+def test_stim_import_export_round_trip_preserves_reset_tags() -> None:
+    result = stim_text_to_pattern(
+        """
+        R[data] 0
+        RX[ancilla] 1
+        TICK
+        CZ 0 1
+        TICK
+        MX 0 1
+        DETECTOR rec[-1] rec[-2]
+        """
+    )
+
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    reset_tags = {instruction.name: instruction.tag for instruction in compiled if instruction.tag}
+    assert reset_tags == {"R": "data", "RX": "ancilla"}
 
 
 def test_stim_text_to_pattern_schedule_config_solves_with_cpsat() -> None:

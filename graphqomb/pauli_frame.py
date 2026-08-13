@@ -309,7 +309,7 @@ class PauliFrame:
         """
         x_support: set[int] = set()
         z_support: set[int] = set()
-        input_axes = self.graphstate.input_initialization_axes
+        input_axes = {node: init.axis for node, init in self.graphstate.input_initializations.items()}
         z_initialized = {node for node, axis in input_axes.items() if axis is Axis.Z}
 
         for node in detector_group:
