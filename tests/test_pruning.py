@@ -4,6 +4,7 @@ import math
 
 import pytest
 
+from graphqomb.command import M, N
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign, default_meas_basis
 from graphqomb.graphstate import GraphState
 from graphqomb.pruning import prune_isolated_components, prune_z_nodes
@@ -211,6 +212,58 @@ def test_components_with_observable_seed_or_output_are_kept() -> None:
     assert result.graph.nodes == {seed_component, output_component}
 
 
+def test_flow_coupled_component_is_kept() -> None:
+    """A component feeding a correction into a relevant component is classically coupled and stays."""
+    graph = GraphState()
+    node_out = graph.add_node()
+    node_ctrl = graph.add_node()
+    iso_a = graph.add_node()
+    iso_b = graph.add_node()
+    graph.add_edge(iso_a, iso_b)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_ctrl, default_meas_basis())
+    graph.assign_meas_basis(iso_a, default_meas_basis())
+    graph.assign_meas_basis(iso_b, default_meas_basis())
+
+    result = prune_isolated_components(graph, xflow={node_ctrl: {node_out}, iso_a: {iso_b}})
+
+    assert result.removed_nodes == {iso_a, iso_b}
+    assert result.graph.nodes == {node_out, node_ctrl}
+    assert result.xflow == {node_ctrl: {node_out}}
+
+
+def test_flow_target_component_is_kept() -> None:
+    """A component receiving a correction from a relevant component stays as well."""
+    graph = GraphState()
+    node_in = graph.add_node()
+    node_out = graph.add_node()
+    stray = graph.add_node()
+    graph.add_edge(node_in, node_out)
+    graph.register_input(node_in, 0)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_in, default_meas_basis())
+    graph.assign_meas_basis(stray, default_meas_basis())
+
+    result = prune_isolated_components(graph, xflow={node_in: {node_out, stray}})
+
+    assert result.removed_nodes == frozenset()
+    assert result.graph.nodes == {node_in, node_out, stray}
+
+
+def test_zflow_coupling_counts_for_relevance() -> None:
+    """An explicit zflow entry into a kept component keeps the source component too."""
+    graph = GraphState()
+    node_out = graph.add_node()
+    node_ctrl = graph.add_node()
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_ctrl, default_meas_basis())
+
+    result = prune_isolated_components(graph, xflow={}, zflow={node_ctrl: {node_out}})
+
+    assert result.removed_nodes == frozenset()
+    assert result.graph.nodes == {node_out, node_ctrl}
+
+
 def test_prune_everything_without_outputs_and_observables() -> None:
     """With no outputs and no observables, every component is irrelevant by definition."""
     graph = GraphState()
@@ -278,7 +331,7 @@ def test_z_prune_then_isolated_prune_compiles() -> None:
         parity_check_tags=result.parity_check_tags,
         logical_observables=result.logical_observables,
     )
-    prepared_or_measured = {cmd.node for cmd in pattern.commands if hasattr(cmd, "node")}
+    prepared_or_measured = {cmd.node for cmd in pattern.commands if isinstance(cmd, (N, M))}
     assert prepared_or_measured.isdisjoint({node_z, iso_a, iso_b})
 
 
@@ -312,5 +365,5 @@ def test_pruned_result_compiles() -> None:
         logical_observables=result.logical_observables,
     )
 
-    measured_nodes = {cmd.node for cmd in pattern.commands if hasattr(cmd, "node")}
-    assert node_z not in measured_nodes
+    prepared_or_measured = {cmd.node for cmd in pattern.commands if isinstance(cmd, (N, M))}
+    assert node_z not in prepared_or_measured

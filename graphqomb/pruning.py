@@ -8,21 +8,25 @@ time preserves the semantics of the pattern: in the pruned pattern the node is
 never prepared or entangled, and every parity-check or observable product
 loses exactly the Z factor that the deleted node supplied.
 
-Deleting Z-basis nodes can disconnect the graph. A connected component that
-contains neither an output node nor a logical observable seed cannot influence
-the logical outcome, so it can be deleted as well. Such a component is not
-entangled with the rest of the graph, so a deterministic parity check that
-mixes its records with kept records factors into two independently
-deterministic halves and stays deterministic after the deleted half is
-dropped.
+Deleting Z-basis nodes can disconnect the graph. A component that contains
+neither an output node nor a logical observable seed cannot influence the
+logical outcome, so it can be deleted as well. Components are taken over graph
+edges and correction-flow entries together: a flow entry classically couples
+the measurement outcome of its source node to its targets (for example
+circuit-imported record-controlled Paulis), so nodes joined only by flow are
+still kept or pruned as one component. A deleted component is then neither
+entangled with nor classically coupled to the rest of the graph, so a
+deterministic parity check that mixes its records with kept records factors
+into two independently deterministic halves and stays deterministic after the
+deleted half is dropped.
 
 This module provides:
 
 - `PruneResult`: Result of pruning nodes from a set of compile inputs.
 - `prune_z_nodes`: Remove Z-prepared/Z-measured nodes from a graph state and
   the associated flows, parity checks, and logical observables.
-- `prune_isolated_components`: Remove connected components that touch neither
-  an output node nor a logical observable seed.
+- `prune_isolated_components`: Remove components that touch neither an output
+  node nor a logical observable seed.
 """
 
 from __future__ import annotations
@@ -128,6 +132,24 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     ValueError
         If ``parity_check_tags`` is given but not aligned with
         ``parity_check_group``.
+
+    Notes
+    -----
+    Correction-flow entries sourced at a pruned node are dropped together
+    with the node. For a byproduct-correction flow of the graph this is
+    exact: the dropped corrections compensated byproducts that the pruned
+    pattern never produces. For classical feedback (a measurement record
+    controlling a Pauli on a kept node) it amounts to fixing the branch of
+    the dropped record; every parity check and logical observable keeps its
+    value, but output qubits carry the state of that single branch instead
+    of the mixture over branches.
+
+    A pruned record whose value is the deterministic constant 1 (for
+    example a MINUS-sign Z eigenstate measured along the positive Z axis)
+    contributes a constant flip to every parity check or observable that
+    contains it, so those parities are preserved only up to a deterministic
+    inversion. The recompiled pattern remains deterministic and
+    self-consistent.
     """  # ruff:ignore[docstring-extraneous-exception]
     return _pruned_inputs(
         graph,
@@ -149,14 +171,19 @@ def prune_isolated_components(  # ruff:ignore[too-many-arguments]
     parity_check_tags: Sequence[str] | None = None,
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
 ) -> PruneResult:
-    r"""Remove connected components that touch neither an output node nor a logical observable seed.
+    r"""Remove components that touch neither an output node nor a logical observable seed.
 
-    Every node of such a component is pruned from the graph, from the flows,
-    and from every parity check group; parity checks contained entirely in a
-    pruned component disappear, including ``type=flag`` checks, so pruning can
-    change the acceptance rate of post-selected sampling (only by dropping
-    flags whose firing cannot affect the logical outcome). Logical observable
-    seed sets are unchanged by construction.
+    Components are computed over graph edges and correction-flow entries
+    together: a flow entry classically couples the measurement outcome of its
+    source node to its targets, so a component that feeds corrections into a
+    relevant component (or receives corrections from one) is itself kept.
+
+    Every node of a pruned component is dropped from the graph, from the
+    flows, and from every parity check group; parity checks contained entirely
+    in a pruned component disappear, including ``type=flag`` checks, so
+    pruning can change the acceptance rate of post-selected sampling (only by
+    dropping flags whose firing cannot affect the logical outcome). Logical
+    observable seed sets are unchanged by construction.
 
     Note that when the inputs declare no logical observables and the graph has
     no output nodes, every component is considered irrelevant and the whole
@@ -202,8 +229,12 @@ def prune_isolated_components(  # ruff:ignore[too-many-arguments]
         for seed_nodes in logical_observables.values():
             relevant_nodes.update(seed_nodes)
 
+    # A zflow derived from odd neighbors of xflow targets cannot connect
+    # anything beyond graph edges and xflow entries.
+    flows = [xflow] if zflow is None else [xflow, zflow]
+
     removed_nodes: set[int] = set()
-    for component in _connected_components(graph):
+    for component in _connected_components(graph, flows):
         if not (component & relevant_nodes):
             removed_nodes |= component
 
@@ -325,26 +356,38 @@ def _z_basis_nodes(graph: BaseGraphState) -> set[int]:
     return removed
 
 
-def _connected_components(graph: BaseGraphState) -> list[set[int]]:
-    r"""Split the graph into connected components.
+def _connected_components(graph: BaseGraphState, flows: Sequence[Mapping[int, AbstractSet[int]]]) -> list[set[int]]:
+    r"""Split the nodes into components connected by graph edges or flow entries.
+
+    A correction-flow entry classically couples the measurement outcome of its
+    source node to its target nodes, so flow entries count as connections in
+    addition to graph edges.
 
     Parameters
     ----------
     graph : `BaseGraphState`
         graph state
+    flows : `collections.abc.Sequence`\[`collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]\]
+        correction flows whose entries also connect nodes
 
     Returns
     -------
     `list`\[`set`\[`int`\]\]
-        Node sets of the connected components.
+        Node sets of the components.
     """
+    adjacency: dict[int, set[int]] = {node: set(graph.neighbors(node)) for node in graph.nodes}
+    for flow in flows:
+        for source, targets in flow.items():
+            for target in targets:
+                adjacency[source].add(target)
+                adjacency[target].add(source)
     components: list[set[int]] = []
-    unvisited = graph.nodes
+    unvisited = set(adjacency)
     while unvisited:
         component = {unvisited.pop()}
         frontier = set(component)
         while frontier:
-            frontier = {neighbor for node in frontier for neighbor in graph.neighbors(node) if neighbor in unvisited}
+            frontier = {neighbor for node in frontier for neighbor in adjacency[node] if neighbor in unvisited}
             unvisited -= frontier
             component |= frontier
         components.append(component)
