@@ -138,6 +138,63 @@ def test_stabilizer_equivalent_correction_is_recognized() -> None:
     assert result.xflow == {node_v: {node_w}}
 
 
+def test_prune_preparations_and_measurements_flags() -> None:
+    """Preparation and measurement pruning can be disabled independently."""
+    graph = GraphState()
+    node_prep = graph.add_node()
+    node_meas = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_prep, node_out)
+    graph.add_edge(node_meas, node_out)
+    graph.register_input(node_prep, 0, init=Initialization(axis=Axis.Z))
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_prep, default_meas_basis())
+    graph.assign_meas_basis(node_meas, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    zflow = {node_meas: {node_out}}
+
+    no_preps = prune_z_nodes(graph, xflow={}, zflow=zflow, prune_preparations=False)
+    assert no_preps.removed_nodes == {node_meas}
+
+    no_measurements = prune_z_nodes(graph, xflow={}, zflow=zflow, prune_measurements=False)
+    assert no_measurements.removed_nodes == {node_prep}
+
+
+def test_keep_preparation_tags() -> None:
+    """Z-prepared inputs with a protected initialization tag survive pruning."""
+    graph = GraphState()
+    node_plain = graph.add_node()
+    node_tagged = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_plain, node_out)
+    graph.add_edge(node_tagged, node_out)
+    graph.register_input(node_plain, 0, init=Initialization(axis=Axis.Z))
+    graph.register_input(node_tagged, 1, init=Initialization(axis=Axis.Z, tag="keep"))
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_plain, default_meas_basis())
+    graph.assign_meas_basis(node_tagged, default_meas_basis())
+
+    result = prune_z_nodes(graph, xflow={}, keep_preparation_tags={"keep"})
+
+    assert result.removed_nodes == {node_plain}
+    assert result.graph.nodes == {node_tagged, node_out}
+    assert result.graph.input_initializations[node_tagged] == Initialization(axis=Axis.Z, tag="keep")
+
+
+def test_z_prepared_and_measured_node_counts_as_preparation() -> None:
+    """A node that is both Z-prepared and Z-measured is governed by the preparation controls."""
+    graph = GraphState()
+    node_both = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_both, node_out)
+    graph.register_input(node_both, 0, init=Initialization(axis=Axis.Z))
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_both, AxisMeasBasis(Axis.Z, Sign.PLUS))
+
+    kept = prune_z_nodes(graph, xflow={}, zflow={node_both: {node_out}}, prune_preparations=False)
+
+    assert kept.removed_nodes == frozenset()
+
+
 def test_y_initialized_correction_target_is_checked() -> None:
     """X corrections onto a Y-initialized node follow its Y-type stabilizer generator."""
     graph = GraphState()

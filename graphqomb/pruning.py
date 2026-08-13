@@ -93,6 +93,9 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     parity_check_group: Sequence[AbstractSet[int]] | None = None,
     parity_check_tags: Sequence[str] | None = None,
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
+    prune_preparations: bool = True,
+    prune_measurements: bool = True,
+    keep_preparation_tags: AbstractSet[str] | None = None,
 ) -> PruneResult:
     r"""Remove Z-prepared/Z-measured nodes from a set of compile inputs.
 
@@ -104,6 +107,11 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     correction target, and from every parity check group and logical
     observable seed set. Output nodes are always kept so that the pattern
     keeps its logical qubit interface.
+
+    The two kinds of pruning can be disabled independently with
+    ``prune_preparations`` and ``prune_measurements``, and Z-prepared inputs
+    whose initialization tag is listed in ``keep_preparation_tags`` are kept.
+    A node that is both Z-prepared and Z-measured counts as a preparation.
 
     The pieces returned by this function can be passed directly to
     `graphqomb.qompiler.qompile` or to `prune_isolated_components`.
@@ -126,6 +134,16 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         logical observables represented by logical index and seed nodes,
         by default `None` (no logical observables)
+    prune_preparations : `bool`
+        Whether to prune Z-prepared inputs, by default `True`.
+    prune_measurements : `bool`
+        Whether to prune byproduct-corrected Z-measured nodes, by default
+        `True`.
+    keep_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
+        Initialization tags that protect a Z-prepared input from pruning
+        (e.g. carried through the Stim importer from a tagged reset
+        instruction such as ``R[keep]``). If `None`, no preparation is
+        protected.
 
     Returns
     -------
@@ -171,9 +189,17 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     """  # ruff:ignore[docstring-extraneous-exception]
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
+    prunable = _prunable_z_nodes(
+        graph,
+        xflow,
+        zflow,
+        prune_preparations=prune_preparations,
+        prune_measurements=prune_measurements,
+        keep_preparation_tags=keep_preparation_tags,
+    )
     return _pruned_inputs(
         graph,
-        _prunable_z_nodes(graph, xflow, zflow),
+        prunable,
         xflow,
         zflow,
         parity_check_group=parity_check_group,
@@ -349,18 +375,23 @@ def _pruned_inputs(  # ruff:ignore[too-many-arguments]
     )
 
 
-def _prunable_z_nodes(
+def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, AbstractSet[int]],
+    *,
+    prune_preparations: bool,
+    prune_measurements: bool,
+    keep_preparation_tags: AbstractSet[str] | None,
 ) -> set[int]:
     r"""Collect the Z-basis nodes that can be pruned.
 
-    Z-prepared inputs are always prunable: they never entangle, so removing
-    them is exact. Z-measured nodes are prunable only when the corrections
-    they source cancel the Z byproduct their measurement leaves on their
-    neighbors; otherwise removing them would silently select one branch of
-    the measurement outcome.
+    Z-prepared inputs never entangle, so removing them is exact; they are
+    prunable unless disabled or protected by their initialization tag.
+    Z-measured nodes are prunable only when the corrections they source
+    cancel the Z byproduct their measurement leaves on their neighbors;
+    otherwise removing them would silently select one branch of the
+    measurement outcome.
 
     Parameters
     ----------
@@ -370,6 +401,12 @@ def _prunable_z_nodes(
         x correction flow
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
         z correction flow
+    prune_preparations : `bool`
+        whether Z-prepared inputs are prunable
+    prune_measurements : `bool`
+        whether byproduct-corrected Z-measured nodes are prunable
+    keep_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
+        initialization tags that protect a Z-prepared input
 
     Returns
     -------
@@ -381,8 +418,11 @@ def _prunable_z_nodes(
     prunable: set[int] = set()
     for node in z_basis_nodes:
         initialization = input_initializations.get(node)
-        z_prepared = initialization is not None and initialization.axis == Axis.Z
-        if z_prepared or _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes):
+        if initialization is not None and initialization.axis == Axis.Z:
+            kept_by_tag = keep_preparation_tags is not None and initialization.tag in keep_preparation_tags
+            if prune_preparations and not kept_by_tag:
+                prunable.add(node)
+        elif prune_measurements and _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes):
             prunable.add(node)
     return prunable
 
