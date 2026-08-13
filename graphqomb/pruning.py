@@ -1,8 +1,14 @@
-"""Prune graph-state compile inputs before passing them to ``qompile``.
+"""Prune graph-state compile inputs before passing them to `qompile`.
 
-``prune_z_nodes`` removes eligible Z-basis nodes, while
-``prune_isolated_components`` removes components unrelated to outputs or
+`prune_z_nodes` removes eligible Z-basis nodes, while
+`prune_isolated_components` removes components unrelated to outputs or
 logical observables. Both update all compile inputs and preserve node indices.
+
+This module provides:
+
+- `PruneResult`: Pruned compile inputs and the removed nodes.
+- `prune_z_nodes`: Remove eligible Z-prepared and Z-measured nodes.
+- `prune_isolated_components`: Remove components unrelated to outputs or logical observables.
 """
 
 from __future__ import annotations
@@ -47,44 +53,44 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     prune_measurements: bool = True,
     protected_preparation_tags: AbstractSet[str] | None = None,
 ) -> PruneResult:
-    """Remove eligible Z-prepared and Z-measured nodes from compile inputs.
+    r"""Remove eligible Z-prepared and Z-measured nodes from compile inputs.
 
     Output nodes are always kept. Preparation and measurement pruning can be
-    disabled independently, and ``protected_preparation_tags`` protects matching
+    disabled independently, and protected_preparation_tags protects matching
     Z-prepared inputs. A node both prepared and measured in Z is governed by
     the preparation controls.
 
     Parameters
     ----------
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         Source graph state.
-    xflow : Mapping[int, AbstractSet[int]]
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
         X correction flow.
-    zflow : Mapping[int, AbstractSet[int]] | None
-        Z correction flow, derived from ``xflow`` when omitted.
-    parity_check_group : Sequence[AbstractSet[int]] | None
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
+        Z correction flow, derived from xflow when omitted.
+    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
         Parity checks to update.
-    parity_check_tags : Sequence[str] | None
-        Tags aligned with ``parity_check_group``.
-    logical_observables : Mapping[int, AbstractSet[int]] | None
+    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
+        Tags aligned with parity_check_group.
+    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Logical-observable seed nodes to update.
-    prune_preparations : bool
+    prune_preparations : `bool`
         Whether to remove Z-prepared inputs.
-    prune_measurements : bool
+    prune_measurements : `bool`
         Whether to remove corrected Z measurements.
-    protected_preparation_tags : AbstractSet[str] | None
+    protected_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
         Initialization tags that protect Z-prepared inputs.
 
     Returns
     -------
-    PruneResult
-        Pruned inputs suitable for ``qompile`` or further pruning.
+    `PruneResult`
+        Pruned inputs suitable for `qompile` or further pruning.
 
     Raises
     ------
     ValueError
-        If ``parity_check_tags`` is given but not aligned with
-        ``parity_check_group``.
+        If parity_check_tags is given but not aligned with
+        parity_check_group.
 
     Notes
     -----
@@ -129,7 +135,7 @@ def prune_isolated_components(  # ruff:ignore[too-many-arguments]
     parity_check_tags: Sequence[str] | None = None,
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
 ) -> PruneResult:
-    """Remove components unrelated to outputs or logical-observable seeds.
+    r"""Remove components unrelated to outputs or logical-observable seeds.
 
     Graph edges and correction-flow entries both connect nodes. With no output
     nodes or logical observables, every component is removed; this operation is
@@ -137,29 +143,29 @@ def prune_isolated_components(  # ruff:ignore[too-many-arguments]
 
     Parameters
     ----------
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         Source graph state.
-    xflow : Mapping[int, AbstractSet[int]]
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
         X correction flow.
-    zflow : Mapping[int, AbstractSet[int]] | None
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Explicit Z correction flow, if any.
-    parity_check_group : Sequence[AbstractSet[int]] | None
+    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
         Parity checks to update.
-    parity_check_tags : Sequence[str] | None
-        Tags aligned with ``parity_check_group``.
-    logical_observables : Mapping[int, AbstractSet[int]] | None
+    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
+        Tags aligned with parity_check_group.
+    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Logical-observable seeds that make components relevant.
 
     Returns
     -------
-    PruneResult
-        Pruned inputs suitable for ``qompile``.
+    `PruneResult`
+        Pruned inputs suitable for `qompile`.
 
     Raises
     ------
     ValueError
-        If ``parity_check_tags`` is given but not aligned with
-        ``parity_check_group``.
+        If parity_check_tags is given but not aligned with
+        parity_check_group.
     """  # ruff:ignore[docstring-extraneous-exception]
     relevant_nodes = set(graph.output_node_indices)
     if logical_observables is not None:

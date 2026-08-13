@@ -177,7 +177,7 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
 
     The inference conjugates each final measurement Pauli backwards through the
     segment's Clifford body (``U† P U`` via ``stim.PauliString.before``) and
-    substitutes ``+1`` for stabilizers of freshly initialized, measured-out
+    substitutes +1 for stabilizers of freshly initialized, measured-out
     ancillas. A segment ends when a unitary follows its measurements, or when a
     measurement follows a reset issued after those measurements (including the
     implicit reset of ``MR``); trailing data measurements therefore start a
@@ -230,7 +230,7 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
     Raises
     ------
     ValueError
-        If ``fallback`` is not ``"circuit"`` or ``"segment"``.
+        If fallback is not ``"circuit"`` or ``"segment"``.
     """
     if fallback not in {"circuit", "segment"}:
         msg = f"fallback must be 'circuit' or 'segment', not {fallback!r}."
@@ -364,7 +364,7 @@ def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
 def _plain_qubit(target: stim.GateTarget, instruction_name: str) -> int:
     """Return the Stim qubit id a target acts on.
 
-    Unlike ``_parse.plain_qubit_target``, Pauli-typed and inverted-result
+    Unlike `_parse.plain_qubit_target`, Pauli-typed and inverted-result
     targets are accepted: the rewriter only needs the qubit id here, and it
     reports unsupported targets as `UnsupportedSyndromeCircuitError`.
 
@@ -1021,7 +1021,7 @@ def _remap_tableau_circuit(tableau: stim.Tableau, qubits: Sequence[int]) -> stim
     Returns
     -------
     ``stim.Circuit``
-        Synthesized Clifford circuit on ``qubits``.
+        Synthesized Clifford circuit on qubits.
 
     Raises
     ------
@@ -1049,7 +1049,7 @@ def _matched_flow_output_pairs(
     Returns
     -------
     `list`\[`tuple`\[``stim.PauliString``, ``stim.PauliString``\]\]
-        Converted/original output-Pauli pairs restricted to ``qubits``.
+        Converted/original output-Pauli pairs restricted to qubits.
 
     Raises
     ------

@@ -78,7 +78,7 @@ def visualize(  # ruff:ignore[too-many-arguments]
     ----------
     graph : `BaseGraphState`
         GraphState to visualize.
-    ax : `matplotlib.axes.Axes` | None, optional
+    ax : `matplotlib.axes.Axes` | `None`, optional
         Matplotlib Axes to draw on, by default None
     show_node_labels : `bool`, optional
         Whether to show node index labels, by default True
@@ -182,16 +182,16 @@ def visualize(  # ruff:ignore[too-many-arguments]
 
 
 def _setup_figure(node_pos: Mapping[int, tuple[float, float]]) -> FigureSetup:
-    """Calculate figure dimensions and plot limits based on node positions.
+    r"""Calculate figure dimensions and plot limits based on node positions.
 
     Parameters
     ----------
-    node_pos : collections.abc.Mapping[int, tuple[float, float]]
+    node_pos : `collections.abc.Mapping`\[`int`, `tuple`\[`float`, `float`\]\]
         Dictionary mapping node indices to (x, y) positions
 
     Returns
     -------
-    FigureSetup
+    `FigureSetup`
         NamedTuple containing
         x_min, x_max, y_min, y_max, padding, fig_width, fig_height values
     """
@@ -241,18 +241,18 @@ def _determine_node_positions(
     graph: BaseGraphState,
     use_graph_coordinates: bool,
 ) -> dict[int, tuple[float, float]]:
-    """Get node positions, using graph coordinates if available and requested.
+    r"""Get node positions, using graph coordinates if available and requested.
 
     Parameters
     ----------
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         GraphState to visualize.
-    use_graph_coordinates : bool
+    use_graph_coordinates : `bool`
         Whether to use coordinates stored in the graph.
 
     Returns
     -------
-    dict[int, tuple[float, float]]
+    `dict`\[`int`, `tuple`\[`float`, `float`\]\]
         Mapping of node indices to their (x, y) positions.
     """
     if use_graph_coordinates and graph.coordinates:
@@ -278,16 +278,16 @@ def _determine_node_positions(
 
 
 def _calc_node_positions(graph: BaseGraphState) -> dict[int, tuple[float, float]]:
-    """Calculate node positions for visualization with input/output nodes arranged vertically.
+    r"""Calculate node positions for visualization with input/output nodes arranged vertically.
 
     Parameters
     ----------
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         GraphState to visualize.
 
     Returns
     -------
-    dict[int, tuple[float, float]]
+    `dict`\[`int`, `tuple`\[`float`, `float`\]\]
         Mapping of node indices to their (x, y) positions.
     """
     internal_nodes = graph.nodes - graph.input_node_indices.keys() - graph.output_node_indices.keys()
@@ -354,11 +354,11 @@ def _determine_node_colors(graph: BaseGraphState) -> dict[int, ColorMap]:
 
 
 def _find_pauli_nodes(graph: BaseGraphState) -> dict[int, Axis]:
-    """Identify nodes with Pauli measurements (Clifford angles).
+    r"""Identify nodes with Pauli measurements (Clifford angles).
 
     Returns
     -------
-    dict[int, Axis]
+    `dict`\[`int`, `Axis`\]
         Dictionary mapping node indices to Pauli axis
     """
     pauli_nodes: dict[int, Axis] = {}
@@ -380,18 +380,18 @@ def _scatter_size_to_patch_radius(ax: Axes, x: float, y: float, scatter_size: fl
 
     Parameters
     ----------
-    ax : Axes
+    ax : `matplotlib.axes.Axes`
         Matplotlib axes object
-    x : float
+    x : `float`
         X position of the node in data coordinates
-    y : float
+    y : `float`
         Y position of the node in data coordinates
-    scatter_size : float
+    scatter_size : `float`
         Scatter plot size parameter (area in points²)
 
     Returns
     -------
-    float
+    `float`
         Equivalent radius in data coordinates for patches
     """
     # Convert scatter size (points²) to radius in points
@@ -424,12 +424,12 @@ def _calculate_font_size(node_size: float) -> int:
 
     Parameters
     ----------
-    node_size : float
+    node_size : `float`
         Node size parameter (scatter size in points^2)
 
     Returns
     -------
-    int
+    `int`
         Font size for node labels that fit within the node
     """
     # Calculate the diameter of the node in points
@@ -445,17 +445,17 @@ def _calculate_font_size(node_size: float) -> int:
 
 
 def _draw_pauli_node(ax: Axes, pos: tuple[float, float], pauli_axis: Axis, node_radius: float) -> None:
-    """Draw a Pauli measurement node with hatch patterns.
+    r"""Draw a Pauli measurement node with hatch patterns.
 
     Parameters
     ----------
-    ax : Axes
+    ax : `matplotlib.axes.Axes`
         Matplotlib axes object
-    pos : tuple[float, float]
+    pos : `tuple`\[`float`, `float`\]
         Node position (x, y)
-    pauli_axis : Axis
+    pauli_axis : `Axis`
         Pauli axis
-    node_radius : float
+    node_radius : `float`
         Radius for the node patches
     """
     x, y = pos
@@ -501,9 +501,9 @@ def _add_legend(ax: Axes, graph: BaseGraphState) -> None:
 
     Parameters
     ----------
-    ax : Axes
+    ax : `matplotlib.axes.Axes`
         Matplotlib axes object to add legend to
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         GraphState to analyze for legend items
     """
     planes_present, pauli_measurements = _analyze_graph_measurements(graph)
@@ -515,16 +515,16 @@ def _add_legend(ax: Axes, graph: BaseGraphState) -> None:
 
 
 def _analyze_graph_measurements(graph: BaseGraphState) -> tuple[set[Plane], set[Axis]]:
-    """Analyze graph measurements to determine legend content.
+    r"""Analyze graph measurements to determine legend content.
 
     Parameters
     ----------
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         GraphState to analyze
 
     Returns
     -------
-    tuple[set[Plane], set[Axis]]
+    `tuple`\[`set`\[`Plane`\], `set`\[`Axis`\]\]
         Tuple of (planes_present, pauli_measurements)
     """
     planes_present: set[Plane] = set()
@@ -544,20 +544,20 @@ def _analyze_graph_measurements(graph: BaseGraphState) -> tuple[set[Plane], set[
 def _create_legend_elements(
     graph: BaseGraphState, planes_present: AbstractSet[Plane], pauli_measurements: AbstractSet[Axis]
 ) -> list[Line2D | patches.Circle]:
-    """Create legend elements for the plot.
+    r"""Create legend elements for the plot.
 
     Parameters
     ----------
-    graph : BaseGraphState
+    graph : `BaseGraphState`
         GraphState object
-    planes_present : collections.abc.Set[Plane]
+    planes_present : `collections.abc.Set`\[`Plane`\]
         Set of measurement planes present in graph
-    pauli_measurements : collections.abc.Set[Axis]
+    pauli_measurements : `collections.abc.Set`\[`Axis`\]
         Set of Pauli measurement axes present in graph
 
     Returns
     -------
-    list[Line2D | patches.Circle]
+    `list`\[`matplotlib.lines.Line2D` | `matplotlib.patches.Circle`\]
         List of matplotlib legend elements (Line2D and Circle patches)
     """
     legend_elements: list[Line2D | patches.Circle] = []

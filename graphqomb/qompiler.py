@@ -52,7 +52,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
     logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         logical observables represented by logical index and seed nodes
     parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
-        Stim-style tag per parity check group, aligned with ``parity_check_group``.
+        Stim-style tag per parity check group, aligned with parity_check_group.
         The tag ``type=flag`` marks a flag detector whose firing samples are
         meant to be post-selected. If `None`, every group is untagged.
     scheduler : `Scheduler` | `None`, optional
