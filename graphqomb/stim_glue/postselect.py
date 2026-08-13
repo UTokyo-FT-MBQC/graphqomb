@@ -55,8 +55,8 @@ def flag_detector_indices(circuit: stim.Circuit) -> tuple[int, ...]:
 def flag_postselection_mask(circuit: stim.Circuit) -> npt.NDArray[np.uint8]:
     r"""Return a bit-packed post-selection mask over the flag detectors of a circuit.
 
-    Detector ``k`` is marked when bit ``mask[k // 8] & (1 << (k % 8))`` is
-    set, matching the ``postselection_mask`` argument of ``sinter.Task``:
+    Detector k is marked when bit ``mask[k // 8] & (1 << (k % 8))`` is
+    set, matching the postselection_mask argument of ``sinter.Task``:
     samples in which a marked detector fires are discarded.
 
     Returns

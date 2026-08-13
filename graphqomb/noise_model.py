@@ -16,7 +16,7 @@ This module provides:
 - `noise_op_to_stim`: Conversion function.
 - `depolarize1_probs`: Utility to create single-qubit depolarizing probabilities.
 - `depolarize2_probs`: Utility to create 2-qubit depolarizing probabilities.
-- :data:`PAULI_CHANNEL_2_ORDER`: Constant for Pauli channel order.
+- `PAULI_CHANNEL_2_ORDER`: Constant for Pauli channel order.
 
 See Also
 --------
@@ -24,8 +24,8 @@ stim_compile : The main compilation function that accepts a NoiseModel.
 
 Notes
 -----
-- **Placement control**: Each `NoiseOp` has a ``placement`` attribute.
-  ``AUTO`` defers to :func:`default_noise_placement`, while
+- **Placement control**: Each `NoiseOp` has a placement attribute.
+  ``AUTO`` defers to `default_noise_placement`, while
   ``BEFORE``/``AFTER`` force insertion side.
 
 - **Record delta**: Heralded instructions (`HeraldedPauliChannel1`,
@@ -112,6 +112,8 @@ PAULI_CHANNEL_2_ORDER: tuple[str, ...] = (
     "ZY",
     "ZZ",
 )
+"""Canonical two-qubit Pauli pair order of Stim's ``PAULI_CHANNEL_2`` instruction."""
+
 _PAULI_CHANNEL_2_KEYS = frozenset(PAULI_CHANNEL_2_ORDER)
 _PAULI_CHANNEL_2_ARG_COUNT = len(PAULI_CHANNEL_2_ORDER)
 
@@ -134,7 +136,7 @@ def _validate_probability(name: str, value: float) -> float:
     Raises
     ------
     ValueError
-        If the probability is outside the range ``[0, 1]``.
+        If the probability is outside the range [0, 1].
     """
     p = float(value)
     if not 0.0 <= p <= 1.0:
@@ -153,7 +155,7 @@ def _validate_probability_sum(name: str, probabilities: Sequence[float], *, atol
     probabilities : `collections.abc.Sequence`\[`float`\]
         Probability values to validate.
     atol : `float`, optional
-        Absolute tolerance for sum comparison, by default ``1e-12``.
+        Absolute tolerance for sum comparison, by default 1e-12.
 
     Raises
     ------
@@ -184,7 +186,7 @@ def _validate_noise_placement(name: str, placement: NoisePlacement) -> NoisePlac
     Raises
     ------
     TypeError
-        If ``placement`` is not a `NoisePlacement`.
+        If placement is not a `NoisePlacement`.
     """
     if not isinstance(placement, NoisePlacement):
         msg = f"{name} must be a NoisePlacement, got {placement!r}"
@@ -375,7 +377,7 @@ class IdleEvent:
     nodes : `collections.abc.Sequence`\[`NodeInfo`\]
         Information about all nodes that are idle during this tick.
     duration : `float`
-        The duration of the idle period (from ``tick_duration`` parameter).
+        The duration of the idle period (from the tick_duration parameter).
     """
 
     time: int
@@ -427,7 +429,7 @@ class PauliChannel1:
         Target qubit indices.
     placement : `NoisePlacement`
         Whether to insert before or after the main operation.
-        ``AUTO`` defers to :func:`default_noise_placement`.
+        ``AUTO`` defers to `default_noise_placement`.
 
     Examples
     --------
@@ -472,7 +474,7 @@ class PauliChannel2:
         Target qubit pairs as ``((q0, q1), ...)``.
     placement : `NoisePlacement`
         Whether to insert before or after the main operation.
-        ``AUTO`` defers to :func:`default_noise_placement`.
+        ``AUTO`` defers to `default_noise_placement`.
 
     Examples
     --------
@@ -548,7 +550,7 @@ class HeraldedPauliChannel1:
 
     Similar to `PauliChannel1` but produces a herald measurement record
     indicating whether an error occurred. The herald outcome is 1 if any
-    error occurred (including identity with probability ``pi``).
+    error occurred (including identity with probability pi).
     Corresponds to Stim's ``HERALDED_PAULI_CHANNEL_1`` instruction.
 
     Parameters
@@ -565,7 +567,7 @@ class HeraldedPauliChannel1:
         Target qubit indices.
     placement : `NoisePlacement`
         Whether to insert before or after the main operation.
-        ``AUTO`` defers to :func:`default_noise_placement`.
+        ``AUTO`` defers to `default_noise_placement`.
 
     Notes
     -----
@@ -619,7 +621,7 @@ class HeraldedErase:
         Target qubit indices.
     placement : `NoisePlacement`
         Whether to insert before or after the main operation.
-        ``AUTO`` defers to :func:`default_noise_placement`.
+        ``AUTO`` defers to `default_noise_placement`.
 
     Notes
     -----
@@ -664,7 +666,7 @@ class RawStimOp:
         Most noise instructions do not add records (default 0).
     placement : `NoisePlacement`
         Whether to insert before or after the main operation.
-        ``AUTO`` defers to :func:`default_noise_placement`.
+        ``AUTO`` defers to `default_noise_placement`.
 
     Examples
     --------
@@ -833,13 +835,13 @@ def noise_op_to_stim(op: NoiseOp) -> tuple[str, int]:  # ruff:ignore[too-many-re
     -------
     `tuple`\[`str`, `int`\]
         A tuple of ``(stim_instruction, record_delta)`` where
-        ``stim_instruction`` is a single line of Stim code and
-        ``record_delta`` is the number of measurement records added.
+        stim_instruction is a single line of Stim code and
+        record_delta is the number of measurement records added.
 
     Raises
     ------
     TypeError
-        If ``op`` is not a recognized NoiseOp type.
+        If op is not a recognized NoiseOp type.
 
     Examples
     --------

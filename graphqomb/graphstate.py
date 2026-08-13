@@ -559,7 +559,7 @@ class GraphState(BaseGraphState):
         Raises
         ------
         TypeError
-            If ``init`` is not an `Initialization`.
+            If init is not an `Initialization`.
         ValueError
             If the node is already registered as an input node.
         """

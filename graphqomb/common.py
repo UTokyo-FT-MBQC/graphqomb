@@ -75,7 +75,7 @@ class Initialization:
     Raises
     ------
     TypeError
-        If ``axis`` is not an `Axis` value or ``tag`` is not a `str`.
+        If axis is not an `Axis` value or tag is not a `str`.
     """
 
     axis: Axis = Axis.X

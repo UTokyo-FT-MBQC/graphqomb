@@ -102,7 +102,7 @@ def _require_pyzx() -> PyZXModule:
 
     Returns
     -------
-    PyZXModule
+    `PyZXModule`
         Imported `pyzx` module.
 
     Raises
@@ -133,13 +133,13 @@ class VertexData:
     ----------
     vertex_id : `int`
         Original PyZX vertex id.
-    vertex_type : VertexType
+    vertex_type : ``VertexType``
         PyZX vertex type.
-    phase : FractionLike
+    phase : ``FractionLike``
         PyZX vertex phase in multiples of pi.
-    qubit : FloatInt
+    qubit : ``FloatInt``
         PyZX qubit coordinate.
-    row : FloatInt
+    row : ``FloatInt``
         PyZX row coordinate.
     is_ground : `bool`
         Whether the vertex is marked as ground in PyZX.
@@ -163,7 +163,7 @@ class EdgeData:
         Smaller endpoint id of the undirected edge.
     target : `int`
         Larger endpoint id of the undirected edge.
-    edge_type : EdgeType
+    edge_type : ``EdgeType``
         PyZX edge type.
     """
 
@@ -232,7 +232,7 @@ def _collect_import_data(diagram: PyZXDiagram, *, recognize_pg: bool) -> _PyZXIm
 
     Returns
     -------
-    _PyZXImportData
+    `_PyZXImportData`
         Topology, boundary registration, measurement bases, and coordinates
         used to initialize the imported `GraphState`.
     """
@@ -268,11 +268,11 @@ def _collect_import_data(diagram: PyZXDiagram, *, recognize_pg: bool) -> _PyZXIm
 
 
 def _validate_no_ground_vertices(node_map: Mapping[int, VertexData]) -> None:
-    """Reject PyZX diagrams containing ground vertices.
+    r"""Reject PyZX diagrams containing ground vertices.
 
     Parameters
     ----------
-    node_map : collections.abc.Mapping[int, VertexData]
+    node_map : `collections.abc.Mapping`\[`int`, `VertexData`\]
         Imported PyZX vertex metadata keyed by vertex id.
 
     Raises
@@ -296,16 +296,16 @@ def _build_meas_basis_map(
 
     Parameters
     ----------
-    node_map : collections.abc.Mapping[int, VertexData]
+    node_map : `collections.abc.Mapping`\[`int`, `VertexData`\]
         Imported PyZX vertex metadata keyed by vertex id.
-    output_nodes : collections.abc.Set[int]
+    output_nodes : `collections.abc.Set`\[`int`\]
         Node ids that should be treated as outputs and skipped.
-    excluded_nodes : collections.abc.Set[int] | None, optional
+    excluded_nodes : `collections.abc.Set`\[`int`\] | `None`, optional
         Non-output nodes to exclude from default measurement-basis collection.
 
     Returns
     -------
-    dict[int, PlannerMeasBasis]
+    `dict`\[`int`, `PlannerMeasBasis`\]
         Measurement-basis assignments for imported nodes.
 
     Raises
@@ -343,12 +343,12 @@ def _build_coordinate_map(node_map: Mapping[int, VertexData]) -> dict[int, tuple
 
     Parameters
     ----------
-    node_map : collections.abc.Mapping[int, VertexData]
+    node_map : `collections.abc.Mapping`\[`int`, `VertexData`\]
         Imported PyZX vertex metadata keyed by vertex id.
 
     Returns
     -------
-    dict[int, tuple[float, float]]
+    `dict`\[`int`, `tuple`\[`float`, `float`\]\]
         Coordinate map keyed by PyZX vertex id.
     """
     return {
@@ -361,12 +361,12 @@ def _phase_to_angle(phase: FractionLike) -> float:
 
     Parameters
     ----------
-    phase : FractionLike
+    phase : ``FractionLike``
         PyZX phase value expressed in multiples of pi.
 
     Returns
     -------
-    float
+    `float`
         Phase angle in radians.
 
     Raises
@@ -384,16 +384,16 @@ def _phase_to_angle(phase: FractionLike) -> float:
 def _collect_node_map(
     diagram: PyZXDiagram,
 ) -> dict[int, VertexData]:
-    """Collect vertex metadata from a PyZX diagram.
+    r"""Collect vertex metadata from a PyZX diagram.
 
     Parameters
     ----------
-    diagram : PyZXDiagram
+    diagram : `PyZXDiagram`
         Input PyZX diagram.
 
     Returns
     -------
-    dict[int, VertexData]
+    `dict`\[`int`, `VertexData`\]
         Vertex metadata keyed by PyZX vertex id.
     """
     node_map: dict[int, VertexData] = {}
@@ -414,16 +414,16 @@ def _collect_node_map(
 def _collect_edge_map(
     diagram: PyZXDiagram,
 ) -> dict[tuple[int, int], EdgeData]:
-    """Collect edge metadata from a PyZX diagram.
+    r"""Collect edge metadata from a PyZX diagram.
 
     Parameters
     ----------
-    diagram : PyZXDiagram
+    diagram : `PyZXDiagram`
         Input PyZX diagram.
 
     Returns
     -------
-    dict[tuple[int, int], EdgeData]
+    `dict`\[`tuple`\[`int`, `int`\], `EdgeData`\]
         Edge metadata keyed by canonical undirected endpoint pairs.
 
     Raises
@@ -451,18 +451,18 @@ def _collect_edge_map(
 
 
 def _edge_key(source: int, target: int) -> tuple[int, int]:
-    """Return a canonical key for an undirected edge.
+    r"""Return a canonical key for an undirected edge.
 
     Parameters
     ----------
-    source : int
+    source : `int`
         One endpoint of the edge.
-    target : int
+    target : `int`
         The other endpoint of the edge.
 
     Returns
     -------
-    tuple[int, int]
+    `tuple`\[`int`, `int`\]
         Edge endpoints ordered increasingly.
     """
     return (source, target) if source <= target else (target, source)
@@ -477,16 +477,16 @@ def _rewrite_input_boundary_maps(
 
     Parameters
     ----------
-    diagram : PyZXDiagram
+    diagram : `PyZXDiagram`
         Input PyZX diagram.
-    node_map : collections.abc.MutableMapping[int, VertexData]
+    node_map : `collections.abc.MutableMapping`\[`int`, `VertexData`\]
         Mutable imported vertex metadata keyed by vertex id.
-    edge_map : collections.abc.MutableMapping[tuple[int, int], EdgeData]
+    edge_map : `collections.abc.MutableMapping`\[`tuple`\[`int`, `int`\], `EdgeData`\]
         Mutable imported edge metadata keyed by canonical endpoint pairs.
 
     Returns
     -------
-    tuple[int, ...]
+    `tuple`\[`int`, ...\]
         Imported input nodes in logical-qubit order.
 
     Raises
@@ -552,16 +552,16 @@ def _rewrite_output_boundary_maps(
 
     Parameters
     ----------
-    diagram : PyZXDiagram
+    diagram : `PyZXDiagram`
         Input PyZX diagram.
-    node_map : collections.abc.MutableMapping[int, VertexData]
+    node_map : `collections.abc.MutableMapping`\[`int`, `VertexData`\]
         Mutable imported vertex metadata keyed by vertex id.
-    edge_map : collections.abc.MutableMapping[tuple[int, int], EdgeData]
+    edge_map : `collections.abc.MutableMapping`\[`tuple`\[`int`, `int`\], `EdgeData`\]
         Mutable imported edge metadata keyed by canonical endpoint pairs.
 
     Returns
     -------
-    tuple[int, ...]
+    `tuple`\[`int`, ...\]
         Imported output nodes in logical-qubit order.
 
     Raises
@@ -649,16 +649,16 @@ def _collect_phase_gadget_meas_bases(
 
     Parameters
     ----------
-    diagram : PyZXDiagram
+    diagram : `PyZXDiagram`
         Input PyZX diagram.
-    node_map : collections.abc.MutableMapping[int, VertexData]
+    node_map : `collections.abc.MutableMapping`\[`int`, `VertexData`\]
         Mutable imported vertex metadata keyed by vertex id.
-    edge_map : collections.abc.MutableMapping[tuple[int, int], EdgeData]
+    edge_map : `collections.abc.MutableMapping`\[`tuple`\[`int`, `int`\], `EdgeData`\]
         Mutable imported edge metadata keyed by canonical endpoint pairs.
 
     Returns
     -------
-    dict[int, PlannerMeasBasis]
+    `dict`\[`int`, `PlannerMeasBasis`\]
         Measurement-basis overrides for recognized phase-gadget neighbors.
     """
     candidates: list[tuple[int, int]] = []
@@ -706,7 +706,7 @@ def _phase_gadget_neighbor(
 
     Returns
     -------
-    int | None
+    `int` | `None`
         Neighbor vertex id when the lone spider matches a supported
         phase-gadget pattern, otherwise `None`.
     """

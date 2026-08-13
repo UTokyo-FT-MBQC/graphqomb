@@ -229,8 +229,8 @@ class Scheduler:
 
         The graph is treated as undirected. For convenience, `entangle_time` accepts edges
         in either order: both ``(u, v)`` and ``(v, u)`` are recognized. If both keys are
-        provided, the canonical order (as returned by :attr:`BaseGraphState.edges`)
-        takes precedence, even when the value is ``None``.
+        provided, the canonical order (as returned by `BaseGraphState.edges`)
+        takes precedence, even when the value is `None`.
         """
         self.prepare_time = {
             node: prepare_time.get(node, None) for node in self.graph.nodes - self.graph.input_node_indices.keys()

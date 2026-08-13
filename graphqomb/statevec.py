@@ -135,7 +135,7 @@ class StateVector(BaseFullStateSimulator):
 
         Parameters
         ----------
-        states : sequence of array-like
+        states : `collections.abc.Sequence`\[`numpy.typing.ArrayLike`\]
             One-qubit state vectors in external qubit order.
 
         Returns
