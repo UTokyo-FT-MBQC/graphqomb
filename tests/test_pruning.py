@@ -138,6 +138,44 @@ def test_stabilizer_equivalent_correction_is_recognized() -> None:
     assert result.xflow == {node_v: {node_w}}
 
 
+def test_y_initialized_correction_target_is_checked() -> None:
+    """X corrections onto a Y-initialized node follow its Y-type stabilizer generator."""
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_y = graph.add_node()
+    graph.add_edge(node_z, node_y)
+    graph.register_input(node_y, 0, init=Initialization(axis=Axis.Y))
+    graph.register_output(node_y, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+
+    # X^m Z^m on node_y leaves a net X^m after the byproduct Z^m, which maps
+    # the Y eigenstate to the orthogonal one; the Y-type generator would need
+    # an extra Z on node_y, so node_z must be kept.
+    kept = prune_z_nodes(graph, xflow={node_z: {node_y}}, zflow={node_z: {node_y}})
+    assert kept.removed_nodes == frozenset()
+
+    # A plain Z correction cancels the byproduct for any initialization.
+    pruned = prune_z_nodes(graph, xflow={}, zflow={node_z: {node_y}})
+    assert pruned.removed_nodes == {node_z}
+
+
+def test_z_initialized_output_neighbor() -> None:
+    """Z byproducts on a Z-initialized output are vacuous, but X corrections onto it never qualify."""
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_w = graph.add_node()
+    graph.add_edge(node_z, node_w)
+    graph.register_input(node_w, 0, init=Initialization(axis=Axis.Z))
+    graph.register_output(node_w, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+
+    pruned = prune_z_nodes(graph, xflow={})
+    assert pruned.removed_nodes == {node_z}
+
+    kept = prune_z_nodes(graph, xflow={node_z: {node_w}})
+    assert kept.removed_nodes == frozenset()
+
+
 def test_x_and_y_initialized_inputs_are_kept() -> None:
     """Non-Z initializations do not qualify a non-Z-measured input for pruning."""
     graph = GraphState()

@@ -144,12 +144,16 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     node, so a Z-measured node is pruned only when the corrections it
     sources cancel that byproduct: the conditional Pauli X on
     ``xflow[node]`` and Z on ``zflow[node]``, multiplied by Z on the node's
-    neighbors, must form a stabilizer of the graph state (X on a node set
-    together with Z on its odd neighborhood), up to Z factors on Z-basis
-    nodes, where a Z acts trivially. In particular a node whose neighbors
-    are all Z-basis nodes needs no corrections, and ``zflow[node]``
-    covering exactly the non-Z-basis neighbors always qualifies. Z-measured
-    nodes without such corrections are kept.
+    neighbors, must form a stabilizer of the initialized graph state, up to
+    Z factors on Z-basis nodes, where a Z acts trivially. The stabilizer
+    generators follow the input initializations: an X-initialized (default)
+    node contributes X on itself and Z on its neighbors, a Y-initialized
+    node carries an extra Z on itself, and a Z-initialized node admits no X
+    at all, so X corrections onto Z-initialized nodes never qualify. In
+    particular a node whose neighbors are all Z-basis nodes needs no
+    corrections, and ``zflow[node]`` covering exactly the non-Z-basis
+    neighbors always qualifies. Z-measured nodes without such corrections
+    are kept.
 
     A Z-prepared input never entangles, so its record is independent of the
     rest of the pattern and the node is pruned unconditionally. Corrections
@@ -395,9 +399,12 @@ def _z_byproduct_corrected(
     Measuring ``node`` in the Z basis leaves a Z byproduct on each of its
     neighbors. The conditional corrections sourced at the node (X on
     ``xflow[node]``, Z on ``zflow[node]``) cancel the byproduct exactly when
-    their product with it is a stabilizer of the graph state, i.e. X on a
-    node set together with Z on its odd neighborhood, up to Z factors on
-    Z-basis nodes (and on ``node`` itself), where a Z acts trivially.
+    their product with it is a stabilizer of the initialized graph state, up
+    to Z factors on nodes where a Z acts trivially (Z-basis nodes, and
+    ``node`` itself). The generator of an X-initialized (default) node is X
+    on itself and Z on its neighbors, a Y-initialized node's generator
+    carries an extra Z on itself, and a Z-initialized node has no X-type
+    generator, so X corrections onto Z-initialized nodes never qualify.
 
     Parameters
     ----------
@@ -417,10 +424,16 @@ def _z_byproduct_corrected(
     `bool`
         Whether the byproduct is cancelled.
     """
+    input_initializations = graph.input_initializations
     applied_x = set(xflow.get(node, ())) - {node}
     applied_z = set(zflow.get(node, ())) - {node}
-    mismatch = applied_z ^ set(graph.neighbors(node)) ^ odd_neighbors(applied_x, graph)
-    return mismatch <= z_basis_nodes | {node}
+    x_support_axes = {v: input_initializations[v].axis for v in applied_x if v in input_initializations}
+    if Axis.Z in x_support_axes.values():
+        return False
+    y_initialized = {v for v, axis in x_support_axes.items() if axis == Axis.Y}
+    z_vacuous = z_basis_nodes | {v for v, init in input_initializations.items() if init.axis == Axis.Z}
+    mismatch = applied_z ^ set(graph.neighbors(node)) ^ odd_neighbors(applied_x, graph) ^ y_initialized
+    return mismatch <= z_vacuous | {node}
 
 
 def _z_basis_nodes(graph: BaseGraphState) -> set[int]:
