@@ -26,8 +26,8 @@ def test_prune_z_measured_node() -> None:
 
     result = prune_z_nodes(
         graph,
-        xflow={node_in: {node_z, node_out}, node_z: {node_out}},
-        zflow={node_in: set(), node_z: set()},
+        xflow={node_in: {node_z, node_out}},
+        zflow={node_in: set(), node_z: {node_in, node_out}},
         parity_check_group=[{node_in, node_z}, {node_z}],
         parity_check_tags=["keep", "drop"],
         logical_observables={0: {node_in, node_z}},
@@ -55,7 +55,7 @@ def test_prune_z_measured_node_any_representation() -> None:
     graph.assign_meas_basis(node_minus, AxisMeasBasis(Axis.Z, Sign.MINUS))
     graph.assign_meas_basis(node_planner, PlannerMeasBasis(Plane.XZ, math.pi))
 
-    result = prune_z_nodes(graph, xflow={})
+    result = prune_z_nodes(graph, xflow={}, zflow={node_minus: {node_out}, node_planner: {node_out}})
 
     assert result.removed_nodes == {node_minus, node_planner}
     assert result.graph.nodes == {node_out}
@@ -81,6 +81,61 @@ def test_prune_z_prep_input() -> None:
     assert result.graph.nodes == {node_in, node_out}
     assert result.graph.input_node_indices == {node_in: 1}
     assert result.graph.edges == {(node_in, node_out)}
+
+
+def test_uncorrected_z_measurement_is_kept() -> None:
+    """A Z-measured node whose byproduct is not corrected by the flows stays."""
+    # Without a Z correction on node_out the original output is |+> or |->
+    # depending on the measurement outcome; pruning would fix one branch.
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_z, node_out)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+
+    result = prune_z_nodes(graph, xflow={})
+
+    assert result.removed_nodes == frozenset()
+    assert result.graph.nodes == {node_z, node_out}
+
+
+def test_z_neighbors_need_no_correction() -> None:
+    """Z byproducts landing on other Z-basis nodes are vacuous, so a Z cluster prunes without flow."""
+    graph = GraphState()
+    node_za = graph.add_node()
+    node_zb = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_za, node_zb)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_za, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    graph.assign_meas_basis(node_zb, AxisMeasBasis(Axis.Z, Sign.PLUS))
+
+    result = prune_z_nodes(graph, xflow={})
+
+    assert result.removed_nodes == {node_za, node_zb}
+    assert result.graph.nodes == {node_out}
+
+
+def test_stabilizer_equivalent_correction_is_recognized() -> None:
+    """A byproduct correction expressed through an X flow entry qualifies as well."""
+    # X^m on node_w times the byproduct Z^m on node_v is the graph stabilizer
+    # X_w Z_v of the chain z - v - w, so the correction cancels the byproduct.
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_v = graph.add_node()
+    node_w = graph.add_node()
+    graph.add_edge(node_z, node_v)
+    graph.add_edge(node_v, node_w)
+    graph.register_output(node_w, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    graph.assign_meas_basis(node_v, default_meas_basis())
+
+    result = prune_z_nodes(graph, xflow={node_z: {node_w}, node_v: {node_w}}, zflow={node_z: set(), node_v: set()})
+
+    assert result.removed_nodes == {node_z}
+    assert result.graph.nodes == {node_v, node_w}
+    assert result.xflow == {node_v: {node_w}}
 
 
 def test_x_and_y_initialized_inputs_are_kept() -> None:
@@ -130,7 +185,7 @@ def test_node_attributes_survive_pruning() -> None:
     graph.assign_meas_basis(node_in, PlannerMeasBasis(Plane.XY, 0.25))
     graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
 
-    result = prune_z_nodes(graph, xflow={node_in: {node_out}})
+    result = prune_z_nodes(graph, xflow={node_in: {node_out}}, zflow={node_in: set(), node_z: {node_in}})
 
     assert result.graph.input_node_indices == {node_in: 3}
     assert result.graph.input_initializations[node_in] == Initialization(axis=Axis.X, tag="tagged")
@@ -151,7 +206,9 @@ def test_zflow_derived_from_source_graph() -> None:
     graph.assign_meas_basis(node_in, default_meas_basis())
     graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.PLUS))
 
-    result = prune_z_nodes(graph, xflow={node_in: {node_out}})
+    # The self-referencing xflow entry gives node_z the derived zflow
+    # odd_neighbors({node_z}) = {node_out}, which corrects its byproduct.
+    result = prune_z_nodes(graph, xflow={node_in: {node_out}, node_z: {node_z}})
 
     # odd_neighbors({node_out}) = {node_in, node_z}; node_z is pruned afterwards
     assert result.zflow == {node_in: {node_in}}
@@ -303,7 +360,7 @@ def test_z_prune_then_isolated_prune_compiles() -> None:
     z_pruned = prune_z_nodes(
         graph,
         xflow={node_in: {node_out}, iso_a: {iso_b}},
-        zflow={node_in: set(), iso_a: set()},
+        zflow={node_in: set(), iso_a: set(), node_z: {node_out, iso_a}},
         parity_check_group=[{node_z, iso_a, iso_b}],
         logical_observables={0: {node_in}},
     )
@@ -351,7 +408,7 @@ def test_pruned_result_compiles() -> None:
     result = prune_z_nodes(
         graph,
         xflow={node_in: {node_out}},
-        zflow={node_in: set()},
+        zflow={node_in: set(), node_z: {node_out}},
         parity_check_group=[{node_z}],
         logical_observables={0: {node_in, node_z}},
     )

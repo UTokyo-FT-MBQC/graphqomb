@@ -1,12 +1,16 @@
 """Pruning of MBQC compile inputs.
 
-Measuring a graph-state node in the Z basis simply disentangles it, and a
-Z-prepared input never interacts with its CZ edges, so both kinds of node can
-be deleted from the resource graph before compilation. Dropping such a node
-from the correction flows, parity checks, and logical observables at the same
-time preserves the semantics of the pattern: in the pruned pattern the node is
-never prepared or entangled, and every parity-check or observable product
-loses exactly the Z factor that the deleted node supplied.
+Measuring a graph-state node in the Z basis disentangles it while leaving a Z
+byproduct on its neighbors, and a Z-prepared input never interacts with its CZ
+edges. Any Z-prepared input, and any Z-measured node whose byproduct is
+corrected by the flows, can therefore be deleted from the resource graph
+before compilation. Dropping such a node from the correction flows, parity
+checks, and logical observables at the same time preserves the semantics of
+the pattern: in the pruned pattern the node is never prepared or entangled,
+and every parity-check or observable product loses exactly the Z factor that
+the deleted node supplied. A Z-measured node whose byproduct is not corrected
+is kept, since deleting it would silently select one branch of its
+measurement outcome.
 
 Deleting Z-basis nodes can disconnect the graph. A component that contains
 neither an output node nor a logical observable seed cannot influence the
@@ -94,9 +98,10 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
 
     A node is pruned when it is not an output node and it is either an input
     node initialized in the positive or negative Z eigenstate or a node
-    measured along the Pauli-Z axis. The pruned node disappears from the
-    graph together with its edges, from the flows both as a corrector and as
-    a correction target, and from every parity check group and logical
+    measured along the Pauli-Z axis whose measurement byproduct is corrected
+    by the flows (see Notes). The pruned node disappears from the graph
+    together with its edges, from the flows both as a corrector and as a
+    correction target, and from every parity check group and logical
     observable seed set. Output nodes are always kept so that the pattern
     keeps its logical qubit interface.
 
@@ -135,14 +140,23 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
 
     Notes
     -----
-    Correction-flow entries sourced at a pruned node are dropped together
-    with the node. For a byproduct-correction flow of the graph this is
-    exact: the dropped corrections compensated byproducts that the pruned
-    pattern never produces. For classical feedback (a measurement record
-    controlling a Pauli on a kept node) it amounts to fixing the branch of
-    the dropped record; every parity check and logical observable keeps its
-    value, but output qubits carry the state of that single branch instead
-    of the mixture over branches.
+    A Z measurement leaves a Z byproduct on every neighbor of the measured
+    node, so a Z-measured node is pruned only when the corrections it
+    sources cancel that byproduct: the conditional Pauli X on
+    ``xflow[node]`` and Z on ``zflow[node]``, multiplied by Z on the node's
+    neighbors, must form a stabilizer of the graph state (X on a node set
+    together with Z on its odd neighborhood), up to Z factors on Z-basis
+    nodes, where a Z acts trivially. In particular a node whose neighbors
+    are all Z-basis nodes needs no corrections, and ``zflow[node]``
+    covering exactly the non-Z-basis neighbors always qualifies. Z-measured
+    nodes without such corrections are kept.
+
+    A Z-prepared input never entangles, so its record is independent of the
+    rest of the pattern and the node is pruned unconditionally. Corrections
+    sourced at it are dropped with the node, which amounts to fixing the
+    branch of the dropped record: every parity check and logical observable
+    keeps its value, but output qubits carry the state of that single
+    branch instead of the mixture over branches.
 
     A pruned record whose value is the deterministic constant 1 (for
     example a MINUS-sign Z eigenstate measured along the positive Z axis)
@@ -151,9 +165,11 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     inversion. The recompiled pattern remains deterministic and
     self-consistent.
     """  # ruff:ignore[docstring-extraneous-exception]
+    if zflow is None:
+        zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
     return _pruned_inputs(
         graph,
-        _z_basis_nodes(graph),
+        _prunable_z_nodes(graph, xflow, zflow),
         xflow,
         zflow,
         parity_check_group=parity_check_group,
@@ -327,6 +343,84 @@ def _pruned_inputs(  # ruff:ignore[too-many-arguments]
         logical_observables=pruned_observables,
         removed_nodes=removed_nodes,
     )
+
+
+def _prunable_z_nodes(
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+) -> set[int]:
+    r"""Collect the Z-basis nodes that can be pruned.
+
+    Z-prepared inputs are always prunable: they never entangle, so removing
+    them is exact. Z-measured nodes are prunable only when the corrections
+    they source cancel the Z byproduct their measurement leaves on their
+    neighbors; otherwise removing them would silently select one branch of
+    the measurement outcome.
+
+    Parameters
+    ----------
+    graph : `BaseGraphState`
+        graph state
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        x correction flow
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        z correction flow
+
+    Returns
+    -------
+    `set`\[`int`\]
+        Nodes to prune.
+    """
+    input_initializations = graph.input_initializations
+    z_basis_nodes = _z_basis_nodes(graph)
+    prunable: set[int] = set()
+    for node in z_basis_nodes:
+        initialization = input_initializations.get(node)
+        z_prepared = initialization is not None and initialization.axis == Axis.Z
+        if z_prepared or _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes):
+            prunable.add(node)
+    return prunable
+
+
+def _z_byproduct_corrected(
+    node: int,
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+    z_basis_nodes: set[int],
+) -> bool:
+    r"""Check whether the corrections sourced at a Z-measured node cancel its byproduct.
+
+    Measuring ``node`` in the Z basis leaves a Z byproduct on each of its
+    neighbors. The conditional corrections sourced at the node (X on
+    ``xflow[node]``, Z on ``zflow[node]``) cancel the byproduct exactly when
+    their product with it is a stabilizer of the graph state, i.e. X on a
+    node set together with Z on its odd neighborhood, up to Z factors on
+    Z-basis nodes (and on ``node`` itself), where a Z acts trivially.
+
+    Parameters
+    ----------
+    node : `int`
+        Z-measured node
+    graph : `BaseGraphState`
+        graph state
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        x correction flow
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        z correction flow
+    z_basis_nodes : `set`\[`int`\]
+        all Z-prepared/Z-measured non-output nodes
+
+    Returns
+    -------
+    `bool`
+        Whether the byproduct is cancelled.
+    """
+    applied_x = set(xflow.get(node, ())) - {node}
+    applied_z = set(zflow.get(node, ())) - {node}
+    mismatch = applied_z ^ set(graph.neighbors(node)) ^ odd_neighbors(applied_x, graph)
+    return mismatch <= z_basis_nodes | {node}
 
 
 def _z_basis_nodes(graph: BaseGraphState) -> set[int]:
