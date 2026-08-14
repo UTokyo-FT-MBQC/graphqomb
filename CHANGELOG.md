@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-14
+
 ### Added
 
 - **Compile-input pruning**: The new `graphqomb.pruning` module offers `prune_z_nodes`, which removes Z-prepared inputs and byproduct-corrected Z-measured nodes from a graph state and drops them from the correction flows, parity check groups, and logical observables in one pass (a Z-measured node whose byproduct is not corrected by the flows is kept), and `prune_isolated_components`, which deletes components touching neither an output node nor a logical observable seed (e.g. fragments left behind by Z pruning), where graph edges and correction-flow entries both count as connections. Preparation and measurement pruning toggle independently via `prune_preparations`/`prune_measurements`, `prune_uncorrected_measurements` also removes Z-measured nodes whose byproducts the flows do not correct (fixing the branch without a Z byproduct on their neighbors, for simulations whose results do not depend on those outcomes), and `protected_preparation_tags` protects Z-prepared inputs by their initialization tag. Pruning is sign-aware: a node measured in an inverted Z basis (angle π) fixes record 1 in the kept branch, which fires the corrections the node sources, so such a node — including a Z-prepared input — is removed only when those corrections are vacuous. Both return a `PruneResult` that preserves node indices and feeds directly into `qompile`.
