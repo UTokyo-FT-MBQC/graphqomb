@@ -21,7 +21,7 @@ def ensure_rng(rng: Generator | None = None) -> Generator:
 
     Parameters
     ----------
-    rng : `numpy.random.Generator` | None, optional
+    rng : `numpy.random.Generator` | `None`, optional
         The random-number generator to use, by default None
 
     Returns

@@ -524,32 +524,32 @@ def _parse_arrow_mapping(line: str, label: str) -> tuple[int, set[int]]:
 
 @dataclass(slots=True)
 class _PatternData:
-    """Container for parsed pattern data from .ptn format.
+    r"""Container for parsed pattern data from .ptn format.
 
     Attributes
     ----------
-    input_node_indices : `dict`[`int`, `int`]
+    input_node_indices : `dict`\[`int`, `int`\]
         Mapping from node to qubit index for input nodes.
-    output_node_indices : `dict`[`int`, `int`]
+    output_node_indices : `dict`\[`int`, `int`\]
         Mapping from node to qubit index for output nodes.
-    input_coordinates : `dict`[`int`, `tuple`[`float`, ...]]
+    input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes.
-    input_initialization_axes : `dict`[`int`, `Axis`]
+    input_initialization_axes : `dict`\[`int`, `Axis`\]
         Pauli initialization axes for input nodes.
-    input_initialization_tags : `dict`[`int`, `str`]
+    input_initialization_tags : `dict`\[`int`, `str`\]
         Stim-style instruction tags of input initializations; the empty
         string means untagged.
-    commands : `list`[`Command`]
+    commands : `list`\[`Command`\]
         List of quantum commands.
-    xflow : `dict`[`int`, `set`[`int`]]
+    xflow : `dict`\[`int`, `set`\[`int`\]\]
         X correction flow mapping.
-    zflow : `dict`[`int`, `set`[`int`]]
+    zflow : `dict`\[`int`, `set`\[`int`\]\]
         Z correction flow mapping.
-    parity_check_groups : `list`[`set`[`int`]]
+    parity_check_groups : `list`\[`set`\[`int`\]\]
         Parity check groups for error detection.
-    parity_check_tags : `list`[`str`]
+    parity_check_tags : `list`\[`str`\]
         Stim-style tag of each parity check group, aligned with
-        ``parity_check_groups``; the empty string means untagged.
+        parity_check_groups; the empty string means untagged.
     """
 
     input_node_indices: dict[int, int] = field(default_factory=dict[int, int])

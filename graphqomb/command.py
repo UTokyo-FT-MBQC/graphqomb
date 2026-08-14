@@ -67,7 +67,7 @@ class M:
     ----------
     node : `int`
         The node index to be measured.
-    meas_basis : MeasBasis
+    meas_basis : `MeasBasis`
         The measurement basis.
     """
 

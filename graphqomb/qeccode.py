@@ -1,4 +1,12 @@
-"""QEC Code object."""
+"""QEC Code object.
+
+This module provides:
+
+- `YFoliation`: Foliation variants for Y-support stabilizer measurement.
+- `StabilizerCode`: Dense-column stabilizer code container.
+- `StabilizerGraphStateBuildResult`: Result of building a graph state from a stabilizer code.
+- `build_graph_state`: Build a graph state from a stabilizer code.
+"""
 
 from __future__ import annotations
 
@@ -71,10 +79,10 @@ class StabilizerCode:
 class StabilizerGraphStateBuildResult(NamedTuple):
     """Result of building a graph state from a stabilizer code.
 
-    ``graph`` is the constructed graph state with data and ancilla nodes,
-    edges, coordinates, and measurement bases. ``data_nodes`` maps each
+    graph is the constructed graph state with data and ancilla nodes,
+    edges, coordinates, and measurement bases. data_nodes maps each
     ``(physical_qubit, data_layer)`` pair to its graph node id.
-    ``ancilla_nodes`` maps each stabilizer row index to its ancilla graph node
+    ancilla_nodes maps each stabilizer row index to its ancilla graph node
     id.
     """
 
@@ -120,7 +128,7 @@ def build_graph_state(
     z_base : `int`, optional
         Lower stabilizer-measurement data-layer index, by default 0. Type I
         uses two measurement layers; Type II uses three for Y support. When
-        ``data_as_io`` is enabled, a separate output layer is appended.
+        data_as_io is enabled, a separate output layer is appended.
     y_foliation : `YFoliation`, optional
         Foliation variant. Type I measures each stabilizer ancilla in X when
         its row has an even number of Y supports, including zero, and in Y
@@ -134,7 +142,7 @@ def build_graph_state(
         inputs and append separate unmeasured output nodes, by default False.
     qubit_indices : `collections.abc.Mapping`\[`int`, `int`\] | `None`, optional
         Mapping from stabilizer-code qubit columns to graph qindices when
-        ``data_as_io`` is enabled. If omitted, code qubit columns are used.
+        data_as_io is enabled. If omitted, code qubit columns are used.
 
     Returns
     -------
@@ -146,7 +154,7 @@ def build_graph_state(
     TypeError
         If z_base is not an integer.
     ValueError
-        If ``qubit_indices`` is invalid for the requested data I/O layout.
+        If qubit_indices is invalid for the requested data I/O layout.
     """
     if not isinstance(z_base, int):
         msg = "z_base must be an integer."
@@ -247,11 +255,11 @@ def _add_layered_data_nodes(
     code: StabilizerCode,
     data_layer_plan: _DataLayerPlan,
 ) -> dict[tuple[int, int], int]:
-    """Add layered data nodes.
+    r"""Add layered data nodes.
 
     Returns
     -------
-    `dict`[`tuple`[`int`, `int`], `int`]
+    `dict`\[`tuple`\[`int`, `int`\], `int`\]
         Mapping from physical qubit and z layer to graph node.
     """
     data_nodes: dict[tuple[int, int], int] = {}
@@ -285,11 +293,11 @@ def _add_ancilla_nodes(
     data_layer_plan: _DataLayerPlan,
     meas_basis: AxisMeasBasis,
 ) -> dict[int, int]:
-    """Add ancilla nodes and stabilizer-support edges.
+    r"""Add ancilla nodes and stabilizer-support edges.
 
     Returns
     -------
-    `dict`[`int`, `int`]
+    `dict`\[`int`, `int`\]
         Mapping from stabilizer row index to graph node.
     """
     ancilla_nodes: dict[int, int] = {}
@@ -337,14 +345,14 @@ def _twisted_stabilizer_pairs(
     *,
     count_equal_y: bool,
 ) -> list[tuple[int, int]]:
-    """Return stabilizer pairs whose ancillas require a CZ edge.
+    r"""Return stabilizer pairs whose ancillas require a CZ edge.
 
     Local interactions on each shared data qubit are ordered Z, Y, then X.
-    For a stabilizer pair, let ``forward`` and ``reverse`` be the numbers of
+    For a stabilizer pair, let forward and reverse be the numbers of
     shared qubits with the two possible strict orders. The number of twisted
     qubit pairs is ``forward * reverse``, so only the parity of each direction
     is required. Equal-X and equal-Z overlaps have no strict order and never
-    twist. An equal-Y overlap twists exactly when ``count_equal_y`` is set:
+    twist. An equal-Y overlap twists exactly when count_equal_y is set:
     under Type I foliation a Y factor couples the ancilla to both nodes of the
     data chain, so its Z-side and X-side components each cross the partner's
     opposite component, contributing to both direction parities at once. Under
@@ -356,7 +364,7 @@ def _twisted_stabilizer_pairs(
 
     Parameters
     ----------
-    supports : `Sequence`[`_StabilizerSupport`]
+    supports : `collections.abc.Sequence`\[`_StabilizerSupport`\]
         Per-stabilizer X/Z support sets.
     count_equal_y : `bool`
         Whether equal-Y overlaps contribute to both direction parities
@@ -364,7 +372,7 @@ def _twisted_stabilizer_pairs(
 
     Returns
     -------
-    `list`[`tuple`[`int`, `int`]]
+    `list`\[`tuple`\[`int`, `int`\]\]
         Sorted stabilizer-row pairs requiring an ancilla CZ edge.
     """
     incidences_by_qubit: dict[int, list[tuple[int, int]]] = defaultdict(list)
@@ -434,11 +442,11 @@ def _type_ii_support_layer(layers: tuple[int, ...], *, has_x: bool, has_z: bool)
 
 
 def _stabilizer_supports(code: StabilizerCode) -> list[_StabilizerSupport]:
-    """Return sparse X/Z support sets for every stabilizer row.
+    r"""Return sparse X/Z support sets for every stabilizer row.
 
     Returns
     -------
-    `list`[`_StabilizerSupport`]
+    `list`\[`_StabilizerSupport`\]
         Support sets indexed by stabilizer row.
     """
     hx = code.hx.copy()
@@ -462,11 +470,11 @@ def _qubits_with_y_support(code: StabilizerCode) -> set[int]:
 
 
 def _data_coordinate(code: StabilizerCode, qubit: int, z: float) -> tuple[float, float, float] | None:
-    """Return the 3D coordinate of a layered data node.
+    r"""Return the 3D coordinate of a layered data node.
 
     Returns
     -------
-    `tuple`[`float`, `float`, `float`] | `None`
+    `tuple`\[`float`, `float`, `float`\] | `None`
         Lifted 3D coordinate, or None when the qubit has no coordinate.
     """
     if code.qubit_coord is None or qubit not in code.qubit_coord:
@@ -476,11 +484,11 @@ def _data_coordinate(code: StabilizerCode, qubit: int, z: float) -> tuple[float,
 
 
 def _explicit_ancilla_coordinate(code: StabilizerCode, stabilizer: int) -> tuple[float, float, float] | None:
-    """Return an explicitly supplied ancilla coordinate, if present.
+    r"""Return an explicitly supplied ancilla coordinate, if present.
 
     Returns
     -------
-    `tuple`[`float`, `float`, `float`] | `None`
+    `tuple`\[`float`, `float`, `float`\] | `None`
         Explicit 3D coordinate, or None when no coordinate is supplied.
     """
     if code.stabilizer_coord is None or stabilizer not in code.stabilizer_coord:
@@ -490,11 +498,11 @@ def _explicit_ancilla_coordinate(code: StabilizerCode, stabilizer: int) -> tuple
 
 
 def _row_support(matrix: csr_array, row: int) -> list[int]:
-    """Return nonzero column indices in a CSR sparse row.
+    r"""Return nonzero column indices in a CSR sparse row.
 
     Returns
     -------
-    `list`[`int`]
+    `list`\[`int`\]
         Nonzero column indices for the row.
     """
     start = int(matrix.indptr[row])
@@ -503,11 +511,11 @@ def _row_support(matrix: csr_array, row: int) -> list[int]:
 
 
 def _average_node_coordinates(graph: GraphState, nodes: list[int]) -> tuple[float, float, float] | None:
-    """Return the componentwise average of node coordinates when all are available.
+    r"""Return the componentwise average of node coordinates when all are available.
 
     Returns
     -------
-    `tuple`[`float`, `float`, `float`] | `None`
+    `tuple`\[`float`, `float`, `float`\] | `None`
         Average coordinate, or None when no average can be inferred.
     """
     if not nodes:
@@ -527,7 +535,7 @@ def _avoid_occupied_coordinate(
     graph: GraphState,
     coordinate: tuple[float, float, float],
 ) -> tuple[float, float, float]:
-    """Move an inferred ancilla coordinate aside when its centroid is occupied.
+    r"""Move an inferred ancilla coordinate aside when its centroid is occupied.
 
     The temporal coordinate is preserved. Candidate positions expand
     deterministically in the data plane until one has enough clearance from
@@ -535,7 +543,7 @@ def _avoid_occupied_coordinate(
 
     Returns
     -------
-    `tuple`[`float`, `float`, `float`]
+    `tuple`\[`float`, `float`, `float`\]
         The original coordinate when unoccupied, otherwise a nearby free one.
 
     Raises
