@@ -103,6 +103,42 @@ def test_uncorrected_z_measurement_is_kept() -> None:
     assert result.graph.nodes == {node_z, node_out}
 
 
+def test_prune_uncorrected_measurements_flag() -> None:
+    # Fixing the branch without a Z byproduct on node_out is acceptable when
+    # nothing downstream depends on the measurement outcome.
+    graph, node_z, node_out = _z_measurement_graph()
+
+    result = prune_z_nodes(graph, xflow={}, prune_uncorrected_measurements=True)
+
+    assert result.removed_nodes == {node_z}
+    assert result.graph.nodes == {node_out}
+
+
+def test_prune_uncorrected_measurements_drops_sourced_corrections() -> None:
+    # The X correction alone does not cancel the byproduct Z on node_out, so
+    # this node is kept by default (see z-x-kept); the flag prunes it and the
+    # correction it sources.
+    graph, node_z, node_out = _z_measurement_graph(Initialization(axis=Axis.Z))
+
+    kept = prune_z_nodes(graph, xflow={node_z: {node_out}}, zflow={})
+    assert kept.removed_nodes == frozenset()
+
+    forced = prune_z_nodes(graph, xflow={node_z: {node_out}}, zflow={}, prune_uncorrected_measurements=True)
+
+    assert forced.removed_nodes == {node_z}
+    assert forced.graph.nodes == {node_out}
+    assert forced.xflow == {}
+
+
+def test_prune_uncorrected_measurements_needs_measurement_pruning() -> None:
+    graph, node_z, _node_out = _z_measurement_graph()
+
+    result = prune_z_nodes(graph, xflow={}, prune_measurements=False, prune_uncorrected_measurements=True)
+
+    assert result.removed_nodes == frozenset()
+    assert node_z in result.graph.nodes
+
+
 def test_z_neighbors_need_no_correction() -> None:
     graph = GraphState()
     node_za = graph.add_node()

@@ -51,6 +51,7 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
     prune_preparations: bool = True,
     prune_measurements: bool = True,
+    prune_uncorrected_measurements: bool = False,
     protected_preparation_tags: AbstractSet[str] | None = None,
 ) -> PruneResult:
     r"""Remove eligible Z-prepared and Z-measured nodes from compile inputs.
@@ -78,6 +79,10 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
         Whether to remove Z-prepared inputs.
     prune_measurements : `bool`
         Whether to remove corrected Z measurements.
+    prune_uncorrected_measurements : `bool`
+        Whether to also remove Z measurements whose byproducts the flows do
+        not correct, fixing one measurement branch. Has no effect when
+        prune_measurements is false.
     protected_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
         Initialization tags that protect Z-prepared inputs.
 
@@ -97,7 +102,11 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     A Z-measured node is removed only when its sourced corrections times the
     Z byproducts on its neighbors form a stabilizer of the initialized graph
     state, up to vacuous Z factors on Z-basis nodes; otherwise removal would
-    select a measurement branch.
+    select a measurement branch. That condition preserves the compiled Kraus
+    map but is unnecessary when nothing downstream depends on the measurement
+    outcome; prune_uncorrected_measurements then removes such nodes anyway,
+    selecting the branch that leaves no Z byproduct on their neighbors and
+    fixing the branch of each dropped record as preparation pruning does.
 
     A Z-prepared input never entangles, so it is pruned unconditionally along
     with its sourced corrections, fixing the branch of the dropped record:
@@ -113,6 +122,7 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
         zflow,
         prune_preparations=prune_preparations,
         prune_measurements=prune_measurements,
+        prune_uncorrected_measurements=prune_uncorrected_measurements,
         protected_preparation_tags=protected_preparation_tags,
     )
     return _pruned_inputs(
@@ -245,6 +255,7 @@ def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
     *,
     prune_preparations: bool,
     prune_measurements: bool,
+    prune_uncorrected_measurements: bool,
     protected_preparation_tags: AbstractSet[str] | None,
 ) -> set[int]:
     input_initializations = graph.input_initializations
@@ -256,7 +267,9 @@ def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
             protected = protected_preparation_tags is not None and initialization.tag in protected_preparation_tags
             if prune_preparations and not protected:
                 prunable.add(node)
-        elif prune_measurements and _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes):
+        elif prune_measurements and (
+            prune_uncorrected_measurements or _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes)
+        ):
             prunable.add(node)
     return prunable
 
