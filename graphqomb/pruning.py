@@ -13,15 +13,17 @@ This module provides:
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, NamedTuple
 
-from graphqomb.common import Axis, determine_pauli_axis
+from graphqomb.common import Axis, determine_pauli_axis, is_close_angle
 from graphqomb.graphstate import GraphState, odd_neighbors
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from collections.abc import Set as AbstractSet
 
+    from graphqomb.common import MeasBasis
     from graphqomb.graphstate import BaseGraphState
 
 
@@ -51,6 +53,7 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
     prune_preparations: bool = True,
     prune_measurements: bool = True,
+    prune_uncorrected_measurements: bool = False,
     protected_preparation_tags: AbstractSet[str] | None = None,
 ) -> PruneResult:
     r"""Remove eligible Z-prepared and Z-measured nodes from compile inputs.
@@ -78,6 +81,11 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
         Whether to remove Z-prepared inputs.
     prune_measurements : `bool`
         Whether to remove corrected Z measurements.
+    prune_uncorrected_measurements : `bool`
+        Whether to also remove Z measurements whose byproducts the flows do
+        not correct, fixing one measurement branch. The inverted-record rule
+        in the Notes still applies. Has no effect when prune_measurements is
+        false.
     protected_preparation_tags : `collections.abc.Set`\[`str`\] | `None`
         Initialization tags that protect Z-prepared inputs.
 
@@ -94,16 +102,28 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
 
     Notes
     -----
-    A Z-measured node is removed only when its sourced corrections times the
-    Z byproducts on its neighbors form a stabilizer of the initialized graph
-    state, up to vacuous Z factors on Z-basis nodes; otherwise removal would
-    select a measurement branch.
+    Removing a node keeps the branch of its measurement that projects it onto
+    the +Z eigenstate, fixing its record at 0 for a positive Z basis and at 1
+    for an inverted one (angle pi). A record fixed at 1 fires the corrections
+    the node sources, so a node measured in an inverted Z basis is never
+    removed unless those corrections form a stabilizer of the initialized
+    graph state, up to vacuous Z factors on Z-basis nodes.
 
-    A Z-prepared input never entangles, so it is pruned unconditionally along
-    with its sourced corrections, fixing the branch of the dropped record:
-    parity checks and logical observables keep their values (up to a
-    deterministic flip when the record is the constant 1), while outputs
-    carry that single branch instead of the mixture over branches.
+    A Z-measured node is removed only when, additionally, each measurement
+    branch leaves the state of the pruned circuit: its sourced corrections and
+    the Z byproducts on its neighbors must combine into such stabilizers
+    branch by branch; otherwise removal would select a measurement branch.
+    That branch condition preserves the compiled Kraus map but is unnecessary
+    when nothing downstream depends on the measurement outcome;
+    prune_uncorrected_measurements then selects the byproduct-free branch
+    anyway, still subject to the inverted-record rule above. Parity checks and
+    logical observables keep their values (up to a deterministic flip when the
+    record is the constant 1), while outputs carry the single kept branch
+    instead of the mixture over branches.
+
+    A Z-prepared input never entangles, so it is pruned along with its sourced
+    corrections whenever the inverted-record rule allows, fixing the branch of
+    the dropped record in the same way.
     """  # ruff:ignore[docstring-extraneous-exception]
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
@@ -113,6 +133,7 @@ def prune_z_nodes(  # ruff:ignore[too-many-arguments]
         zflow,
         prune_preparations=prune_preparations,
         prune_measurements=prune_measurements,
+        prune_uncorrected_measurements=prune_uncorrected_measurements,
         protected_preparation_tags=protected_preparation_tags,
     )
     return _pruned_inputs(
@@ -245,39 +266,87 @@ def _prunable_z_nodes(  # ruff:ignore[too-many-arguments]
     *,
     prune_preparations: bool,
     prune_measurements: bool,
+    prune_uncorrected_measurements: bool,
     protected_preparation_tags: AbstractSet[str] | None,
 ) -> set[int]:
     input_initializations = graph.input_initializations
     z_basis_nodes = _z_basis_nodes(graph)
+    z_vacuous = z_basis_nodes | {v for v, init in input_initializations.items() if init.axis == Axis.Z}
     prunable: set[int] = set()
     for node in z_basis_nodes:
         initialization = input_initializations.get(node)
         if initialization is not None and initialization.axis == Axis.Z:
             protected = protected_preparation_tags is not None and initialization.tag in protected_preparation_tags
-            if prune_preparations and not protected:
+            if (
+                prune_preparations
+                and not protected
+                and _fixed_record_corrections_vacuous(node, graph, xflow, zflow, z_vacuous)
+            ):
                 prunable.add(node)
-        elif prune_measurements and _z_byproduct_corrected(node, graph, xflow, zflow, z_basis_nodes):
+        elif prune_measurements and _z_measurement_removable(
+            node, graph, xflow, zflow, z_vacuous, force=prune_uncorrected_measurements
+        ):
             prunable.add(node)
     return prunable
 
 
-def _z_byproduct_corrected(
+def _z_measurement_removable(  # ruff:ignore[too-many-arguments]
     node: int,
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, AbstractSet[int]],
-    z_basis_nodes: set[int],
+    z_vacuous: set[int],
+    *,
+    force: bool,
 ) -> bool:
-    input_initializations = graph.input_initializations
     applied_x = set(xflow.get(node, ())) - {node}
     applied_z = set(zflow.get(node, ())) - {node}
-    x_support_axes = {v: input_initializations[v].axis for v in applied_x if v in input_initializations}
+    neighbors = set(graph.neighbors(node))
+    allowed = z_vacuous | {node}
+    if _inverted_z_record(graph.meas_bases.get(node)):
+        # The kept branch has record 1 and fires the sourced corrections.
+        if not _vacuous_stabilizer(graph, applied_x, applied_z, allowed):
+            return False
+        # The dropped branch leaves the byproduct Z on the neighbors.
+        return force or _vacuous_stabilizer(graph, set(), neighbors, allowed)
+    # The kept branch has record 0 and matches the pruned circuit exactly;
+    # the dropped branch fires the corrections and the byproduct together.
+    return force or _vacuous_stabilizer(graph, applied_x, applied_z ^ neighbors, allowed)
+
+
+def _fixed_record_corrections_vacuous(
+    node: int,
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+    z_vacuous: set[int],
+) -> bool:
+    if not _inverted_z_record(graph.meas_bases.get(node)):
+        return True
+    applied_x = set(xflow.get(node, ())) - {node}
+    applied_z = set(zflow.get(node, ())) - {node}
+    return _vacuous_stabilizer(graph, applied_x, applied_z, z_vacuous | {node})
+
+
+def _vacuous_stabilizer(
+    graph: BaseGraphState,
+    x_support: AbstractSet[int],
+    z_support: AbstractSet[int],
+    allowed_z: AbstractSet[int],
+) -> bool:
+    input_initializations = graph.input_initializations
+    x_support_axes = {v: input_initializations[v].axis for v in x_support if v in input_initializations}
     if Axis.Z in x_support_axes.values():
         return False
     y_initialized = {v for v, axis in x_support_axes.items() if axis == Axis.Y}
-    z_vacuous = z_basis_nodes | {v for v, init in input_initializations.items() if init.axis == Axis.Z}
-    mismatch = applied_z ^ set(graph.neighbors(node)) ^ odd_neighbors(applied_x, graph) ^ y_initialized
-    return mismatch <= z_vacuous | {node}
+    mismatch = set(z_support) ^ odd_neighbors(x_support, graph) ^ y_initialized
+    return mismatch <= allowed_z
+
+
+def _inverted_z_record(meas_basis: MeasBasis | None) -> bool:
+    if meas_basis is None:
+        return False
+    return determine_pauli_axis(meas_basis) == Axis.Z and is_close_angle(meas_basis.angle, math.pi)
 
 
 def _z_basis_nodes(graph: BaseGraphState) -> set[int]:
