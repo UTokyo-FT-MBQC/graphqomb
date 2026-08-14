@@ -1,4 +1,10 @@
-"""Build stabilizer-code inputs from Stim MPP layers."""
+"""Build stabilizer-code inputs from Stim MPP layers.
+
+This module provides:
+
+- `stabilizer_code_from_stim_file`: Build a `StabilizerCode` from a Stim file.
+- `stabilizer_code_from_stim_text`: Build a `StabilizerCode` from Stim circuit text.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +43,7 @@ def stabilizer_code_from_stim_file(
     """Build a stabilizer code from MPP products in a Stim file.
 
     Signed MPP products are not supported. A Stim target inversion such as
-    ``!X0`` raises ``ValueError`` because stabilizer signs are not retained.
+    ``!X0`` raises `ValueError` because stabilizer signs are not retained.
 
     Returns
     -------
@@ -64,7 +70,7 @@ def stabilizer_code_from_stim_text(
     ``Hx``; ``Z`` and ``Y`` targets set entries in ``Hz``. By default,
     ``mpp_layer=0`` selects the first contiguous MPP layer. Pass
     ``mpp_layer=None`` to select all MPP products in the flattened Stim file.
-    Signed MPP products are not supported because ``StabilizerCode`` does not
+    Signed MPP products are not supported because `StabilizerCode` does not
     retain stabilizer signs. A Stim target inversion such as ``!X0`` is
     therefore rejected instead of being silently discarded.
 

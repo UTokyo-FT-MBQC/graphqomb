@@ -1,4 +1,12 @@
-"""Import supported Stim circuits into GraphQOMB patterns."""
+"""Import supported Stim circuits into GraphQOMB patterns.
+
+This module provides:
+
+- `StimImportResult`: Result of importing a supported Stim circuit.
+- `stim_file_to_pattern`: Import a supported Stim file into a GraphQOMB pattern.
+- `stim_text_to_pattern`: Import supported Stim text into a GraphQOMB pattern.
+- `stim_circuit_to_pattern`: Import a supported Stim circuit into a GraphQOMB pattern.
+"""
 
 from __future__ import annotations
 
@@ -60,25 +68,25 @@ _CONTROLLED_PAULI_GATES = frozenset(name for name, _position in _FEEDBACK_AXES)
 class StimImportResult:
     r"""Result of importing a supported Stim circuit.
 
-    ``stim_to_qubit`` maps each Stim qubit id to the qubit index of its
+    stim_to_qubit maps each Stim qubit id to the qubit index of its
     initial (input-side) wire. When a Stim qubit is used again after a direct
     single-qubit measurement or re-initialized by a mid-circuit reset, the
     importer issues a fresh internal qubit index for the new wire;
-    ``qubit_to_stim`` maps every internal qubit index, including those
+    qubit_to_stim maps every internal qubit index, including those
     continuation indices, back to its Stim qubit id. That mapping is
-    many-to-one, so ``stim_to_final_qubit`` names the index of the last
+    many-to-one, so stim_to_final_qubit names the index of the last
     lifetime of each Stim qubit; the earlier indices of a reset qubit are its
     discarded history, whose wires may remain pattern outputs.
 
     A mid-circuit reset also issues a fresh *Stim* qubit id for the reset
-    lifetime, and that id is what ``mpp_extractions`` reports in ``supports``,
-    ``stim_to_column``, and ``column_to_stim``. ``wire_to_stim`` maps every
+    lifetime, and that id is what mpp_extractions reports in supports,
+    stim_to_column, and column_to_stim. wire_to_stim maps every
     such id back to the original circuit's Stim qubit id; it is the identity
     on qubits that are never reset mid-circuit.
 
     Attributes
     ----------
-    pattern : Pattern
+    pattern : `Pattern`
         Imported measurement pattern.
     stim_to_qubit : `dict`\[`int`, `int`\]
         Original Stim qubit id to the internal qubit index of its initial wire.
@@ -200,9 +208,9 @@ def stim_file_to_pattern(  # ruff:ignore[too-many-arguments]
 ) -> StimImportResult:
     """Import a supported Stim file into a GraphQOMB pattern.
 
-    When ``merge_safe_ticks`` is true, TICK boundaries whose removal cannot
+    When merge_safe_ticks is true, TICK boundaries whose removal cannot
     change the imported semantics are dropped before import; see
-    `stim_circuit_to_pattern`. ``schedule_config`` and ``schedule_timeout``
+    `stim_circuit_to_pattern`. schedule_config and schedule_timeout
     select the pattern-level scheduler; see `stim_circuit_to_pattern`.
 
     Returns
@@ -233,9 +241,9 @@ def stim_text_to_pattern(  # ruff:ignore[too-many-arguments]
 ) -> StimImportResult:
     """Import supported Stim text into a GraphQOMB pattern.
 
-    When ``merge_safe_ticks`` is true, TICK boundaries whose removal cannot
+    When merge_safe_ticks is true, TICK boundaries whose removal cannot
     change the imported semantics are dropped before import; see
-    `stim_circuit_to_pattern`. ``schedule_config`` and ``schedule_timeout``
+    `stim_circuit_to_pattern`. schedule_config and schedule_timeout
     select the pattern-level scheduler; see `stim_circuit_to_pattern`.
 
     Returns
@@ -266,11 +274,11 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
 ) -> StimImportResult:
     """Import a supported Stim circuit into a GraphQOMB pattern.
 
-    ``schedule_config`` controls how the imported pattern is scheduled: when
+    schedule_config controls how the imported pattern is scheduled: when
     given, a `graphqomb.scheduler.core.Scheduler` is built from the imported
-    graph and flows, solved with that configuration (``schedule_timeout``
+    graph and flows, solved with that configuration (schedule_timeout
     bounds the CP-SAT solve time in seconds), and passed to
-    `graphqomb.qompiler.qompile`; when `None`, ``qompile`` schedules with its
+    `graphqomb.qompiler.qompile`; when `None`, `qompile` schedules with its
     default greedy strategy.
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
@@ -318,12 +326,12 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     reset remains a pattern output; leaving it coherent and untouched is
     channel-equivalent to Stim's trace-out reset on every recorded
     measurement, provided that discarded output is traced out rather than read.
-    ``qubit_to_stim`` maps the fresh indices back to the original Stim qubit
-    id, and ``stim_to_final_qubit`` selects the live one among them.
+    qubit_to_stim maps the fresh indices back to the original Stim qubit
+    id, and stim_to_final_qubit selects the live one among them.
 
     ``DETECTOR`` instruction tags are preserved: each imported detector's tag
-    is carried into ``pattern.pauli_frame.parity_check_tags`` (aligned with
-    ``parity_check_group``) and re-emitted by
+    is carried into pattern.pauli_frame.parity_check_tags (aligned with
+    parity_check_group) and re-emitted by
     `graphqomb.stim_glue.compiler.stim_compile`, so post-selection flag
     detectors (``DETECTOR[type=flag]``) survive the import/export round trip.
 
@@ -331,7 +339,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     are never cancelled against each other or folded into an adjacent
     reset or measurement, so a finely ticked circuit can import to a much
     larger graph than the same instructions in fewer blocks. When
-    ``merge_safe_ticks`` is true, the importer drops every TICK whose removal
+    merge_safe_ticks is true, the importer drops every TICK whose removal
     cannot change the imported semantics before analyzing the circuit. Because
     per-qubit instruction order and measurement-record order survive block
     normalization, the only TICKs kept are those separating two blocks that
@@ -341,10 +349,10 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     out z-compressed because merged blocks share layers.
 
     Each reset lifetime also gets its own Stim qubit id internally, and the
-    ``mpp_extractions`` metadata (``supports``, ``stim_to_column``, and
-    ``column_to_stim``) reports the lifetime that an ``MPP`` product actually
+    mpp_extractions metadata (supports, stim_to_column, and
+    column_to_stim) reports the lifetime that an ``MPP`` product actually
     measured, so a qubit measured before and after a reset occupies a distinct
-    column in each block. ``wire_to_stim`` maps those ids back to the original
+    column in each block. wire_to_stim maps those ids back to the original
     circuit ids.
 
     Returns
@@ -356,7 +364,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     ------
     ValueError
         If the circuit uses unsupported instructions or invalid coordinates,
-        or if ``schedule_config`` is given and no schedule is found.
+        or if schedule_config is given and no schedule is found.
     """
     if coord_dims not in {2, 3}:
         msg = "coord_dims must be 2 or 3."
@@ -1284,7 +1292,7 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
 
     Each reused measurement binds an internal measured node onto the qubit's
     current wire end and opens a continuation wire on a freshly issued qubit
-    index. The continuation node reuses the qubit's XY coordinates at ``z``
+    index. The continuation node reuses the qubit's XY coordinates at z
     and is initialized in the positive eigenstate of the measurement axis.
     After a plain measurement the correction flows condition the continuation
     on the outcome; after a measure-reset gate the re-prepared eigenstate is
@@ -1407,7 +1415,7 @@ def _new_wire_fragment(
 ) -> _Fragment:
     """Open fresh wires for reset-started lifetimes at their reset position.
 
-    Each wire reuses its original qubit's XY coordinates at ``z`` and is
+    Each wire reuses its original qubit's XY coordinates at z and is
     initialized in the positive eigenstate of its last leading reset axis.
     The reset discards the previous state, so the wire carries no outcome
     conditioning; the replaced wire simply ends (a measured wire ended at its

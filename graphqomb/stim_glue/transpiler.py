@@ -1,4 +1,12 @@
-"""Transpile Stim Clifford circuits into GraphQOMB's Clifford J/CZ basis."""
+"""Transpile Stim Clifford circuits into GraphQOMB's Clifford J/CZ basis.
+
+This module provides:
+
+- `UnsupportedInstructionError`: Error for instructions outside the supported gate set.
+- `transpile`: Transpile a Stim Clifford circuit into the Clifford J/CZ gate basis.
+- `optimize_j_cz`: Remove redundant Clifford J and CZ gates.
+- `STIM_GATE_J_ANGLES`: Map of Stim gate names to Clifford J angles.
+"""
 
 from __future__ import annotations
 
@@ -17,15 +25,18 @@ if TYPE_CHECKING:
 HS_STIM_GATE = "C_XNYZ"
 HZ_STIM_GATE = "SQRT_Y"
 HS_DAG_STIM_GATE = "C_XYZ"
-# Maps each single-qubit basis gate, by its Stim spelling, to the angle of the
-# one J(angle) = H Rz(angle) primitive implementing it. These are the four
-# Clifford XY-plane measurements: X+ (H), Y+ (HS), X- (HZ), and Y- (HS_DAG).
 STIM_GATE_J_ANGLES: dict[str, float] = {
     "H": 0.0,
     HS_STIM_GATE: math.pi / 2,
     HZ_STIM_GATE: math.pi,
     HS_DAG_STIM_GATE: -math.pi / 2,
 }
+"""Map of each single-qubit basis gate, by its Stim spelling, to the angle of the
+one ``J(angle) = H Rz(angle)`` primitive implementing it.
+
+These are the four Clifford XY-plane measurements: X+ (``H``), Y+ (``HS``),
+X- (``HZ``), and Y- (``HS_DAG``).
+"""
 _PauliAxis = Literal["X", "Y", "Z"]
 _LOCAL_BASIS_GENERATORS = ("H", HS_STIM_GATE, HZ_STIM_GATE, HS_DAG_STIM_GATE)
 _LOCAL_BASIS_GATES = frozenset(_LOCAL_BASIS_GENERATORS)
@@ -61,7 +72,7 @@ def transpile(
     optimize: bool = False,
     preserved_measurement_qubits: AbstractSet[int] = frozenset(),
 ) -> stim.Circuit:
-    """Transpile a Stim Clifford circuit into the Clifford J/CZ gate basis.
+    r"""Transpile a Stim Clifford circuit into the Clifford J/CZ gate basis.
 
     The single-qubit basis gates are the four Clifford ``J(angle)`` gates,
     i.e. the XY-plane Pauli measurements: ``H = J(0)`` (X+),
@@ -79,7 +90,7 @@ def transpile(
     optimize : `bool`, optional
         Remove redundant basis gates and simplify gates adjacent to
         R/RX/RY and M/MX/MY boundaries after transpilation.
-    preserved_measurement_qubits : ``collections.abc.Set[int]``, optional
+    preserved_measurement_qubits : `collections.abc.Set`\[`int`\], optional
         Qubits whose post-measurement state must survive the optimized
         circuit. Measurements on these qubits are never folded into a
         rewritten Pauli basis, so single-qubit gates ahead of them stay
@@ -102,7 +113,7 @@ def optimize_j_cz(
     *,
     preserved_measurement_qubits: AbstractSet[int] = frozenset(),
 ) -> stim.Circuit:
-    """Remove redundant Clifford J and CZ gates.
+    r"""Remove redundant Clifford J and CZ gates.
 
     Every maximal run of single-qubit basis gates on one qubit is replaced by
     the shortest word over the four Clifford J gates (``H``, ``HS``, ``HZ``,
@@ -119,7 +130,7 @@ def optimize_j_cz(
     ----------
     circuit : ``stim.Circuit`` | `str`
         A circuit in the Clifford J/CZ basis.
-    preserved_measurement_qubits : ``collections.abc.Set[int]``, optional
+    preserved_measurement_qubits : `collections.abc.Set`\[`int`\], optional
         Qubits whose post-measurement state must survive the optimized
         circuit. Measurements on these qubits are never folded into a
         rewritten Pauli basis.

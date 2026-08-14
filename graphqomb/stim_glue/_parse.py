@@ -38,18 +38,18 @@ class StimMppExtraction:
 
     Attributes
     ----------
-    code : StabilizerCode
+    code : `StabilizerCode`
         Dense-column stabilizer code using the ``[Hx | Hz]`` convention.
     stim_to_column : `dict`\[`int`, `int`\]
         Mapping from the Stim qubit ids of the analyzed circuit to dense matrix
         columns. When the circuit importer splits a mid-circuit reset onto a
         fresh wire, the id is that of the measured reset lifetime rather than
-        the original circuit id; ``StimImportResult.wire_to_stim`` maps it back.
+        the original circuit id; `StimImportResult.wire_to_stim` maps it back.
     column_to_stim : `dict`\[`int`, `int`\]
         Inverse dense-column mapping.
     supports : `tuple`\[``PauliSupport``, ...\]
         Stim Pauli supports, one support per stabilizer row, over the same ids
-        as ``stim_to_column``.
+        as stim_to_column.
     detector_rows : `tuple`\[`frozenset`\[`int`\], ...\]
         Detector groups as selected-MPP stabilizer row indices.
     logical_observable_rows : `dict`\[`int`, `frozenset`\[`int`\]\]
@@ -59,9 +59,9 @@ class StimMppExtraction:
     logical_observable_record_indices : `dict`\[`int`, `frozenset`\[`int`\]\]
         Absolute Stim record indices for selected logical observables.
     detector_tags : `tuple`\[`str`, ...\]
-        Stim tag of each selected detector, aligned with ``detector_rows``.
+        Stim tag of each selected detector, aligned with detector_rows.
         The empty string means untagged; ``type=flag`` marks a post-selection
-        flag detector. Suitable as the ``parity_check_tags`` argument of
+        flag detector. Suitable as the parity_check_tags argument of
         `graphqomb.qompiler.qompile` next to `detector_groups`.
     """
 
@@ -76,17 +76,17 @@ class StimMppExtraction:
     detector_tags: tuple[str, ...] = ()
 
     def detector_groups(self, ancilla_nodes: Mapping[int, int]) -> list[set[int]]:
-        r"""Return detector groups mapped to graph node ids for ``qompile``.
+        r"""Return detector groups mapped to graph node ids for `qompile`.
 
         Returns
         -------
         `list`\[`set`\[`int`\]\]
-            Detector groups suitable for ``qompile``.
+            Detector groups suitable for `qompile`.
         """
         return [_map_rows_to_nodes(rows, ancilla_nodes, "detector") for rows in self.detector_rows]
 
     def logical_observables(self, ancilla_nodes: Mapping[int, int]) -> dict[int, set[int]]:
-        r"""Return logical observables mapped to graph node ids for ``qompile``.
+        r"""Return logical observables mapped to graph node ids for `qompile`.
 
         Returns
         -------
@@ -118,8 +118,8 @@ def stim_mpp_extraction_from_records(  # ruff:ignore[too-many-arguments]
     Raises
     ------
     ValueError
-        If the support and record counts differ, or if ``detector_tags`` is
-        not aligned with ``detector_record_indices``.
+        If the support and record counts differ, or if detector_tags is
+        not aligned with detector_record_indices.
     """
     if len(supports) != len(record_indices):
         msg = "MPP support count does not match its measurement-record count."
@@ -196,7 +196,7 @@ class RecordAnnotations:
     detectors : `tuple`\[`frozenset`\[`int`\], ...\]
         One absolute record-index group per ``DETECTOR``, in circuit order.
     detector_tags : `tuple`\[`str`, ...\]
-        Stim tag of each ``DETECTOR``, aligned with ``detectors``. The empty
+        Stim tag of each ``DETECTOR``, aligned with detectors. The empty
         string means untagged; ``type=flag`` marks a post-selection flag
         detector.
     logical_observables : `dict`\[`int`, `frozenset`\[`int`\]\]
@@ -262,7 +262,7 @@ def extract_qubit_coordinates(
     *,
     coord_dims: int,
 ) -> dict[int, Coordinate]:
-    """Return final Stim qubit coordinates projected to ``coord_dims``.
+    """Return final Stim qubit coordinates projected to coord_dims.
 
     Returns
     -------
@@ -440,7 +440,7 @@ def plain_qubit_target(target: stim.GateTarget, instruction_name: str) -> int:
     """Return a plain Stim qubit target.
 
     Rejects Pauli-typed and inverted-result targets, which the importer cannot
-    represent. ``mpp_rewriter._plain_qubit`` deliberately accepts those
+    represent. `mpp_rewriter._plain_qubit` deliberately accepts those
     because it only needs the qubit id an instruction acts on.
 
     Returns
