@@ -1046,7 +1046,7 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
 
     Qubits with matching indices are automatically connected. Graph2 is connected after graph1.
     All other qubit indices are preserved from their original graphs.
-    Validation is shared with `compose_into`: `_composition_connection_targets`
+    Validation is shared with `compose_into`: ``_composition_connection_targets``
     raises ``ValueError`` for non-canonical graphs, qindex conflicts, and
     connections through measured outputs.
 
