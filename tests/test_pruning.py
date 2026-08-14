@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from graphqomb.command import M, N
@@ -9,6 +10,7 @@ from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, Planner
 from graphqomb.graphstate import GraphState
 from graphqomb.pruning import prune_isolated_components, prune_z_nodes
 from graphqomb.qompiler import qompile
+from graphqomb.simulator import PatternSimulator, SimulatorBackend
 
 
 def _z_measurement_graph(output_init: Initialization | None = None) -> tuple[GraphState, int, int]:
@@ -54,7 +56,10 @@ def test_prune_z_measured_node() -> None:
     assert result.logical_observables == {0: {node_in}}
 
 
-def test_prune_z_measured_node_any_representation() -> None:
+def test_inverted_z_measurement_with_output_corrections_is_kept() -> None:
+    # Both -Z representations fix record 1 in the branch pruning keeps, which
+    # fires the sourced correction Z on the output; dropping it would change
+    # the output state by Z, so the nodes stay even when forced.
     graph = GraphState()
     node_minus = graph.add_node()
     node_planner = graph.add_node()
@@ -64,8 +69,28 @@ def test_prune_z_measured_node_any_representation() -> None:
     graph.register_output(node_out, 0)
     graph.assign_meas_basis(node_minus, AxisMeasBasis(Axis.Z, Sign.MINUS))
     graph.assign_meas_basis(node_planner, PlannerMeasBasis(Plane.XZ, math.pi))
+    zflow = {node_minus: {node_out}, node_planner: {node_out}}
 
-    result = prune_z_nodes(graph, xflow={}, zflow={node_minus: {node_out}, node_planner: {node_out}})
+    result = prune_z_nodes(graph, xflow={}, zflow=zflow)
+    assert result.removed_nodes == frozenset()
+
+    forced = prune_z_nodes(graph, xflow={}, zflow=zflow, prune_uncorrected_measurements=True)
+    assert forced.removed_nodes == frozenset()
+
+
+def test_prune_inverted_z_measurement_any_representation() -> None:
+    # Adjacent Z-basis nodes make both the byproducts and the sourced
+    # corrections vacuous, so both -Z representations are pruned.
+    graph = GraphState()
+    node_minus = graph.add_node()
+    node_planner = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_minus, node_planner)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_minus, AxisMeasBasis(Axis.Z, Sign.MINUS))
+    graph.assign_meas_basis(node_planner, PlannerMeasBasis(Plane.XZ, math.pi))
+
+    result = prune_z_nodes(graph, xflow={}, zflow={node_minus: {node_planner}})
 
     assert result.removed_nodes == {node_minus, node_planner}
     assert result.graph.nodes == {node_out}
@@ -128,6 +153,54 @@ def test_prune_uncorrected_measurements_drops_sourced_corrections() -> None:
     assert forced.removed_nodes == {node_z}
     assert forced.graph.nodes == {node_out}
     assert forced.xflow == {}
+
+
+def test_flag_selects_branch_of_inverted_z_measurement() -> None:
+    # Forced pruning keeps the record-1 branch of the -Z measurement; with no
+    # sourced corrections that branch is exactly the pruned circuit.
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_z, node_out)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.MINUS))
+
+    kept = prune_z_nodes(graph, xflow={})
+    assert kept.removed_nodes == frozenset()
+
+    forced = prune_z_nodes(graph, xflow={}, prune_uncorrected_measurements=True)
+    assert forced.removed_nodes == {node_z}
+
+
+def test_flag_keeps_inverted_z_with_sourced_corrections() -> None:
+    # The record-1 branch fires X on the Z-initialized output; pruning would
+    # drop that deterministic correction, so the node stays even when forced.
+    graph, node_z, node_out = _z_measurement_graph(Initialization(axis=Axis.Z))
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, Sign.MINUS))
+
+    forced = prune_z_nodes(graph, xflow={node_z: {node_out}}, zflow={}, prune_uncorrected_measurements=True)
+
+    assert forced.removed_nodes == frozenset()
+
+
+def test_z_prep_measured_in_inverted_basis() -> None:
+    # A |0> input measured in the -Z basis has constant record 1, so its
+    # sourced corrections fire deterministically: the input is kept while
+    # they are non-vacuous and pruned without them.
+    graph = GraphState()
+    node_prep = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_prep, node_out)
+    graph.register_input(node_prep, 0, init=Initialization(axis=Axis.Z))
+    graph.register_input(node_out, 1, init=Initialization(axis=Axis.Z))
+    graph.register_output(node_out, 1)
+    graph.assign_meas_basis(node_prep, AxisMeasBasis(Axis.Z, Sign.MINUS))
+
+    kept = prune_z_nodes(graph, xflow={node_prep: {node_out}})
+    assert kept.removed_nodes == frozenset()
+
+    pruned = prune_z_nodes(graph, xflow={})
+    assert pruned.removed_nodes == {node_prep}
 
 
 def test_prune_uncorrected_measurements_needs_measurement_pruning() -> None:
@@ -484,3 +557,65 @@ def test_z_prune_then_isolated_prune_compiles() -> None:
     )
     prepared_or_measured = {cmd.node for cmd in pattern.commands if isinstance(cmd, (N, M))}
     assert prepared_or_measured.isdisjoint({node_z, iso_a, iso_b})
+
+
+def _simulated_output(
+    graph: GraphState,
+    xflow: dict[int, set[int]],
+    zflow: dict[int, set[int]],
+    seed: int,
+) -> tuple[np.ndarray, dict[int, bool]]:
+    # Compile per run: the simulator mutates the pattern's Pauli frame in place.
+    pattern = qompile(graph, {k: set(v) for k, v in xflow.items()}, {k: set(v) for k, v in zflow.items()})
+    simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
+    simulator.simulate(rng=np.random.default_rng(seed))
+    return np.asarray(simulator.state.state()).ravel(), dict(simulator.results)
+
+
+@pytest.mark.parametrize("sign", [Sign.PLUS, Sign.MINUS])
+def test_pruned_pattern_simulates_identically(sign: Sign) -> None:
+    # For PLUS the byproduct correction on the plain output suffices; for
+    # MINUS the output is Z-initialized so that both the byproduct and the
+    # record-1 correction are vacuous.
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_z, node_out)
+    if sign == Sign.MINUS:
+        graph.register_input(node_out, 0, init=Initialization(axis=Axis.Z))
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, sign))
+    zflow = {node_z: {node_out}}
+
+    result = prune_z_nodes(graph, xflow={}, zflow=zflow)
+    assert result.removed_nodes == {node_z}
+
+    for seed in range(6):
+        unpruned, _records = _simulated_output(graph, {}, zflow, seed)
+        pruned, _ = _simulated_output(result.graph, result.xflow, result.zflow, seed)
+        assert math.isclose(abs(np.vdot(unpruned, pruned)), 1.0, abs_tol=1e-9)
+
+
+@pytest.mark.parametrize(("sign", "kept_record"), [(Sign.PLUS, False), (Sign.MINUS, True)])
+def test_forced_prune_selects_byproduct_free_branch(sign: Sign, kept_record: bool) -> None:
+    graph = GraphState()
+    node_z = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_z, node_out)
+    graph.register_output(node_out, 0)
+    graph.assign_meas_basis(node_z, AxisMeasBasis(Axis.Z, sign))
+
+    result = prune_z_nodes(graph, xflow={}, prune_uncorrected_measurements=True)
+    assert result.removed_nodes == {node_z}
+    pruned, _ = _simulated_output(result.graph, result.xflow, result.zflow, seed=0)
+
+    seen_records = set()
+    for seed in range(8):
+        unpruned, records = _simulated_output(graph, {}, {node_z: set()}, seed)
+        seen_records.add(records[node_z])
+        overlap = abs(np.vdot(unpruned, pruned))
+        if records[node_z] == kept_record:
+            assert math.isclose(overlap, 1.0, abs_tol=1e-9)
+        else:
+            assert math.isclose(overlap, 0.0, abs_tol=1e-9)
+    assert seen_records == {False, True}
