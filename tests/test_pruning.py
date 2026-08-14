@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -11,6 +12,9 @@ from graphqomb.graphstate import GraphState
 from graphqomb.pruning import prune_isolated_components, prune_z_nodes
 from graphqomb.qompiler import qompile
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 def _z_measurement_graph(output_init: Initialization | None = None) -> tuple[GraphState, int, int]:
@@ -201,6 +205,21 @@ def test_z_prep_measured_in_inverted_basis() -> None:
 
     pruned = prune_z_nodes(graph, xflow={})
     assert pruned.removed_nodes == {node_prep}
+
+
+def test_z_prep_without_meas_basis_is_pruned() -> None:
+    # A Z-prepared input with no assigned measurement basis has no record to
+    # fix, so it is pruned unconditionally.
+    graph = GraphState()
+    node_prep = graph.add_node()
+    node_out = graph.add_node()
+    graph.add_edge(node_prep, node_out)
+    graph.register_input(node_prep, 0, init=Initialization(axis=Axis.Z))
+    graph.register_output(node_out, 0)
+
+    result = prune_z_nodes(graph, xflow={node_prep: {node_out}})
+
+    assert result.removed_nodes == {node_prep}
 
 
 def test_prune_uncorrected_measurements_needs_measurement_pruning() -> None:
@@ -564,7 +583,7 @@ def _simulated_output(
     xflow: dict[int, set[int]],
     zflow: dict[int, set[int]],
     seed: int,
-) -> tuple[np.ndarray, dict[int, bool]]:
+) -> tuple[NDArray[np.complex128], dict[int, bool]]:
     # Compile per run: the simulator mutates the pattern's Pauli frame in place.
     pattern = qompile(graph, {k: set(v) for k, v in xflow.items()}, {k: set(v) for k, v in zflow.items()})
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
