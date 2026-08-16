@@ -54,7 +54,11 @@ _FallbackMode = Literal["circuit", "segment"]
 
 _PAIR_GROUP_SIZE = 2
 # (x bit, z bit) of each Pauli axis in the [x | z] component convention.
-_AXIS_BITS: dict[Axis, tuple[int, int]] = {Axis.X: (1, 0), Axis.Y: (1, 1), Axis.Z: (0, 1)}
+_AXIS_BITS: dict[Axis, tuple[int, int]] = {
+    Axis.X: (1, 0),
+    Axis.Y: (1, 1),
+    Axis.Z: (0, 1),
+}
 _SIGN_FROM_EXPONENT: tuple[complex, ...] = (1, 1j, -1, -1j)
 # i**2 = -1: the phase of a deterministic-minus identity product.
 _MINUS_PHASE = 2
@@ -431,7 +435,12 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
     segments = _split_segments(flattened)
     forced_verbatim: set[int] = set()
     while True:
-        outcome = _rewrite_pass(segments, flattened.num_qubits, fallback=fallback, forced_verbatim=forced_verbatim)
+        outcome = _rewrite_pass(
+            segments,
+            flattened.num_qubits,
+            fallback=fallback,
+            forced_verbatim=forced_verbatim,
+        )
         if outcome is None:
             return _passthrough_result(flattened, segments)
         if isinstance(outcome, _Conflict):
@@ -511,7 +520,10 @@ def _collect_unitary(segment: _SourceSegment, instruction: stim.CircuitInstructi
 
 
 def _collect_measurement(
-    segment: _SourceSegment, instruction: stim.CircuitInstruction, position: int, num_qubits: int
+    segment: _SourceSegment,
+    instruction: stim.CircuitInstruction,
+    position: int,
+    num_qubits: int,
 ) -> None:
     """Record one measurement instruction's observables and measured-out qubits.
 
@@ -585,7 +597,12 @@ def _rewrite_pass(
                 verbatim = True
         if verbatim:
             fallback_segments.append(segment.index)
-            analyzed = _emit_verbatim(segment, prepared=prepared, dirty=dirty, measurement_index=measurement_index)
+            analyzed = _emit_verbatim(
+                segment,
+                prepared=prepared,
+                dirty=dirty,
+                measurement_index=measurement_index,
+            )
         if isinstance(analyzed, _Conflict):
             if fallback == "circuit":
                 raise UnsupportedSyndromeCircuitError(analyzed.message)
@@ -632,7 +649,11 @@ def _analyze_segment(  # ruff:ignore[too-many-arguments]
     if isinstance(scan, _Conflict):
         return scan
     products = _substituted_products(
-        segment, scan.pulled, scan.prepared, num_qubits, allow_negative_pads=allow_negative_pads
+        segment,
+        scan.pulled,
+        scan.prepared,
+        num_qubits,
+        allow_negative_pads=allow_negative_pads,
     )
     if products is None:
         return None
@@ -641,7 +662,11 @@ def _analyze_segment(  # ruff:ignore[too-many-arguments]
         return None
 
     circuit, checks, exit_measurement_index = _emit_segment(
-        segment, products, frame, measurement_index=measurement_index, late_resets=scan.late_resets
+        segment,
+        products,
+        frame,
+        measurement_index=measurement_index,
+        late_resets=scan.late_resets,
     )
     exit_prepared = {
         qubit: axis
@@ -731,7 +756,10 @@ def _scan_unitary(scan: _SegmentScan, instruction: stim.CircuitInstruction) -> _
     if conflict is not None:
         return conflict
     for group in instruction.target_groups():
-        scan.body.append(instruction.name, [_plain_qubit(target, instruction.name) for target in group])
+        scan.body.append(
+            instruction.name,
+            [_plain_qubit(target, instruction.name) for target in group],
+        )
     scan.body_touched |= qubits
     return None
 
@@ -816,7 +844,10 @@ def _substitutable_qubits(
         for product in products:
             for qubit in list(candidates):
                 x_bit, z_bit = _AXIS_BITS[prepared[qubit]]
-                factor = (int(product.bits[qubit]), int(product.bits[num_qubits + qubit]))
+                factor = (
+                    int(product.bits[qubit]),
+                    int(product.bits[num_qubits + qubit]),
+                )
                 if factor not in {(0, 0), (x_bit, z_bit)}:
                     candidates.discard(qubit)
     return frozenset(candidates)
@@ -1033,7 +1064,9 @@ def _emit_measurement_instruction(  # ruff:ignore[too-many-arguments]
     trivial = all(
         np.array_equal(product.bits, source_pauli.bits) and product.phase == source_pauli.phase
         for product, source_pauli in zip(
-            products, (_pauli_from_stim(source.observable) for source in sources), strict=True
+            products,
+            (_pauli_from_stim(source.observable) for source in sources),
+            strict=True,
         )
     )
     if trivial:
@@ -1068,12 +1101,20 @@ def _append_products(output: stim.Circuit, products: Sequence[_Pauli], *, tag: s
         for product in products:
             # The stim stub mistypes the return as a single GateTarget; the
             # runtime returns a list of targets with combiners.
-            targets.extend(cast("list[stim.GateTarget]", stim.target_combined_paulis(_pauli_to_stim(product))))
+            targets.extend(
+                cast(
+                    "list[stim.GateTarget]",
+                    stim.target_combined_paulis(_pauli_to_stim(product)),
+                )
+            )
         output.append("MPP", targets, [], tag=tag)
         return
     for product, has_support in zip(products, with_support, strict=True):
         if has_support:
-            product_targets = cast("list[stim.GateTarget]", stim.target_combined_paulis(_pauli_to_stim(product)))
+            product_targets = cast(
+                "list[stim.GateTarget]",
+                stim.target_combined_paulis(_pauli_to_stim(product)),
+            )
             output.append("MPP", product_targets, [], tag=tag)
         else:
             output.append("MPAD", [int(product.phase % 4 == _MINUS_PHASE)], [], tag=tag)
