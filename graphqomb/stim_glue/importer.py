@@ -22,7 +22,11 @@ from graphqomb.circuit import Circuit, CircuitScheduleStrategy, circuit2graph
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
 from graphqomb.gates import CZ, J
 from graphqomb.graphstate import GraphState, compose_into, odd_neighbors
-from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
+from graphqomb.qeccode import (
+    StabilizerGraphStateBuildResult,
+    YFoliation,
+    build_graph_state,
+)
 from graphqomb.qompiler import qompile
 from graphqomb.scheduler import Scheduler
 from graphqomb.stim_glue._parse import (
@@ -41,7 +45,11 @@ from graphqomb.stim_glue._parse import (
     record_targets_to_absolute_indices,
     stim_mpp_extraction_from_records,
 )
-from graphqomb.stim_glue.transpiler import STIM_GATE_J_ANGLES, UnsupportedInstructionError, transpile
+from graphqomb.stim_glue.transpiler import (
+    STIM_GATE_J_ANGLES,
+    UnsupportedInstructionError,
+    transpile,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -372,12 +380,16 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
 
     idealized = _idealize_circuit(circuit.flattened())
     reset_split = _split_reused_reset_wires(
-        _merge_safe_tick_blocks(idealized.circuit) if merge_safe_ticks else idealized.circuit
+        _merge_safe_tick_blocks(idealized.circuit)
+        if merge_safe_ticks
+        else idealized.circuit
     )
     normalized_circuit, stim_ids = _normalize_import_circuit(reset_split.circuit)
     analysis = _CircuitAnalyzer().analyze(normalized_circuit)
     annotations = collect_record_annotations(normalized_circuit)
-    if analysis.measurement_count == 0 and (annotations.detectors or annotations.logical_observables):
+    if analysis.measurement_count == 0 and (
+        annotations.detectors or annotations.logical_observables
+    ):
         msg = "DETECTOR and OBSERVABLE_INCLUDE require at least one imported measurement instruction."
         raise ValueError(msg)
     coordinate_by_stim_id = _coordinates_with_split_wires(
@@ -406,12 +418,16 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         analysis.direct_measurements,
         final_stim_to_qubit=build.stim_to_qubit,
     )
-    parity_check_groups, parity_check_tags, logical_observables = _measurement_annotations(
-        annotations,
-        record_nodes=fragment.record_nodes,
-        zero_record_indices=idealized.zero_record_indices,
+    parity_check_groups, parity_check_tags, logical_observables = (
+        _measurement_annotations(
+            annotations,
+            record_nodes=fragment.record_nodes,
+            zero_record_indices=idealized.zero_record_indices,
+        )
     )
-    xflow, zflow = _flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices)
+    xflow, zflow = _flows_with_feedback(
+        fragment, zero_record_indices=idealized.zero_record_indices
+    )
     scheduler: Scheduler | None = None
     if schedule_config is not None:
         scheduler = Scheduler(fragment.graph, xflow, zflow)
@@ -430,14 +446,22 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     return StimImportResult(
         pattern=pattern,
         stim_to_qubit={
-            stim_id: qubit for stim_id, qubit in stim_to_qubit.items() if stim_id not in reset_split.split_to_original
+            stim_id: qubit
+            for stim_id, qubit in stim_to_qubit.items()
+            if stim_id not in reset_split.split_to_original
         },
         qubit_to_stim={
-            qubit: reset_split.split_to_original.get(stim_id, stim_id) for qubit, stim_id in build.qubit_to_stim.items()
+            qubit: reset_split.split_to_original.get(stim_id, stim_id)
+            for qubit, stim_id in build.qubit_to_stim.items()
         },
         mpp_extractions=fragment.mpp_extractions,
-        wire_to_stim={wire_id: reset_split.split_to_original.get(wire_id, wire_id) for wire_id in sorted(stim_ids)},
-        stim_to_final_qubit=_final_qubit_by_stim_id(build.stim_to_qubit, reset_split.split_to_original),
+        wire_to_stim={
+            wire_id: reset_split.split_to_original.get(wire_id, wire_id)
+            for wire_id in sorted(stim_ids)
+        },
+        stim_to_final_qubit=_final_qubit_by_stim_id(
+            build.stim_to_qubit, reset_split.split_to_original
+        ),
     )
 
 
@@ -461,10 +485,15 @@ def _final_qubit_by_stim_id(
     # in circuit order, so the largest wire id of a Stim qubit is its last
     # reset lifetime; `final_stim_to_qubit` already resolves the
     # measurement-reuse continuations within one wire.
-    if any(wire_id <= original_id for wire_id, original_id in split_to_original.items()):
+    if any(
+        wire_id <= original_id for wire_id, original_id in split_to_original.items()
+    ):
         msg = "Split wire ids must be issued above their original Stim qubit ids; this is a bug."
         raise RuntimeError(msg)
-    return {split_to_original.get(wire_id, wire_id): qubit for wire_id, qubit in sorted(final_stim_to_qubit.items())}
+    return {
+        split_to_original.get(wire_id, wire_id): qubit
+        for wire_id, qubit in sorted(final_stim_to_qubit.items())
+    }
 
 
 def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
@@ -476,7 +505,9 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
         gate_data = stim.gate_data(instruction.name)
         if instruction.name in DIRECT_MEASUREMENT_AXES:
             # Re-appending by name drops noise arguments but must keep the tag.
-            result.append(instruction.name, instruction.targets_copy(), tag=instruction.tag)
+            result.append(
+                instruction.name, instruction.targets_copy(), tag=instruction.tag
+            )
         elif instruction.name in _PAULI_PRODUCT_MEASUREMENT_GATES:
             _append_ideal_pauli_measurements(result, instruction)
         elif instruction.name == "MPAD":
@@ -485,11 +516,21 @@ def _idealize_circuit(circuit: stim.Circuit) -> _IdealizedCircuit:
                 msg = "MPAD 1 records are not supported because detector parity offsets are not represented."
                 raise ValueError(msg)
             result.append("MPAD", targets)
-            zero_record_indices.update(range(measurement_offset, measurement_offset + instruction.num_measurements))
+            zero_record_indices.update(
+                range(
+                    measurement_offset,
+                    measurement_offset + instruction.num_measurements,
+                )
+            )
         elif gate_data.is_noisy_gate and not gate_data.is_reset:
             if gate_data.produces_measurements:
                 result.append("MPAD", [0] * instruction.num_measurements)
-                zero_record_indices.update(range(measurement_offset, measurement_offset + instruction.num_measurements))
+                zero_record_indices.update(
+                    range(
+                        measurement_offset,
+                        measurement_offset + instruction.num_measurements,
+                    )
+                )
         else:
             result.append(instruction)
 
@@ -545,7 +586,11 @@ def _tracked_qubits(instruction: stim.CircuitInstruction) -> set[int]:
     # bits are spelled like qubit targets but are not qubits.
     if instruction.name in {"TICK", "DETECTOR", "OBSERVABLE_INCLUDE", "MPAD"}:
         return set()
-    return {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
+    return {
+        int(target.qubit_value)
+        for target in instruction.targets_copy()
+        if target.qubit_value is not None
+    }
 
 
 def _split_reused_reset_wires(circuit: stim.Circuit) -> _ResetLifetimeSplit:
@@ -587,16 +632,24 @@ def _split_reused_reset_wires(circuit: stim.Circuit) -> _ResetLifetimeSplit:
                     split_to_original[wire] = stim_id
                     wire_of[stim_id] = wire
                 wires.append(wire)
-            result.append(name, wires, instruction.gate_args_copy(), tag=instruction.tag)
+            result.append(
+                name, wires, instruction.gate_args_copy(), tag=instruction.tag
+            )
             continue
         result.append(
             name,
-            [_remap_qubit_target(target, wire_of) for target in instruction.targets_copy()],
+            [
+                _remap_qubit_target(target, wire_of)
+                for target in instruction.targets_copy()
+            ],
             instruction.gate_args_copy(),
             tag=instruction.tag,
         )
         if _is_quantum_operation(instruction):
-            used_wires.update(wire_of.get(stim_id, stim_id) for stim_id in _tracked_qubits(instruction))
+            used_wires.update(
+                wire_of.get(stim_id, stim_id)
+                for stim_id in _tracked_qubits(instruction)
+            )
 
     return _ResetLifetimeSplit(result, split_to_original)
 
@@ -636,7 +689,9 @@ def _warn_on_partial_coordinate_coverage(
     uncoordinated = stim_ids - coordinate_by_stim_id.keys()
     if uncoordinated and uncoordinated != stim_ids:
         shown = sorted(uncoordinated)[:10]
-        listing = ", ".join(str(wire) for wire in shown) + (", ..." if len(uncoordinated) > len(shown) else "")
+        listing = ", ".join(str(wire) for wire in shown) + (
+            ", ..." if len(uncoordinated) > len(shown) else ""
+        )
         msg = (
             f"{len(uncoordinated)} of {len(stim_ids)} imported wires have no QUBIT_COORDS (wire ids {listing}); "
             "their pattern nodes get no coordinates. Reset lifetimes split onto fresh qubit ids outside the "
@@ -645,7 +700,9 @@ def _warn_on_partial_coordinate_coverage(
         warnings.warn(msg, stacklevel=3)
 
 
-def _remap_qubit_target(target: stim.GateTarget, wire_of: Mapping[int, int]) -> stim.GateTarget | int:
+def _remap_qubit_target(
+    target: stim.GateTarget, wire_of: Mapping[int, int]
+) -> stim.GateTarget | int:
     """Map one Stim gate target onto its current wire id.
 
     Returns
@@ -686,7 +743,12 @@ class _TickBlock:
         """Whether the block contains a single-qubit measurement or an MPP."""
         return self.has_single_measurement or self.has_mpp
 
-    def add(self, instruction: stim.CircuitInstruction, index: int, instruction_qubits: set[int]) -> None:
+    def add(
+        self,
+        instruction: stim.CircuitInstruction,
+        index: int,
+        instruction_qubits: set[int],
+    ) -> None:
         """Append one instruction and update the block's feature flags."""
         self.circuit.append(instruction)
         self.last_index = index
@@ -699,7 +761,9 @@ class _TickBlock:
             self.measured_stim_ids.update(instruction_qubits)
 
 
-def _last_quantum_use_indices(instructions: Sequence[stim.CircuitInstruction]) -> dict[int, int]:
+def _last_quantum_use_indices(
+    instructions: Sequence[stim.CircuitInstruction],
+) -> dict[int, int]:
     r"""Return the last instruction index at which each Stim qubit is quantum-used.
 
     Returns
@@ -715,7 +779,9 @@ def _last_quantum_use_indices(instructions: Sequence[stim.CircuitInstruction]) -
     return last_quantum_use
 
 
-def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, frozenset[int]]:
+def _normalize_import_circuit(
+    circuit: stim.Circuit,
+) -> tuple[stim.Circuit, frozenset[int]]:
     instructions = list(iter_instructions(circuit))
     last_quantum_use = _last_quantum_use_indices(instructions)
     result = stim.Circuit()
@@ -725,7 +791,9 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
 
     def flush_block() -> None:
         nonlocal block
-        parts = _normalize_block(block, last_quantum_use=last_quantum_use, block_number=block_number)
+        parts = _normalize_block(
+            block, last_quantum_use=last_quantum_use, block_number=block_number
+        )
         for part_index, part in enumerate(parts):
             if part_index:
                 result.append("TICK", [])
@@ -774,7 +842,8 @@ def _normalize_block(
         return [
             _transpile_tick_block(part, block_number=block_number)
             if any(
-                isinstance(instruction, stim.CircuitInstruction) and _is_unitary_instruction(instruction)
+                isinstance(instruction, stim.CircuitInstruction)
+                and _is_unitary_instruction(instruction)
                 for instruction in part
             )
             else part
@@ -783,7 +852,9 @@ def _normalize_block(
     # A measurement on a qubit that is quantum-used again later must keep its
     # post-measurement state, so its basis is never folded away.
     preserved_qubits = {
-        stim_id for stim_id in block.measured_stim_ids if last_quantum_use.get(stim_id, -1) > block.last_index
+        stim_id
+        for stim_id in block.measured_stim_ids
+        if last_quantum_use.get(stim_id, -1) > block.last_index
     }
     optimized = _transpile_tick_block(
         block.circuit,
@@ -875,11 +946,17 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
                 last_part = last_part_of_qubit.get(qubit)
                 if last_part is None:
                     continue
-                bump = 1 if is_measurement and last_touch_is_single_measurement[qubit] else 0
+                bump = (
+                    1
+                    if is_measurement and last_touch_is_single_measurement[qubit]
+                    else 0
+                )
                 lower = max(lower, last_part + bump)
 
         part_index = lower
-        while part_index < len(part_kinds) and part_kinds[part_index] not in allowed_kinds:
+        while (
+            part_index < len(part_kinds) and part_kinds[part_index] not in allowed_kinds
+        ):
             part_index += 1
         if part_index == len(part_kinds):
             part_kinds.append(kind)
@@ -889,7 +966,9 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
         if is_quantum:
             for qubit in _tracked_qubits(instruction):
                 last_part_of_qubit[qubit] = part_index
-                last_touch_is_single_measurement[qubit] = name in DIRECT_MEASUREMENT_AXES
+                last_touch_is_single_measurement[qubit] = (
+                    name in DIRECT_MEASUREMENT_AXES
+                )
         if is_record_ordered:
             record_floor = part_index
 
@@ -902,7 +981,9 @@ def _split_mixed_block(  # ruff:ignore[complex-structure, too-many-branches, too
     return parts
 
 
-def _defused_feedback_instructions(instruction: stim.CircuitInstruction) -> Iterator[stim.CircuitInstruction]:
+def _defused_feedback_instructions(
+    instruction: stim.CircuitInstruction,
+) -> Iterator[stim.CircuitInstruction]:
     """Yield a controlled-Pauli instruction split per target group when it carries feedback.
 
     Stim fuses adjacent same-name instructions, so ``CZ rec[-1] 0`` next to a
@@ -915,17 +996,23 @@ def _defused_feedback_instructions(instruction: stim.CircuitInstruction) -> Iter
     ``stim.CircuitInstruction``
         The original instruction, or one instruction per target group.
     """
-    if instruction.name in _CONTROLLED_PAULI_GATES and _is_feedback_instruction(instruction):
+    if instruction.name in _CONTROLLED_PAULI_GATES and _is_feedback_instruction(
+        instruction
+    ):
         groups = instruction.target_groups()
         if len(groups) > 1:
             gate_args = instruction.gate_args_copy()
             for group in groups:
-                yield stim.CircuitInstruction(instruction.name, list(group), gate_args, tag=instruction.tag)
+                yield stim.CircuitInstruction(
+                    instruction.name, list(group), gate_args, tag=instruction.tag
+                )
             return
     yield instruction
 
 
-def _atomized_block_instructions(block: stim.Circuit) -> Iterator[stim.CircuitInstruction]:
+def _atomized_block_instructions(
+    block: stim.Circuit,
+) -> Iterator[stim.CircuitInstruction]:
     """Yield block instructions split into independently placeable units.
 
     Stim fuses adjacent same-name instructions, so a repeated measurement of
@@ -944,10 +1031,15 @@ def _atomized_block_instructions(block: stim.Circuit) -> Iterator[stim.CircuitIn
         instructions emitted once per target group.
     """
     for instruction in iter_instructions(block):
-        if instruction.name in DIRECT_MEASUREMENT_AXES and instruction.num_measurements > 1:
+        if (
+            instruction.name in DIRECT_MEASUREMENT_AXES
+            and instruction.num_measurements > 1
+        ):
             gate_args = instruction.gate_args_copy()
             for target in instruction.targets_copy():
-                yield stim.CircuitInstruction(instruction.name, [target], gate_args, tag=instruction.tag)
+                yield stim.CircuitInstruction(
+                    instruction.name, [target], gate_args, tag=instruction.tag
+                )
         else:
             yield from _defused_feedback_instructions(instruction)
 
@@ -981,7 +1073,12 @@ class _CircuitAnalyzer:
         # Not _parse.ANNOTATION_GATES: TICK is the block boundary handled
         # above, and MPAD still advances measurement_count in analyze() even
         # though it becomes no operation (idealization records its zero bits).
-        elif instruction.name not in {"QUBIT_COORDS", "DETECTOR", "OBSERVABLE_INCLUDE", "MPAD"}:
+        elif instruction.name not in {
+            "QUBIT_COORDS",
+            "DETECTOR",
+            "OBSERVABLE_INCLUDE",
+            "MPAD",
+        }:
             self._record_operation(instruction, _tracked_qubits(instruction))
 
     def _finish_block(self) -> None:
@@ -990,9 +1087,16 @@ class _CircuitAnalyzer:
         self.block_has_unitary = False
         self.block_has_pauli_measurement = False
 
-    def _record_operation(self, instruction: stim.CircuitInstruction, instruction_qubits: set[int]) -> None:
+    def _record_operation(
+        self, instruction: stim.CircuitInstruction, instruction_qubits: set[int]
+    ) -> None:
         _validate_supported_instruction(instruction)
-        record_indices = tuple(range(self.measurement_count, self.measurement_count + instruction.num_measurements))
+        record_indices = tuple(
+            range(
+                self.measurement_count,
+                self.measurement_count + instruction.num_measurements,
+            )
+        )
         feedback_corrections = _feedback_corrections_from_instruction(
             instruction,
             measurement_count=self.measurement_count,
@@ -1006,7 +1110,9 @@ class _CircuitAnalyzer:
         self.current_block.append(analyzed)
 
         is_unitary = _is_unitary_instruction(instruction)
-        is_pauli_measurement = instruction.name == "MPP" or instruction.name in DIRECT_MEASUREMENT_AXES
+        is_pauli_measurement = (
+            instruction.name == "MPP" or instruction.name in DIRECT_MEASUREMENT_AXES
+        )
         self._validate_block_separation(
             is_unitary=is_unitary,
             is_pauli_measurement=is_pauli_measurement,
@@ -1016,12 +1122,18 @@ class _CircuitAnalyzer:
             # The last leading reset determines the initialization, so it
             # overwrites earlier ones even when its tag is empty.
             initialization = Initialization(axis=reset_axis, tag=instruction.tag)
-            self.input_initializations.update(dict.fromkeys(instruction_qubits, initialization))
+            self.input_initializations.update(
+                dict.fromkeys(instruction_qubits, initialization)
+            )
 
         if instruction.name in DIRECT_MEASUREMENT_AXES:
-            self.direct_measurements.extend(_direct_measurements_from_instruction(analyzed))
+            self.direct_measurements.extend(
+                _direct_measurements_from_instruction(analyzed)
+            )
 
-    def _validate_block_separation(self, *, is_unitary: bool, is_pauli_measurement: bool) -> None:
+    def _validate_block_separation(
+        self, *, is_unitary: bool, is_pauli_measurement: bool
+    ) -> None:
         self.block_has_unitary |= is_unitary
         self.block_has_pauli_measurement |= is_pauli_measurement
         if self.block_has_unitary and self.block_has_pauli_measurement:
@@ -1051,13 +1163,18 @@ def _validate_supported_instruction(instruction: stim.CircuitInstruction) -> Non
 
 
 def _is_unitary_instruction(instruction: stim.CircuitInstruction) -> bool:
-    return bool(stim.gate_data(instruction.name).is_unitary and not _is_feedback_instruction(instruction))
+    return bool(
+        stim.gate_data(instruction.name).is_unitary
+        and not _is_feedback_instruction(instruction)
+    )
 
 
 def _is_feedback_instruction(instruction: stim.CircuitInstruction) -> bool:
     return bool(
         stim.gate_data(instruction.name).is_unitary
-        and any(target.is_measurement_record_target for target in instruction.targets_copy())
+        and any(
+            target.is_measurement_record_target for target in instruction.targets_copy()
+        )
     )
 
 
@@ -1072,11 +1189,13 @@ def _feedback_corrections_from_instruction(
     corrections: list[_FeedbackCorrection] = []
     expected_group_size = 2
     for group in instruction.target_groups():
-        record_positions = [index for index, target in enumerate(group) if target.is_measurement_record_target]
+        record_positions = [
+            index
+            for index, target in enumerate(group)
+            if target.is_measurement_record_target
+        ]
         if len(group) != expected_group_size or len(record_positions) != 1:
-            msg = (
-                f"{instruction.name} feedback groups must contain exactly one measurement record and one qubit target."
-            )
+            msg = f"{instruction.name} feedback groups must contain exactly one measurement record and one qubit target."
             raise ValueError(msg)
         record_position = record_positions[0]
         axis = _FEEDBACK_AXES.get((instruction.name, record_position))
@@ -1091,7 +1210,9 @@ def _feedback_corrections_from_instruction(
             measurement_count=measurement_count,
             instruction_name=instruction.name,
         )
-        corrections.append(_FeedbackCorrection(next(iter(record_indices)), stim_id, axis))
+        corrections.append(
+            _FeedbackCorrection(next(iter(record_indices)), stim_id, axis)
+        )
     return tuple(corrections)
 
 
@@ -1115,7 +1236,11 @@ def _direct_measurements_from_instruction(
             raise ValueError(msg)
         seen_qubits.add(stim_id)
         sign = Sign.MINUS if target.is_inverted_result_target else Sign.PLUS
-        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign, resets=resets, tag=instruction.tag))
+        measurements.append(
+            _DirectMeasurement(
+                stim_id, record_index, axis, sign, resets=resets, tag=instruction.tag
+            )
+        )
     return measurements
 
 
@@ -1135,7 +1260,11 @@ def _append_ideal_pauli_measurements(
     axis = PAIR_MEASUREMENT_AXES[instruction.name]
     expected_group_size = 2
 
-    target_factory = {Axis.X: stim.target_x, Axis.Y: stim.target_y, Axis.Z: stim.target_z}[axis]
+    target_factory = {
+        Axis.X: stim.target_x,
+        Axis.Y: stim.target_y,
+        Axis.Z: stim.target_z,
+    }[axis]
     for group in instruction.target_groups():
         if len(group) != expected_group_size:
             msg = f"{instruction.name} target group must contain {expected_group_size} qubit(s)."
@@ -1176,11 +1305,21 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
         )
         if new_wire_ids:
             z_base += 1
-            fragments.append(_new_wire_fragment(new_wire_ids, z=z_base, stim_to_qubit=stim_to_qubit, context=context))
+            fragments.append(
+                _new_wire_fragment(
+                    new_wire_ids, z=z_base, stim_to_qubit=stim_to_qubit, context=context
+                )
+            )
             live_stim_ids.update(new_wire_ids)
 
-        direct_items = tuple(analyzed for analyzed in block if analyzed.instruction.name in DIRECT_MEASUREMENT_AXES)
-        directly_measured_stim_ids = {stim_id for analyzed in direct_items for stim_id in analyzed.qubit_ids}
+        direct_items = tuple(
+            analyzed
+            for analyzed in block
+            if analyzed.instruction.name in DIRECT_MEASUREMENT_AXES
+        )
+        directly_measured_stim_ids = {
+            stim_id for analyzed in direct_items for stim_id in analyzed.qubit_ids
+        }
         reused_measurements = tuple(
             measurement
             for analyzed in direct_items
@@ -1188,9 +1327,15 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
             if measurement.stim_id in future_use[block_index]
         )
         unitary_instructions = tuple(
-            analyzed.instruction for analyzed in block if _is_unitary_instruction(analyzed.instruction)
+            analyzed.instruction
+            for analyzed in block
+            if _is_unitary_instruction(analyzed.instruction)
         )
-        feedback_corrections = tuple(correction for analyzed in block for correction in analyzed.feedback_corrections)
+        feedback_corrections = tuple(
+            correction
+            for analyzed in block
+            for correction in analyzed.feedback_corrections
+        )
         if unitary_instructions:
             fragment, z_base = _unitary_fragment(
                 unitary_instructions,
@@ -1203,15 +1348,21 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
             fragments.append(fragment)
         else:
             mpp_stim_ids = {
-                stim_id for analyzed in block if analyzed.instruction.name == "MPP" for stim_id in analyzed.qubit_ids
+                stim_id
+                for analyzed in block
+                if analyzed.instruction.name == "MPP"
+                for stim_id in analyzed.qubit_ids
             }
-            mpp_items = tuple(analyzed for analyzed in block if analyzed.instruction.name == "MPP")
+            mpp_items = tuple(
+                analyzed for analyzed in block if analyzed.instruction.name == "MPP"
+            )
             if mpp_items:
                 fragments.append(
                     _mpp_fragment(
                         mpp_items,
                         z_base=z_base,
-                        io_stim_ids=(live_stim_ids - directly_measured_stim_ids) | mpp_stim_ids,
+                        io_stim_ids=(live_stim_ids - directly_measured_stim_ids)
+                        | mpp_stim_ids,
                         stim_to_qubit=stim_to_qubit,
                         context=context,
                     )
@@ -1268,7 +1419,9 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
     )
 
 
-def _stim_ids_used_after_block(blocks: Sequence[Sequence[_AnalyzedInstruction]]) -> list[set[int]]:
+def _stim_ids_used_after_block(
+    blocks: Sequence[Sequence[_AnalyzedInstruction]],
+) -> list[set[int]]:
     future: list[set[int]] = []
     seen: set[int] = set()
     for block in reversed(blocks):
@@ -1326,16 +1479,22 @@ def _reuse_fragment(  # ruff:ignore[too-many-arguments]
         new_qubit = len(qubit_to_stim)
         measured_node = graph.add_node()
         graph.register_input(measured_node, old_qubit)
-        graph.assign_meas_basis(measured_node, AxisMeasBasis(measurement.axis, measurement.sign))
+        graph.assign_meas_basis(
+            measured_node, AxisMeasBasis(measurement.axis, measurement.sign)
+        )
         coord = context.coordinate_by_stim_id.get(measurement.stim_id)
-        continuation_node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
+        continuation_node = graph.add_node(
+            coordinate=_coordinate_at_z(coord, z) if coord is not None else None
+        )
         # Only a measure-reset's re-preparation exists as a reset in the
         # original circuit; a plain measurement's continuation is synthesized,
         # so its measurement tag is not an initialization tag.
         graph.register_input(
             continuation_node,
             new_qubit,
-            init=Initialization(axis=measurement.axis, tag=measurement.tag if measurement.resets else ""),
+            init=Initialization(
+                axis=measurement.axis, tag=measurement.tag if measurement.resets else ""
+            ),
         )
         graph.register_output(continuation_node, new_qubit)
         if measurement.resets:
@@ -1396,8 +1555,12 @@ def _identity_fragment(context: _ImportContext) -> _Fragment:
             # Split wires start at their reset position, not at the circuit input.
             continue
         coord = context.coordinate_by_stim_id.get(stim_id)
-        node = graph.add_node(coordinate=_coordinate_at_z(coord, 0) if coord is not None else None)
-        graph.register_input(node, qubit_index, init=context.input_initializations.get(stim_id))
+        node = graph.add_node(
+            coordinate=_coordinate_at_z(coord, 0) if coord is not None else None
+        )
+        graph.register_input(
+            node, qubit_index, init=context.input_initializations.get(stim_id)
+        )
         graph.register_output(node, qubit_index)
     return _Fragment(
         graph=graph,
@@ -1429,7 +1592,9 @@ def _new_wire_fragment(
     graph = GraphState()
     for stim_id in stim_ids:
         coord = context.coordinate_by_stim_id.get(stim_id)
-        node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
+        node = graph.add_node(
+            coordinate=_coordinate_at_z(coord, z) if coord is not None else None
+        )
         qubit = stim_to_qubit[stim_id]
         graph.register_input(node, qubit, init=context.input_initializations[stim_id])
         graph.register_output(node, qubit)
@@ -1446,13 +1611,20 @@ def _unitary_fragment(  # ruff:ignore[too-many-arguments]
     context: _ImportContext,
 ) -> tuple[_Fragment, int]:
     ordered_stim_ids = sorted(live_stim_ids)
-    stim_to_local = {stim_id: local_index for local_index, stim_id in enumerate(ordered_stim_ids)}
-    local_to_global = {local_index: stim_to_qubit[stim_id] for stim_id, local_index in stim_to_local.items()}
+    stim_to_local = {
+        stim_id: local_index for local_index, stim_id in enumerate(ordered_stim_ids)
+    }
+    local_to_global = {
+        local_index: stim_to_qubit[stim_id]
+        for stim_id, local_index in stim_to_local.items()
+    }
     circuit = Circuit(len(ordered_stim_ids))
     for instruction in block:
         _append_unitary_instruction(circuit, instruction, stim_to_local)
 
-    local_graph, local_xflow, _ = circuit2graph(circuit, schedule_strategy=context.schedule_strategy)
+    local_graph, local_xflow, _ = circuit2graph(
+        circuit, schedule_strategy=context.schedule_strategy
+    )
     graph, node_map = _copy_graph_with_qindices(local_graph, local_to_global)
     xflow = _remap_flow(local_xflow, node_map)
     z_span = _apply_unitary_coordinates(
@@ -1480,7 +1652,9 @@ def _apply_unitary_coordinates(
     qubit_to_stim: Mapping[int, int],
     context: _ImportContext,
 ) -> int:
-    output_node_by_qubit = {qubit: node for node, qubit in graph.output_node_indices.items()}
+    output_node_by_qubit = {
+        qubit: node for node, qubit in graph.output_node_indices.items()
+    }
     chains: dict[int, list[int]] = {}
     chain_nodes: set[int] = set()
     for input_node, qubit in graph.input_node_indices.items():
@@ -1569,14 +1743,24 @@ def _mpp_fragment(
     context: _ImportContext,
 ) -> _Fragment:
     signed_products = tuple(
-        product for analyzed in block for product in mpp_targets_to_signed_products(analyzed.instruction.targets_copy())
+        product
+        for analyzed in block
+        for product in mpp_targets_to_signed_products(
+            analyzed.instruction.targets_copy()
+        )
     )
     supports = tuple(support for support, _sign in signed_products)
     # `stim_mpp_extraction_from_records` keeps the product order, so product i
     # becomes stabilizer row i and therefore ancilla node `ancilla_nodes[i]`.
-    negative_rows = frozenset(row for row, (_support, sign) in enumerate(signed_products) if sign is Sign.MINUS)
+    negative_rows = frozenset(
+        row
+        for row, (_support, sign) in enumerate(signed_products)
+        if sign is Sign.MINUS
+    )
     _validate_commuting_mpp_supports(supports)
-    record_indices = tuple(record_index for analyzed in block for record_index in analyzed.record_indices)
+    record_indices = tuple(
+        record_index for analyzed in block for record_index in analyzed.record_indices
+    )
     extraction = stim_mpp_extraction_from_records(
         supports,
         record_indices,
@@ -1603,11 +1787,11 @@ def _mpp_fragment(
 
 
 def _validate_commuting_mpp_supports(supports: Sequence[PauliSupport]) -> None:
-    for (left_index, left), (right_index, right) in combinations(enumerate(supports), 2):
+    for (left_index, left), (right_index, right) in combinations(
+        enumerate(supports), 2
+    ):
         if not pauli_products_commute(left, right):
-            msg = (
-                f"MPP products within one TICK block must commute; products {left_index} and {right_index} anticommute."
-            )
+            msg = f"MPP products within one TICK block must commute; products {left_index} and {right_index} anticommute."
             raise ValueError(msg)
 
 
@@ -1621,7 +1805,10 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> _Fragment:
-    qubit_indices = {column: stim_to_qubit[stim_id] for column, stim_id in extraction.column_to_stim.items()}
+    qubit_indices = {
+        column: stim_to_qubit[stim_id]
+        for column, stim_id in extraction.column_to_stim.items()
+    }
     result = build_graph_state(
         extraction.code,
         z_base=z_base,
@@ -1633,7 +1820,9 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     # the one build_graph_state chose (Y for odd-Y-support rows under Type I).
     for row in sorted(negative_rows):
         ancilla_node = result.ancilla_nodes[row]
-        result.graph.assign_meas_basis(ancilla_node, result.graph.meas_bases[ancilla_node].flip())
+        result.graph.assign_meas_basis(
+            ancilla_node, result.graph.meas_bases[ancilla_node].flip()
+        )
     active_stim_ids = set(extraction.stim_to_column)
     _add_relocated_io_nodes(
         result.graph,
@@ -1644,12 +1833,16 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     )
     xflow = _mpp_flow(result)
     if len(record_indices) != len(result.ancilla_nodes):
-        msg = "Imported MPP record count does not match the generated ancilla-node count."
+        msg = (
+            "Imported MPP record count does not match the generated ancilla-node count."
+        )
         raise ValueError(msg)
     return _Fragment(
         graph=result.graph,
         xflow=xflow,
-        record_nodes={record_indices[row]: node for row, node in result.ancilla_nodes.items()},
+        record_nodes={
+            record_indices[row]: node for row, node in result.ancilla_nodes.items()
+        },
     )
 
 
@@ -1663,7 +1856,9 @@ def _add_relocated_io_nodes(
 ) -> None:
     for stim_id in sorted(stim_ids):
         coord = context.coordinate_by_stim_id.get(stim_id)
-        node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
+        node = graph.add_node(
+            coordinate=_coordinate_at_z(coord, z) if coord is not None else None
+        )
         qubit = stim_to_qubit[stim_id]
         graph.register_input(node, qubit)
         graph.register_output(node, qubit)
@@ -1678,7 +1873,11 @@ def _mpp_flow(
 ) -> dict[int, set[int]]:
     xflow: dict[int, set[int]] = {}
     for qubit in sorted({key[0] for key in result.data_nodes}):
-        layer_nodes = [node for (data_qubit, _layer), node in sorted(result.data_nodes.items()) if data_qubit == qubit]
+        layer_nodes = [
+            node
+            for (data_qubit, _layer), node in sorted(result.data_nodes.items())
+            if data_qubit == qubit
+        ]
         for current_node, next_node in pairwise(layer_nodes):
             if current_node in result.graph.meas_bases:
                 xflow[current_node] = {next_node}
@@ -1713,7 +1912,9 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
         _merge_flow_into(xflow, _remap_flow(fragment.xflow, node_map2))
         _merge_flow_into(zflow, _remap_flow(fragment.zflow, node_map2))
         record_nodes.update(_remap_record_nodes(fragment.record_nodes, node_map2))
-        feedback_targets.extend(_capture_feedback_targets(fragment.feedback_targets, node_map2, graph))
+        feedback_targets.extend(
+            _capture_feedback_targets(fragment.feedback_targets, node_map2, graph)
+        )
         mpp_extractions.extend(fragment.mpp_extractions)
 
     return _Fragment(
@@ -1726,7 +1927,9 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
     )
 
 
-def _merge_flow_into(flow: dict[int, set[int]], incoming: Mapping[int, set[int]]) -> None:
+def _merge_flow_into(
+    flow: dict[int, set[int]], incoming: Mapping[int, set[int]]
+) -> None:
     """XOR the incoming correction flow into ``flow`` in place.
 
     Flow sources are measured nodes private to one fragment, so today the two
@@ -1743,7 +1946,9 @@ def _apply_single_measurements(
     *,
     final_stim_to_qubit: Mapping[int, int],
 ) -> _Fragment:
-    output_node_by_qubit = {qubit: node for node, qubit in fragment.graph.output_node_indices.items()}
+    output_node_by_qubit = {
+        qubit: node for node, qubit in fragment.graph.output_node_indices.items()
+    }
     record_nodes = dict(fragment.record_nodes)
 
     for measurement in direct_measurements:
@@ -1751,7 +1956,9 @@ def _apply_single_measurements(
             # Reused measurements were bound to internal nodes during fragment construction.
             continue
         node = output_node_by_qubit[final_stim_to_qubit[measurement.stim_id]]
-        fragment.graph.assign_meas_basis(node, AxisMeasBasis(measurement.axis, measurement.sign))
+        fragment.graph.assign_meas_basis(
+            node, AxisMeasBasis(measurement.axis, measurement.sign)
+        )
         record_nodes[measurement.record_index] = node
 
     return _Fragment(
@@ -1770,7 +1977,10 @@ def _flows_with_feedback(
     zero_record_indices: frozenset[int],
 ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
     xflow = {node: set(targets) for node, targets in fragment.xflow.items()}
-    zflow = {node: odd_neighbors(targets, fragment.graph) for node, targets in fragment.xflow.items()}
+    zflow = {
+        node: odd_neighbors(targets, fragment.graph)
+        for node, targets in fragment.xflow.items()
+    }
     for node, targets in fragment.zflow.items():
         # Explicit entries carry the post-measurement continuation corrections.
         zflow.setdefault(node, set()).symmetric_difference_update(targets)
@@ -1788,7 +1998,9 @@ def _flows_with_feedback(
             xflow.setdefault(source, set()).symmetric_difference_update({feedback.node})
             # Deferring the X to the target's measurement pushes it through the
             # CZ edges created after the feedback position, leaving Z there.
-            deferred_z = fragment.graph.neighbors(feedback.node) - feedback.past_neighbors
+            deferred_z = (
+                fragment.graph.neighbors(feedback.node) - feedback.past_neighbors
+            )
             if deferred_z:
                 zflow.setdefault(source, set()).symmetric_difference_update(deferred_z)
         if feedback.axis in {Axis.Z, Axis.Y}:
@@ -1806,7 +2018,9 @@ def _measurement_annotations(
         return [], [], {}
 
     parity_check_groups = [
-        _record_indices_to_nodes(record_indices, record_nodes, zero_record_indices=zero_record_indices)
+        _record_indices_to_nodes(
+            record_indices, record_nodes, zero_record_indices=zero_record_indices
+        )
         for record_indices in annotations.detectors
     ]
     logical_observables = {
@@ -1834,14 +2048,25 @@ def _record_indices_to_nodes(
     if missing_records:
         msg = f"Cannot map Stim measurement record(s) to imported Pauli-measurement nodes: {missing_records}."
         raise ValueError(msg)
-    return {record_nodes[record_index] for record_index in record_indices if record_index in record_nodes}
+    return {
+        record_nodes[record_index]
+        for record_index in record_indices
+        if record_index in record_nodes
+    }
 
 
-def _remap_flow(flow: Mapping[int, set[int]], node_map: Mapping[int, int]) -> dict[int, set[int]]:
-    return {node_map[node]: {node_map[target] for target in targets} for node, targets in flow.items()}
+def _remap_flow(
+    flow: Mapping[int, set[int]], node_map: Mapping[int, int]
+) -> dict[int, set[int]]:
+    return {
+        node_map[node]: {node_map[target] for target in targets}
+        for node, targets in flow.items()
+    }
 
 
-def _remap_record_nodes(record_nodes: Mapping[int, int], node_map: Mapping[int, int]) -> dict[int, int]:
+def _remap_record_nodes(
+    record_nodes: Mapping[int, int], node_map: Mapping[int, int]
+) -> dict[int, int]:
     return {record_index: node_map[node] for record_index, node in record_nodes.items()}
 
 
