@@ -197,6 +197,22 @@ def test_source_tick_keeps_commuting_pulled_mpps_in_separate_graph_layers() -> N
     ]
 
 
+def test_foliation_replaces_surface_check_ancillas_instead_of_duplicating_them() -> None:
+    source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3).flattened()
+
+    direct = stim_circuit_to_pattern(source)
+    rewrite = rewrite_to_mpp(source)
+    contracted = stim_circuit_to_pattern(rewrite.foliation_circuit)
+    compiled = stim.Circuit(stim_compile(contracted.pattern))
+
+    assert direct.pattern.pauli_frame.graphstate.number_of_nodes() == 201
+    assert contracted.pattern.pauli_frame.graphstate.number_of_nodes() == 87
+    assert len(contracted.mpp_extractions) == 3
+    assert rewrite.eliminated_qubits == (2, 9, 11, 13, 14, 16, 18, 25)
+    assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
+    _assert_same_reference_signs(compiled, source)
+
+
 def test_externally_pre_split_circuit_imports_like_the_original() -> None:
     # A caller may hand the importer a circuit whose reset lifetimes already
     # sit on fresh qubit ids (id 2 continues id 1 below). The importer cannot

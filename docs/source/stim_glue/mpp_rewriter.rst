@@ -18,10 +18,14 @@ identity
 
 Clifford instructions accumulate in a pending frame. At a source Pauli
 measurement, the rewriter emits the pulled product ``U† P U`` and leaves the
-unchanged frame behind that measurement. A reset, measure-reset,
-measurement-record-controlled gate, or circuit exit materializes the pending
-frame. This is one deterministic path: there is no verification retry or
-gate-level fallback, and measurement post-states are preserved exactly.
+unchanged frame behind that measurement. A reset, measurement-record-controlled
+gate, or circuit exit materializes the pending frame. At a measure-reset whose
+source-ancilla reset factor was removed, the rewriter compares the local
+reset/body/measurement channel with the reduced MPP/reset channel. Equal
+canonical Stim flows certify that the Foliation MPP ancilla has replaced the
+source extraction ancilla, so the now-redundant pending body is discarded.
+Otherwise the exact body is materialized unchanged. There is no gate-level
+fallback, and measurement post-states are preserved exactly.
 
 Reset stabilizer substitution
 -----------------------------
@@ -45,6 +49,16 @@ that does not match the reset basis is retained. For example,
 ``RX 2; CZ 0 2; S 2; MX 2`` becomes
 ``RX 2; MPP !Z0*Y2; CZ 0 2; S 2``.
 
+For a measure-reset check gadget, the reset provides a stronger local
+boundary. If ``reset + body + measure-reset`` and ``reset + reduced MPP +
+reset`` have identical canonical Stim flows, the body is discarded: the
+Foliation graph constructed from the MPP already supplies the check ancilla's
+initialization, interaction, and measurement. ``result.circuit`` retains any
+independent reset-only source outputs so it stays exactly equivalent as a
+standalone Stim channel. ``result.foliation_circuit`` additionally removes
+those idle source ancillas for import, and ``result.eliminated_qubits`` reports
+their Stim ids.
+
 Factors are considered in measurement-record order. An earlier product that
 anticommutes with a stored reset stabilizer invalidates it before later
 products are simplified. A negative identity is kept as a real signed
@@ -55,9 +69,10 @@ Barriers and annotations
 ------------------------
 
 ``MR``, ``MRX``, and ``MRY`` are split only when needed: the pulled
-measurement is emitted, the exact pending frame follows, and then the reset is
-applied. Classical record feedback is copied verbatim after materializing the
-frame. Sweep-bit controls, circuit-level noise, and noisy measurement
+measurement is emitted, an exactly contractible source-ancilla extraction body
+is discarded (otherwise it follows unchanged), and then the reset is applied.
+Classical record feedback is copied verbatim after materializing the frame.
+Sweep-bit controls, circuit-level noise, and noisy measurement
 arguments are rejected. ``DETECTOR``, ``OBSERVABLE_INCLUDE``, tags, and qubit
 coordinates are copied while retaining their measurement-record indices.
 ``REPEAT`` blocks are flattened first.
@@ -84,6 +99,9 @@ remain for API compatibility. ``fallback="circuit"`` and
        """
    )
    assert str(result.checks[0].product) == "+ZZ___"
+
+   # Use this circuit for the StabilizerCode/Foliation importer path.
+   import_circuit = result.foliation_circuit
 
 API reference
 -------------

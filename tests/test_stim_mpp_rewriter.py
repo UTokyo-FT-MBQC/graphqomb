@@ -100,7 +100,7 @@ def test_mismatched_reset_factor_keeps_full_product_and_body() -> None:
     _assert_exact_channel(source, result.circuit)
 
 
-def test_measure_reset_flushes_body_before_reset() -> None:
+def test_measure_reset_contracts_replaced_ancilla_body() -> None:
     source = stim.Circuit(
         """
         R 4
@@ -118,14 +118,28 @@ def test_measure_reset_flushes_body_before_reset() -> None:
         """
         R 4
         MPP Z0*Z1
-        CX 0 4 1 4
         R 4
         MPP Z0*Z1
-        CX 0 4 1 4
         R 4
         DETECTOR rec[-1] rec[-2]
         """
     )
+    assert result.foliation_circuit == stim.Circuit(
+        """
+        MPP Z0*Z1 Z0*Z1
+        DETECTOR rec[-1] rec[-2]
+        """
+    )
+    assert result.eliminated_qubits == (4,)
+    _assert_exact_channel(source, result.circuit)
+
+
+def test_measure_reset_keeps_noncontractible_data_clifford() -> None:
+    source = stim.Circuit("R 2\nH 0\nMR 2")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit("R 2\nMPAD 0\nH 0\nR 2")
     _assert_exact_channel(source, result.circuit)
 
 

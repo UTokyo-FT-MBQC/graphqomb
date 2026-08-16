@@ -5,16 +5,18 @@ For a Clifford body ``U`` and a Pauli measurement projector ``Pi_m(P)``,
 ``Pi_m(P) U = U Pi_m(U† P U)``.
 
 The rewriter applies this identity directly. Clifford gates are accumulated
-as a pending frame, every Pauli measurement is conjugated backwards through
-that frame, and the unchanged frame is materialized at the next reset-like
-barrier or at circuit exit. Correctness therefore does not depend on flow
-verification, retries, or gate-level fallback.
+as a pending frame and every Pauli measurement is conjugated backwards through
+that frame. The unchanged frame is normally materialized at the next barrier.
+At a measure-reset, a local canonical-flow equality may instead certify that
+the reduced MPP has completely replaced the source extraction ancilla, allowing
+the redundant frame to be discarded. There are no retries or gate-level
+fallback.
 
 When the pulled product contains the preparation Pauli of the reset qubit
 that the source directly measures, that factor is a known ``+1`` stabilizer
-and is removed. Standard reset/Clifford/measure check gadgets consequently
-expose a data-only ``MPP`` while the exact Clifford body remains pending
-behind it.
+and is removed. Standard reset/Clifford/measure-reset check gadgets
+consequently expose a data-only ``MPP`` and contract their redundant source
+extraction body at the reset boundary.
 
 This module provides:
 
@@ -57,6 +59,7 @@ _MEASURE_RESET_MEASUREMENTS = {
 }
 _PAIR_MEASUREMENT_BASES = {name: axis.name for name, axis in PAIR_MEASUREMENT_AXES.items()}
 _PAULI_CODES = {"X": 1, "Y": 2, "Z": 3}
+_RESET_GATE_BY_BASIS = {"X": "RX", "Y": "RY", "Z": "R"}
 _PAIR_GROUP_SIZE = 2
 
 _InstructionKind = Literal["annotation", "mpad", "reset", "measurement", "unitary"]
@@ -107,12 +110,21 @@ class MppRewriteResult:
     checks : `tuple`\[`CheckMapping`, ...\]
         One mapping per Pauli-measurement record; source ``MPAD`` records are
         not listed.
+    foliation_circuit : ``stim.Circuit``
+        Import-oriented circuit with reset-only source ancillas removed after
+        their extraction bodies were replaced by reduced MPPs. Its measurement
+        records and channel on retained qubits equal ``circuit``; omitted
+        qubits were independent reset outputs.
+    eliminated_qubits : `tuple`\[`int`, ...\]
+        Source qubits omitted from ``foliation_circuit``.
     fallback_segments : `tuple`\[`int`, ...\]
         Always empty.
     """
 
     circuit: stim.Circuit
     checks: tuple[CheckMapping, ...]
+    foliation_circuit: stim.Circuit
+    eliminated_qubits: tuple[int, ...] = ()
     fallback_segments: tuple[int, ...] = ()
 
 
@@ -157,10 +169,11 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
 
     A pending Clifford circuit ``U`` is commuted through every Pauli
     measurement by replacing ``P`` with ``U† P U``. The unchanged ``U`` is
-    then emitted at a deterministic barrier: a reset, measure-reset,
-    measurement-record-controlled gate, or circuit exit. Measurement order,
-    record indices, detector/observable annotations, and post-measurement
-    states are preserved exactly.
+    then emitted at a deterministic barrier: a reset,
+    measurement-record-controlled gate, or circuit exit. At a measure-reset,
+    an exactly equivalent reduced MPP/reset channel may absorb ``U`` instead.
+    Measurement order, record indices, detector/observable annotations, and
+    post-measurement states are preserved exactly.
 
     If a direct source measurement's pulled product contains the same Pauli
     on its source qubit as the most recent reset prepared, that factor is
@@ -201,7 +214,10 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
     for instruction in iter_instructions(flattened):
         rewriter.process(instruction)
     result = rewriter.finish()
-    if result.circuit.num_measurements != flattened.num_measurements:
+    if (
+        result.circuit.num_measurements != flattened.num_measurements
+        or result.foliation_circuit.num_measurements != flattened.num_measurements
+    ):
         msg = "MPP rewrite changed the measurement count; this is a bug."
         raise RuntimeError(msg)
     return result
@@ -220,6 +236,7 @@ class _PendingCliffordRewriter:
         self._measurement_index = 0
         self._segment_index = 0
         self._bounds = _SegmentBounds()
+        self._contracted_source_qubits: set[int] = set()
 
     def process(self, instruction: stim.CircuitInstruction) -> None:
         """Consume one flattened source instruction."""
@@ -248,7 +265,16 @@ class _PendingCliffordRewriter:
             Completed exact rewrite.
         """
         self._flush_pending()
-        return MppRewriteResult(circuit=self._output, checks=tuple(self._checks))
+        foliation_circuit, eliminated_qubits = _without_idle_contracted_qubits(
+            self._output,
+            self._contracted_source_qubits,
+        )
+        return MppRewriteResult(
+            circuit=self._output,
+            checks=tuple(self._checks),
+            foliation_circuit=foliation_circuit,
+            eliminated_qubits=eliminated_qubits,
+        )
 
     def _process_reset(self, instruction: stim.CircuitInstruction) -> None:
         self._flush_pending()
@@ -279,9 +305,11 @@ class _PendingCliffordRewriter:
             msg = f"Noisy measurement {instruction.name} with arguments is not supported."
             raise UnsupportedSyndromeCircuitError(msg)
         sources = _measurement_observables(instruction, self._num_qubits)
+        pulled_products: list[stim.PauliString] = []
         products: list[stim.PauliString] = []
         for source in sources:
             source_product = self._pull(source.observable)
+            pulled_products.append(source_product)
             products.append(self._substitute_source_reset(source_product, source.source_qubit))
             # Targets within one measurement instruction still produce
             # records in sequence. An earlier anticommuting product can
@@ -291,6 +319,11 @@ class _PendingCliffordRewriter:
 
         is_measure_reset = instruction.name in _MEASURE_RESET_BASES
         trivial = all(product == source.observable for product, source in zip(products, sources, strict=True))
+        contracts_pending = (
+            is_measure_reset
+            and any(product != pulled for product, pulled in zip(products, pulled_products, strict=True))
+            and self._measure_reset_contraction_is_exact(instruction, products)
+        )
         if is_measure_reset and len(self._pending) == 0 and trivial:
             self._output.append(instruction)
             self._set_measure_reset_preparations(instruction)
@@ -305,7 +338,15 @@ class _PendingCliffordRewriter:
             _append_products(self._output, products, tag=instruction.tag)
 
         if is_measure_reset:
-            self._flush_pending()
+            if contracts_pending:
+                self._contracted_source_qubits.update(
+                    source.source_qubit
+                    for source, product, pulled in zip(sources, products, pulled_products, strict=True)
+                    if source.source_qubit is not None and product != pulled
+                )
+                self._discard_pending()
+            else:
+                self._flush_pending()
             reset_gate = _MEASURE_RESET_GATES[instruction.name]
             qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
             self._output.append(reset_gate, qubits, [], tag=instruction.tag)
@@ -375,6 +416,47 @@ class _PendingCliffordRewriter:
         for qubit in invalidated:
             self._prepared.pop(qubit, None)
 
+    def _measure_reset_contraction_is_exact(
+        self,
+        instruction: stim.CircuitInstruction,
+        products: Sequence[stim.PauliString],
+    ) -> bool:
+        """Return whether reset lets the reduced MPP absorb the pending body.
+
+        Prepared single-qubit stabilizers are materialized at the start of both
+        comparison circuits. The source side then applies the exact pending
+        Clifford and measure-reset; the candidate side applies the reduced
+        products and the same reset. Equal canonical flow bases certify the
+        complete record-and-quantum channel at this reset boundary.
+
+        Returns
+        -------
+        `bool`
+            Whether the pending body can be discarded exactly.
+        """
+        if len(self._pending) == 0:
+            return False
+        source = stim.Circuit()
+        candidate = stim.Circuit()
+        for basis in ("X", "Y", "Z"):
+            qubits = sorted(qubit for qubit, prepared_basis in self._prepared.items() if prepared_basis == basis)
+            if qubits:
+                reset_gate = _RESET_GATE_BY_BASIS[basis]
+                source.append(reset_gate, qubits)
+                candidate.append(reset_gate, qubits)
+        source += self._pending
+        source.append(instruction)
+        _append_products(candidate, products, tag=instruction.tag)
+        reset_gate = _MEASURE_RESET_GATES[instruction.name]
+        qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
+        candidate.append(reset_gate, qubits, [], tag=instruction.tag)
+        return bool(source.flow_generators() == candidate.flow_generators())
+
+    def _discard_pending(self) -> None:
+        """Drop a pending body certified redundant at a reset boundary."""
+        self._pending = stim.Circuit()
+        self._pending_touched.clear()
+
     def _flush_pending(self) -> None:
         if len(self._pending) == 0:
             return
@@ -400,6 +482,42 @@ def _append_products(output: stim.Circuit, products: Sequence[stim.PauliString],
             output.append("MPP", targets, [], tag=tag)
         else:
             output.append("MPAD", [int(product.sign == -1)], [], tag=tag)
+
+
+def _without_idle_contracted_qubits(
+    circuit: stim.Circuit,
+    contracted_source_qubits: set[int],
+) -> tuple[stim.Circuit, tuple[int, ...]]:
+    r"""Remove reset-only source ancillas replaced by Foliation MPP ancillas.
+
+    Returns
+    -------
+    `tuple`\[``stim.Circuit``, `tuple`\[`int`, ...\]\]
+        Import-oriented circuit and the source qubits omitted from it.
+    """
+    if not contracted_source_qubits:
+        return circuit.copy(), ()
+    retained_use: set[int] = set()
+    for instruction in iter_instructions(circuit):
+        if instruction.name not in _RESET_BASES and instruction.name != "QUBIT_COORDS":
+            retained_use.update(_instruction_qubits(instruction))
+    eliminated = contracted_source_qubits - retained_use
+    if not eliminated:
+        return circuit.copy(), ()
+
+    result = stim.Circuit()
+    for instruction in iter_instructions(circuit):
+        if instruction.name in _RESET_BASES or instruction.name == "QUBIT_COORDS":
+            targets = [
+                target
+                for target in instruction.targets_copy()
+                if _plain_qubit(target, instruction.name) not in eliminated
+            ]
+            if targets:
+                result.append(instruction.name, targets, instruction.gate_args_copy(), tag=instruction.tag)
+        else:
+            result.append(instruction)
+    return result, tuple(sorted(eliminated))
 
 
 def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
