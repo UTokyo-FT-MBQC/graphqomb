@@ -19,7 +19,6 @@ This module provides:
 - `MppRewriteResult`: Rewritten circuit with its per-measurement Pauli products.
 - `CheckMapping`: Mapping from one measurement record to its Pauli product.
 - `UnsupportedSyndromeCircuitError`: Error for unsupported syndrome circuits.
-- `MppRewriteVerificationError`: Retained for API compatibility; no longer raised.
 """
 
 from __future__ import annotations
@@ -66,10 +65,6 @@ _MINUS_PHASE = 2
 
 class UnsupportedSyndromeCircuitError(ValueError):
     """Raised when a circuit is outside the supported syndrome-extraction form."""
-
-
-class MppRewriteVerificationError(ValueError):
-    """Retained for API compatibility; the rewrite is validated constructively and no longer raises this."""
 
 
 @dataclass(frozen=True)
@@ -581,8 +576,11 @@ def _rewrite_pass(
         verbatim = segment.index in forced_verbatim or (fallback == "segment" and segment.blocked_message is not None)
         if not verbatim and segment.blocked_message is not None:
             raise UnsupportedSyndromeCircuitError(segment.blocked_message)
-        analyzed: _SegmentRewrite | _Conflict | None = None
-        if not verbatim:
+        completed: _SegmentRewrite | _Conflict
+        if verbatim:
+            fallback_segments.append(segment.index)
+            completed = _emit_verbatim(segment, prepared=prepared, dirty=dirty, measurement_index=measurement_index)
+        else:
             analyzed = _analyze_segment(
                 segment,
                 num_qubits,
@@ -594,26 +592,19 @@ def _rewrite_pass(
             if analyzed is None:
                 if fallback == "circuit":
                     return None
-                verbatim = True
-        if verbatim:
-            fallback_segments.append(segment.index)
-            analyzed = _emit_verbatim(
-                segment,
-                prepared=prepared,
-                dirty=dirty,
-                measurement_index=measurement_index,
-            )
-        if isinstance(analyzed, _Conflict):
+                fallback_segments.append(segment.index)
+                completed = _emit_verbatim(segment, prepared=prepared, dirty=dirty, measurement_index=measurement_index)
+            else:
+                completed = analyzed
+        if isinstance(completed, _Conflict):
             if fallback == "circuit":
-                raise UnsupportedSyndromeCircuitError(analyzed.message)
-            return analyzed
-        if analyzed is None:  # pragma: no cover - one branch above always assigns
-            continue
-        output += analyzed.circuit
-        checks.extend(analyzed.checks)
-        prepared = analyzed.exit_prepared
-        dirty = analyzed.exit_dirty
-        measurement_index = analyzed.exit_measurement_index
+                raise UnsupportedSyndromeCircuitError(completed.message)
+            return completed
+        output += completed.circuit
+        checks.extend(completed.checks)
+        prepared = completed.exit_prepared
+        dirty = completed.exit_dirty
+        measurement_index = completed.exit_measurement_index
     return MppRewriteResult(circuit=output, checks=tuple(checks), fallback_segments=tuple(fallback_segments))
 
 
@@ -1304,17 +1295,9 @@ def _remap_tableau_circuit(tableau: stim.Tableau, qubits: Sequence[int]) -> stim
     -------
     ``stim.Circuit``
         Synthesized Clifford circuit on qubits.
-
-    Raises
-    ------
-    TypeError
-        If Stim unexpectedly synthesizes a repeat block.
     """
     result = stim.Circuit()
-    for instruction in tableau.to_circuit(method="elimination"):
-        if isinstance(instruction, stim.CircuitRepeatBlock):  # pragma: no cover - synthesis emits no repeats
-            msg = "Stim unexpectedly synthesized a REPEAT block for the residual Clifford frame."
-            raise TypeError(msg)
+    for instruction in iter_instructions(tableau.to_circuit(method="elimination")):
         targets = [qubits[_plain_qubit(target, instruction.name)] for target in instruction.targets_copy()]
         result.append(instruction.name, targets, instruction.gate_args_copy(), tag=instruction.tag)
     return result

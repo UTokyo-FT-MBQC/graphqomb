@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **MPP rewriter validated constructively**: `rewrite_to_mpp` now pulls measurement products and residual Clifford frames out of an in-house sparse F2 symplectic tableau of each segment body, applying ancilla substitution and the residual frame only when their algebraic preconditions hold. This replaces the mirrored-circuit `flow_generators` verification and the flow-matching local-frame search, and takes Stim off the analysis path (surface-code memory d=9 r=9: 0.26 s → 0.18 s). `MppRewriteVerificationError` is retained but no longer raised; residual frames that were only representable through the flow-matching search now fall back gate-level.
+- **MPP rewriter validated constructively**: `rewrite_to_mpp` now pulls measurement products and residual Clifford frames out of an in-house sparse F2 symplectic tableau of each segment body, applying ancilla substitution and the residual frame only when their algebraic preconditions hold. This replaces the mirrored-circuit `flow_generators` verification and the flow-matching local-frame search, and takes Stim off the analysis path (surface-code memory d=9 r=9: 0.26 s → 0.18 s). `MppRewriteVerificationError` is removed; residual frames that were only representable through the flow-matching search now fall back gate-level.
 
 ### Added
 
