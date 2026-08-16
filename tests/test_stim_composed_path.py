@@ -112,10 +112,10 @@ def test_rewrite_output_imports_like_the_source(source: stim.Circuit, fallback: 
         assert _uncoordinated_node_count(direct) == 0
 
 
-def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None:
-    # The rewritten producer of a deterministic-1 record must stay a real
-    # measurement (a signed MPP here, never MPAD 1, which the importer
-    # rejects), so the verbatim feedback segment consuming it still fires.
+def test_feedback_barrier_on_deterministic_one_record_imports() -> None:
+    # The rewritten producer of a deterministic-1 record stays a real signed
+    # measurement (never MPAD 1, which the importer rejects). The pending
+    # Clifford is flushed before the feedback instruction, so it still fires.
     source = stim.Circuit(
         """
         QUBIT_COORDS(0, 0) 0
@@ -131,7 +131,7 @@ def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None
 
     rewritten = rewrite_to_mpp(source, fallback="segment")
 
-    assert rewritten.fallback_segments == (1,)
+    assert rewritten.fallback_segments == ()
     composed = stim_circuit_to_pattern(rewritten.circuit)
     compiled = stim.Circuit(stim_compile(composed.pattern))
 

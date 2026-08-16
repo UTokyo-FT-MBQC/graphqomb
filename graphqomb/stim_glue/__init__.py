@@ -17,7 +17,7 @@ This package provides:
 - `rewrite_to_mpp`: Function to rewrite a syndrome-extraction circuit into MPP form.
 - `MppRewriteResult`: Rewritten circuit with its per-measurement Pauli products.
 - `CheckMapping`: Mapping from one measurement record to its Pauli product.
-- `MppRewriteVerificationError`: Error for a failed segment verification.
+- `MppRewriteVerificationError`: Legacy compatibility error retained by the exact rewriter.
 - `UnsupportedSyndromeCircuitError`: Error for unsupported syndrome circuits.
 - `stabilizer_code_from_stim_text`: Function to build a stabilizer code from Stim MPP text.
 - `stabilizer_code_from_stim_file`: Function to build a stabilizer code from a Stim file.

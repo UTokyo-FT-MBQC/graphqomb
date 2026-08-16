@@ -7,33 +7,65 @@ Install the optional Stim integration before importing this module:
 
    uv add "graphqomb[stim]"
 
-The rewriter recognizes the standard syndrome-extraction shape — reset
-ancillas, apply Clifford unitaries, measure ancillas — and replaces each
-gate-level extraction block with ``MPP`` instructions measuring the inferred
-data Pauli products. The inference conjugates each measurement Pauli backwards
-through the block's Clifford body (``stim.PauliString.before``) and
-substitutes ``+1`` for stabilizers of freshly initialized, measured-out
-ancillas.
+The rewriter exposes the Pauli products measured by Clifford syndrome
+extraction without deleting or approximating the extraction circuit. For a
+Clifford body ``U`` and Pauli measurement ``P``, it uses the exact instrument
+identity
 
-Each source measurement maps to exactly one measurement record in the
-rewritten circuit, so ``DETECTOR`` and ``OBSERVABLE_INCLUDE`` annotations are
-copied verbatim and keep their relative record indices. ``MR`` splits into an
-``MPP`` product followed by a reset. ``REPEAT`` blocks are flattened first,
-which bakes ``SHIFT_COORDS`` offsets into detector coordinates.
+.. math::
 
-A segment ends when a unitary follows its measurements, or when a measurement
-follows a reset issued after those measurements (including the implicit reset
-of ``MR``). Trailing data measurements — such as the final transversal
-readout of ``stim.Circuit.generated`` memory circuits — therefore start a
-fresh segment with an empty Clifford body and pass through verbatim instead
-of dragging reset-ancilla Pauli factors into their products.
+   \Pi_m(P) U = U \Pi_m(U^\dagger P U).
 
-Existing ``MPP`` products pass through verbatim, including valid repeated
-factors such as ``X0*X1*X0``. Their sidecar mapping contains the reduced Pauli
-product. When initialized-ancilla substitution reduces an inferred product to
-``+I`` or ``-I``, the rewrite emits ``MPAD 0`` or ``MPAD 1`` respectively so
-the deterministic measurement record is preserved. Inverted source targets
-such as ``M !4`` produce signed ``MPP`` products.
+Clifford instructions accumulate in a pending frame. At a source Pauli
+measurement, the rewriter emits the pulled product ``U† P U`` and leaves the
+unchanged frame behind that measurement. A reset, measure-reset,
+measurement-record-controlled gate, or circuit exit materializes the pending
+frame. This is one deterministic path: there is no verification retry or
+gate-level fallback, and measurement post-states are preserved exactly.
+
+Reset stabilizer substitution
+-----------------------------
+
+When a source direct measurement's pulled product contains the same Pauli on
+that source qubit as its most recent reset preparation, that factor has known
+eigenvalue ``+1`` and is removed. Only the directly measured source qubit is
+eligible; reset data-qubit factors remain in the product. Standard check
+gadgets therefore expose a data-only ``MPP``:
+
+.. code-block:: text
+
+   R 4                       R 4
+   CX 0 4 1 4       ->       MPP Z0*Z1
+   M 4                       CX 0 4 1 4
+
+The trailing Clifford body is intentional. Applying it after the pulled
+measurement makes the transformed circuit exactly equivalent to the source,
+including the measurement record and post-measurement quantum state. A factor
+that does not match the reset basis is retained. For example,
+``RX 2; CZ 0 2; S 2; MX 2`` becomes
+``RX 2; MPP !Z0*Y2; CZ 0 2; S 2``.
+
+Factors are considered in measurement-record order. An earlier product that
+anticommutes with a stored reset stabilizer invalidates it before later
+products are simplified. A negative identity is kept as a real signed
+measurement rather than emitted as ``MPAD 1``, which the GraphQOMB importer
+does not support.
+
+Barriers and annotations
+------------------------
+
+``MR``, ``MRX``, and ``MRY`` are split only when needed: the pulled
+measurement is emitted, the exact pending frame follows, and then the reset is
+applied. Classical record feedback is copied verbatim after materializing the
+frame. Sweep-bit controls, circuit-level noise, and noisy measurement
+arguments are rejected. ``DETECTOR``, ``OBSERVABLE_INCLUDE``, tags, and qubit
+coordinates are copied while retaining their measurement-record indices.
+``REPEAT`` blocks are flattened first.
+
+The historical ``fallback`` argument and ``fallback_segments`` result field
+remain for API compatibility. ``fallback="circuit"`` and
+``fallback="segment"`` select the same exact pipeline, and
+``fallback_segments`` is always empty.
 
 .. code-block:: python
 
@@ -42,48 +74,11 @@ such as ``M !4`` produce signed ``MPP`` products.
    result = rewrite_to_mpp(
        """
        R 4
-       H 4
-       CX 4 0 4 1 4 2 4 3
-       H 4
+       CX 0 4 1 4
        M 4
        """
    )
-   assert str(result.circuit).strip() == "R 4\nMPP X0*X1*X2*X3"
-
-The rewrite is structural: circuit-level noise instructions are rejected
-instead of being folded into ``MPP`` arguments, classical feedback cannot be
-rewritten (it is rejected under ``fallback="circuit"`` and passes through
-gate-level under ``fallback="segment"``), and optimized rewrites leave
-measured-out ancillas in their reset state rather than the measurement
-outcome's eigenstate. The optimized path preserves any residual Clifford frame
-on surviving qubits. It discards the original gate schedule, so hook-fault
-analysis must rely on the returned
-:class:`graphqomb.stim_glue.mpp_rewriter.CheckMapping` sidecar and the source
-circuit.
-
-Every rewritten segment is verified against its source segment by
-cross-checking stabilizer-flow generators (with resets appended to measured-out
-ancillas in both copies). If initialized-ancilla substitution cannot preserve
-the segment, the rewriter retries with the exact pulled-back products. If the
-result still cannot be represented and verified as ``MPP`` measurements plus a
-residual Clifford frame, it returns the flattened source circuit unchanged, so
-gate order, ``QUBIT_COORDS``, and measurement-record annotations are all
-preserved. Reset-based qubit reuse in the fallback output is handled natively
-by the Stim importer, which starts a fresh wire per reset lifetime.
-
-``fallback="segment"`` narrows that fallback to the failing segments: they are
-emitted gate-level in place while every other segment is still rewritten, and
-:attr:`graphqomb.stim_glue.mpp_rewriter.MppRewriteResult.fallback_segments`
-lists them. In this mode segments that reuse a measurement post-state without
-a reset or apply measurement-record feedback also stay gate-level instead of
-raising, a segment whose post-state a later segment consumes is forced
-gate-level as well (a rewritten segment does not preserve measured-out
-post-states), and a deterministic-minus record stays a real signed measurement
-because the Stim importer does not accept ``MPAD 1``.
-
-The cross-check is not an optional assertion: it is the decision procedure that
-picks between the optimized rewrite, the unsubstituted retry, and the
-gate-level fallback, so it always runs.
+   assert str(result.checks[0].product) == "+ZZ___"
 
 API reference
 -------------
