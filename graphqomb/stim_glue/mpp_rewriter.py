@@ -1377,7 +1377,8 @@ def _mpp_observable(group: Sequence[stim.GateTarget], num_qubits: int) -> _Sourc
         if pauli not in Axis.__members__:
             msg = f"MPP contains a non-Pauli target on qubit {qubit}."
             raise UnsupportedSyndromeCircuitError(msg)
-        factor = stim.PauliString({qubit: _pauli_code(Axis[pauli])})
+        factor = stim.PauliString(num_qubits)
+        factor[qubit] = _pauli_code(Axis[pauli])
         if target.is_inverted_result_target:
             factor.sign = -1
         observable *= factor
