@@ -7,6 +7,7 @@ This module provides:
 - `LocalCliffordExpansion`: Local Clifford expansion.
 - `ExpansionMaps`: Expansion maps for local clifford operators.
 - `compose`: Function to compose two graph states sequentially.
+- `compose_into`: In-place variant of `compose` that mutates the first graph.
 - `bipartite_edges`: Function to create a complete bipartite graph between two sets of nodes.
 - `odd_neighbors`: Function to get odd neighbors of a node.
 - `unmeasured_output_nodes`: Function to get output nodes without a measurement basis.
@@ -605,6 +606,30 @@ class GraphState(BaseGraphState):
             raise ValueError(msg)
         self.__output_node_indices[node] = q_index
 
+    def unregister_output(self, node: int) -> None:
+        """Remove the node's output registration, keeping the node itself.
+
+        The node stays in the graph with its edges, coordinate, and any
+        measurement basis; only the output marking (and its qubit index) is
+        dropped. `compose_into` uses this to consume the boundary outputs it
+        connects a following graph onto.
+
+        Parameters
+        ----------
+        node : `int`
+            node index
+
+        Raises
+        ------
+        ValueError
+            If the node is not registered as an output node.
+        """
+        self._ensure_node_exists(node)
+        if node not in self.__output_node_indices:
+            msg = "The node is not registered as an output node."
+            raise ValueError(msg)
+        del self.__output_node_indices[node]
+
     @typing_extensions.override
     def assign_meas_basis(self, node: int, meas_basis: MeasBasis) -> None:
         """Set the measurement basis of the node.
@@ -1021,6 +1046,9 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
 
     Qubits with matching indices are automatically connected. Graph2 is connected after graph1.
     All other qubit indices are preserved from their original graphs.
+    Validation is shared with `compose_into`: ``_composition_connection_targets``
+    raises ``ValueError`` for non-canonical graphs, qindex conflicts, and
+    connections through measured outputs.
 
     Parameters
     ----------
@@ -1033,44 +1061,8 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
     -------
     `tuple`\[`GraphState`, `dict`\[`int`, `int`\], `dict`\[`int`, `int`\]\]
         composed graph state, node map for graph1, node map for graph2
-
-    Raises
-    ------
-    ValueError
-        1. If the graph states are not in canonical form.
-        2. If there are qindex conflicts (same qindex used in both graphs but not for connection).
-        3. If a connected qindex refers to a measured output of graph1.
     """
-    graph1.check_canonical_form()
-    graph2.check_canonical_form()
-
-    # Automatically detect connection targets: qindices that appear in both graphs
-    output_q_indices1 = set(graph1.output_node_indices.values())
-    input_q_indices2 = set(graph2.input_node_indices.values())
-    target_q_indices = output_q_indices1 & input_q_indices2
-
-    # Check for qindex conflicts: qindices used in both graphs but not for connection
-    all_q_indices1 = set(graph1.input_node_indices.values()) | output_q_indices1
-    all_q_indices2 = input_q_indices2 | set(graph2.output_node_indices.values())
-    conflicting_q_indices = (all_q_indices1 & all_q_indices2) - target_q_indices
-
-    if conflicting_q_indices:
-        msg = (
-            f"Qindex conflicts detected: {conflicting_q_indices}. "
-            "These indices are used in both graphs but cannot be connected."
-        )
-        raise ValueError(msg)
-
-    # A measured output is a projective readout: the wire is consumed and
-    # cannot be continued by a following graph.
-    measured_connection_q_indices = sorted(
-        q_index
-        for node, q_index in graph1.output_node_indices.items()
-        if q_index in target_q_indices and node in graph1.meas_bases
-    )
-    if measured_connection_q_indices:
-        msg = f"Cannot compose through measured output qubit indices: {measured_connection_q_indices}."
-        raise ValueError(msg)
+    target_q_indices = _composition_connection_targets(graph1, graph2)
 
     composed_graph = GraphState()
 
@@ -1136,6 +1128,160 @@ def compose(  # ruff:ignore[complex-structure, too-many-branches]
             composed_graph.set_coordinate(node_map2[node], coord)
 
     return composed_graph, node_map1, node_map2
+
+
+def _composition_connection_targets(graph1: BaseGraphState, graph2: BaseGraphState) -> set[int]:
+    r"""Validate a sequential composition and return the connected qubit indices.
+
+    Shared by `compose` and `compose_into`: checks canonical form, detects the
+    qindices connecting graph1 outputs to graph2 inputs, and rejects qindex
+    conflicts and connections through measured outputs.
+
+    Returns
+    -------
+    `set`\[`int`\]
+        Qubit indices connecting graph1 outputs to graph2 inputs.
+
+    Raises
+    ------
+    ValueError
+        1. If the graph states are not in canonical form.
+        2. If there are qindex conflicts (same qindex used in both graphs but not for connection).
+        3. If a connected qindex refers to a measured output of graph1.
+    """
+    graph1.check_canonical_form()
+    graph2.check_canonical_form()
+
+    # Automatically detect connection targets: qindices that appear in both graphs
+    output_q_indices1 = set(graph1.output_node_indices.values())
+    input_q_indices2 = set(graph2.input_node_indices.values())
+    target_q_indices = output_q_indices1 & input_q_indices2
+
+    # Check for qindex conflicts: qindices used in both graphs but not for connection
+    all_q_indices1 = set(graph1.input_node_indices.values()) | output_q_indices1
+    all_q_indices2 = input_q_indices2 | set(graph2.output_node_indices.values())
+    conflicting_q_indices = (all_q_indices1 & all_q_indices2) - target_q_indices
+
+    if conflicting_q_indices:
+        msg = (
+            f"Qindex conflicts detected: {conflicting_q_indices}. "
+            "These indices are used in both graphs but cannot be connected."
+        )
+        raise ValueError(msg)
+
+    # A measured output is a projective readout: the wire is consumed and
+    # cannot be continued by a following graph.
+    measured_connection_q_indices = sorted(
+        q_index
+        for node, q_index in graph1.output_node_indices.items()
+        if q_index in target_q_indices and node in graph1.meas_bases
+    )
+    if measured_connection_q_indices:
+        msg = f"Cannot compose through measured output qubit indices: {measured_connection_q_indices}."
+        raise ValueError(msg)
+
+    return target_q_indices
+
+
+def compose_into(graph1: GraphState, graph2: BaseGraphState) -> dict[int, int]:
+    r"""Compose ``graph2`` into ``graph1`` in place.
+
+    Sequential composition with the same connection rule and validation as
+    `compose`, but ``graph1`` is mutated instead of copied: each ``graph1``
+    output whose qubit index matches a ``graph2`` input becomes the connected
+    node itself (its output registration is consumed, and it takes the
+    ``graph2`` input's measurement basis and coordinate when present), and the
+    remaining ``graph2`` nodes are appended with fresh indices. ``graph1``
+    node indices are therefore stable across the call, so a caller folding
+    many graphs needs no remapping on the accumulated side — this is the
+    linear-time replacement for repeated `compose` folds, whose per-step full
+    copy is quadratic in total.
+
+    The composed result is equivalent to `compose` up to node relabeling;
+    only the node numbering differs.
+
+    Parameters
+    ----------
+    graph1 : `GraphState`
+        graph state to extend; mutated in place
+    graph2 : `BaseGraphState`
+        graph state appended after ``graph1``; not modified
+
+    Returns
+    -------
+    `dict`\[`int`, `int`\]
+        Node map from ``graph2`` node indices to their indices in ``graph1``.
+        (``graph1`` nodes keep their indices, so no map is returned for them.)
+    """
+    target_q_indices = _composition_connection_targets(graph1, graph2)
+
+    input_node_indices2 = graph2.input_node_indices
+    meas_bases2 = graph2.meas_bases
+    coordinates2 = graph2.coordinates
+
+    node_map2 = _consume_boundary_outputs(graph1, graph2, target_q_indices)
+
+    # Append the remaining graph2 nodes with fresh indices.
+    for node in graph2.nodes:
+        if node in node_map2:
+            continue
+        new_node = graph1.add_node(coordinate=coordinates2.get(node))
+        meas_basis = meas_bases2.get(node)
+        if meas_basis is not None:
+            graph1.assign_meas_basis(new_node, meas_basis)
+        node_map2[node] = new_node
+
+    for node1, node2 in graph2.edges:
+        graph1.add_edge(node_map2[node1], node_map2[node2])
+
+    input_initializations2 = graph2.input_initializations
+    for input_node, q_index in input_node_indices2.items():
+        if q_index not in target_q_indices:
+            graph1.register_input(
+                node_map2[input_node],
+                q_index,
+                init=input_initializations2.get(input_node),
+            )
+
+    for output_node, q_index in graph2.output_node_indices.items():
+        graph1.register_output(node_map2[output_node], q_index)
+
+    return node_map2
+
+
+def _consume_boundary_outputs(
+    graph1: GraphState,
+    graph2: BaseGraphState,
+    target_q_indices: AbstractSet[int],
+) -> dict[int, int]:
+    r"""Turn each connected ``graph1`` boundary output into ``graph2``'s input node.
+
+    The output registration is consumed, and the boundary node takes over the
+    connected input's measurement basis and coordinate when present.
+
+    Returns
+    -------
+    `dict`\[`int`, `int`\]
+        Node map from each connected ``graph2`` input to its ``graph1`` node.
+    """
+    output_node_by_q_index = {q_index: node for node, q_index in graph1.output_node_indices.items()}
+    meas_bases2 = graph2.meas_bases
+    coordinates2 = graph2.coordinates
+
+    node_map2: dict[int, int] = {}
+    for input_node, q_index in graph2.input_node_indices.items():
+        if q_index not in target_q_indices:
+            continue
+        boundary_node = output_node_by_q_index[q_index]
+        graph1.unregister_output(boundary_node)
+        node_map2[input_node] = boundary_node
+        meas_basis = meas_bases2.get(input_node)
+        if meas_basis is not None:
+            graph1.assign_meas_basis(boundary_node, meas_basis)
+        coordinate = coordinates2.get(input_node)
+        if coordinate is not None:
+            graph1.set_coordinate(boundary_node, coordinate)
+    return node_map2
 
 
 def _copy_nodes(

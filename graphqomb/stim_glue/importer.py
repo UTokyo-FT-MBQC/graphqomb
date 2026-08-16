@@ -21,7 +21,7 @@ import stim
 from graphqomb.circuit import Circuit, CircuitScheduleStrategy, circuit2graph
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
 from graphqomb.gates import CZ, J
-from graphqomb.graphstate import GraphState, compose, odd_neighbors
+from graphqomb.graphstate import GraphState, compose_into, odd_neighbors
 from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
 from graphqomb.qompiler import qompile
 from graphqomb.scheduler import Scheduler
@@ -1686,40 +1686,55 @@ def _mpp_flow(
 
 
 def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
-    current = fragments[0]
+    """Fold the fragments left to right into one fragment.
+
+    `compose_into` mutates the accumulated graph and keeps its node indices
+    stable, so only each incoming fragment's small state is remapped; the
+    accumulated flows, record nodes, and feedback targets are extended in
+    place. The whole fold is therefore linear in the total fragment size,
+    where a `graphqomb.graphstate.compose` fold would re-copy the accumulated
+    graph on every step.
+
+    Returns
+    -------
+    `_Fragment`
+        The composed fragment. Its graph is ``fragments[0].graph``, mutated.
+    """
+    first = fragments[0]
+    graph = first.graph
+    xflow = {node: set(targets) for node, targets in first.xflow.items()}
+    zflow = {node: set(targets) for node, targets in first.zflow.items()}
+    record_nodes = dict(first.record_nodes)
+    feedback_targets = list(first.feedback_targets)
+    mpp_extractions = list(first.mpp_extractions)
+
     for fragment in fragments[1:]:
-        graph, node_map1, node_map2 = compose(current.graph, fragment.graph)
-        current = _Fragment(
-            graph=graph,
-            xflow=_merge_flows(_remap_flow(current.xflow, node_map1), _remap_flow(fragment.xflow, node_map2)),
-            record_nodes=_remap_record_nodes(current.record_nodes, node_map1)
-            | _remap_record_nodes(fragment.record_nodes, node_map2),
-            feedback_targets=(
-                *_remap_feedback_targets(current.feedback_targets, node_map1),
-                *_capture_feedback_targets(fragment.feedback_targets, node_map2, graph),
-            ),
-            mpp_extractions=(*current.mpp_extractions, *fragment.mpp_extractions),
-            zflow=_merge_flows(_remap_flow(current.zflow, node_map1), _remap_flow(fragment.zflow, node_map2)),
-        )
-    return current
+        node_map2 = compose_into(graph, fragment.graph)
+        _merge_flow_into(xflow, _remap_flow(fragment.xflow, node_map2))
+        _merge_flow_into(zflow, _remap_flow(fragment.zflow, node_map2))
+        record_nodes.update(_remap_record_nodes(fragment.record_nodes, node_map2))
+        feedback_targets.extend(_capture_feedback_targets(fragment.feedback_targets, node_map2, graph))
+        mpp_extractions.extend(fragment.mpp_extractions)
+
+    return _Fragment(
+        graph=graph,
+        xflow=xflow,
+        record_nodes=record_nodes,
+        feedback_targets=tuple(feedback_targets),
+        mpp_extractions=tuple(mpp_extractions),
+        zflow=zflow,
+    )
 
 
-def _merge_flows(flow1: Mapping[int, set[int]], flow2: Mapping[int, set[int]]) -> dict[int, set[int]]:
-    r"""Combine two correction flows by XOR-ing target sets that share a source.
+def _merge_flow_into(flow: dict[int, set[int]], incoming: Mapping[int, set[int]]) -> None:
+    """XOR the incoming correction flow into ``flow`` in place.
 
     Flow sources are measured nodes private to one fragment, so today the two
     maps never collide; XOR keeps a future collision Pauli-correct instead of
     silently dropping one side, as a plain dict union would.
-
-    Returns
-    -------
-    `dict`\[`int`, `set`\[`int`\]\]
-        Merged flow.
     """
-    merged = {node: set(targets) for node, targets in flow1.items()}
-    for node, targets in flow2.items():
-        merged.setdefault(node, set()).symmetric_difference_update(targets)
-    return merged
+    for node, targets in incoming.items():
+        flow.setdefault(node, set()).symmetric_difference_update(targets)
 
 
 def _apply_single_measurements(
@@ -1828,21 +1843,6 @@ def _remap_flow(flow: Mapping[int, set[int]], node_map: Mapping[int, int]) -> di
 
 def _remap_record_nodes(record_nodes: Mapping[int, int], node_map: Mapping[int, int]) -> dict[int, int]:
     return {record_index: node_map[node] for record_index, node in record_nodes.items()}
-
-
-def _remap_feedback_targets(
-    feedback_targets: Sequence[_FeedbackTarget],
-    node_map: Mapping[int, int],
-) -> tuple[_FeedbackTarget, ...]:
-    return tuple(
-        _FeedbackTarget(
-            record_index=feedback.record_index,
-            node=node_map[feedback.node],
-            axis=feedback.axis,
-            past_neighbors=frozenset(node_map[node] for node in feedback.past_neighbors),
-        )
-        for feedback in feedback_targets
-    )
 
 
 def _capture_feedback_targets(
