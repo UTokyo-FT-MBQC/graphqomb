@@ -208,6 +208,8 @@ unused-ignore-comment = "error"
 
 [tool.pyright]
 include = ["graphqomb", "tests", "examples"]
+reportUnusedFunction = "error"
+reportUnusedClass = "error"
 reportUnknownArgumentType = "information"
 reportUnknownLambdaType = "information"
 reportUnknownMemberType = "information"

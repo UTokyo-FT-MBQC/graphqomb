@@ -127,19 +127,6 @@ class _Pauli:
     phase: int
 
 
-def _pauli_mul(left: _Pauli, right: _Pauli) -> _Pauli:
-    """Multiply two Pauli operators in the ``i**phase · X^x Z^z`` convention.
-
-    Returns
-    -------
-    `_Pauli`
-        The product ``left * right``.
-    """
-    half = left.bits.shape[0] // 2
-    cross = int(np.count_nonzero(left.bits[half:] & right.bits[:half])) & 1
-    return _Pauli(bits=left.bits ^ right.bits, phase=(left.phase + right.phase + 2 * cross) % 4)
-
-
 def _pauli_from_stim(pauli: stim.PauliString) -> _Pauli:
     """Convert a Stim Pauli string into component form.
 
