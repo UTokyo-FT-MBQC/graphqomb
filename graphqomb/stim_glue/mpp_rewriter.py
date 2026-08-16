@@ -25,8 +25,10 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import stim
 
+from graphqomb.common import Axis
 from graphqomb.stim_glue._parse import (
     ANNOTATION_GATES,
+    DIRECT_MEASUREMENT_AXES,
     MEASURE_RESET_AXES,
     PAIR_MEASUREMENT_AXES,
     RESET_AXES,
@@ -38,13 +40,7 @@ from graphqomb.stim_glue._parse import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from collections.abc import Set as AbstractSet
-# Pauli bases are spelled as Stim's "X"/"Y"/"Z" letters inside this module.
-_RESET_BASES = {name: axis.name for name, axis in RESET_AXES.items()}
-_SINGLE_MEASUREMENT_BASES = {name: axis.name for name, axis in SINGLE_MEASUREMENT_AXES.items()}
-_MEASURE_RESET_GATES = {name: (axis.name, RESET_GATES[axis]) for name, axis in MEASURE_RESET_AXES.items()}
-_PAIR_MEASUREMENT_BASES = {name: axis.name for name, axis in PAIR_MEASUREMENT_AXES.items()}
-_RESET_GATES_BY_BASIS = {axis.name: gate for axis, gate in RESET_GATES.items()}
-_PAULI_CODES = {"X": 1, "Y": 2, "Z": 3}
+_PAULI_CODES = {Axis.X: 1, Axis.Y: 2, Axis.Z: 3}
 _PAIR_GROUP_SIZE = 2
 
 _InstructionKind = Literal["annotation", "mpad", "reset", "measurement", "unitary"]
@@ -165,7 +161,7 @@ class _SegmentBounds:
             self.seen_late_reset = False
         if kind in {"measurement", "mpad"}:
             self.seen_measurement = True
-            if instruction.name in _MEASURE_RESET_GATES:
+            if instruction.name in MEASURE_RESET_AXES:
                 self.seen_late_reset = True
         elif kind == "reset" and self.seen_measurement:
             self.seen_late_reset = True
@@ -346,14 +342,9 @@ def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
         return "annotation"
     if name == "MPAD":
         return "mpad"
-    if name in _RESET_BASES:
+    if name in RESET_AXES:
         return "reset"
-    if (
-        name == "MPP"
-        or name in _SINGLE_MEASUREMENT_BASES
-        or name in _MEASURE_RESET_GATES
-        or name in _PAIR_MEASUREMENT_BASES
-    ):
+    if name == "MPP" or name in DIRECT_MEASUREMENT_AXES or name in PAIR_MEASUREMENT_AXES:
         return "measurement"
     if stim.gate_data(name).is_unitary:
         return "unitary"
@@ -415,7 +406,7 @@ class _Rewriter:
         self._measurement_index = 0
         self._segment_index = 0
         self._dirty: dict[int, int] = {}
-        self._entry_prepared: dict[int, str] = {}
+        self._entry_prepared: dict[int, Axis] = {}
         self._fallback_segments: list[int] = []
         self._items: list[tuple[stim.CircuitInstruction, _InstructionKind]] = []
         self._bounds = _SegmentBounds()
@@ -535,7 +526,7 @@ class _Segment:
         *,
         num_qubits: int,
         segment_index: int,
-        entry_prepared: dict[int, str],
+        entry_prepared: dict[int, Axis],
         dirty: dict[int, int],
         measurement_index: int,
         substitute_prepared: bool,
@@ -553,7 +544,7 @@ class _Segment:
         self._body = stim.Circuit()
         self._body_touched: set[int] = set()
         self._seen_measurement = False
-        self._late_resets: dict[int, str] = {}
+        self._late_resets: dict[int, Axis] = {}
         self._measured_out: set[int] = set()
         self._measured_any: set[int] = set()
         self._measured_unreset: set[int] = set()
@@ -564,7 +555,7 @@ class _Segment:
         self._conv_verify = stim.Circuit()
         for qubit, basis in sorted(entry_prepared.items()):
             for target_circuit in (self._orig_verify, self._conv_verify):
-                target_circuit.append(_RESET_GATES_BY_BASIS[basis], [qubit])
+                target_circuit.append(RESET_GATES[basis], [qubit])
 
     def process(self, instruction: stim.CircuitInstruction, kind: _InstructionKind) -> None:
         """Rewrite one buffered instruction of this segment."""
@@ -585,7 +576,7 @@ class _Segment:
             if kind != "measurement":
                 continue
             name = instruction.name
-            if name in _SINGLE_MEASUREMENT_BASES or name in _MEASURE_RESET_GATES:
+            if name in DIRECT_MEASUREMENT_AXES:
                 for target in instruction.targets_copy():
                     self._measured_out.add(_plain_qubit(target, name))
 
@@ -610,7 +601,7 @@ class _Segment:
         self._seen_measurement = True
 
     def _process_reset(self, instruction: stim.CircuitInstruction) -> None:
-        basis = _RESET_BASES[instruction.name]
+        basis = RESET_AXES[instruction.name]
         for target in instruction.targets_copy():
             qubit = _plain_qubit(target, instruction.name)
             if self._seen_measurement:
@@ -678,7 +669,7 @@ class _Segment:
             )
             raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_measured[0]])
         self._measured_any |= qubits
-        if instruction.name in _SINGLE_MEASUREMENT_BASES:
+        if instruction.name in SINGLE_MEASUREMENT_AXES:
             self._measured_unreset |= qubits
 
     def _infer_product(self, source: _SourceObservable) -> stim.PauliString:
@@ -708,8 +699,9 @@ class _Segment:
                 target_circuit.append(instruction)
         else:
             self._emit_inferred_products(products, tag=instruction.tag)
-        if instruction.name in _MEASURE_RESET_GATES:
-            basis, reset_gate = _MEASURE_RESET_GATES[instruction.name]
+        if instruction.name in MEASURE_RESET_AXES:
+            basis = MEASURE_RESET_AXES[instruction.name]
+            reset_gate = RESET_GATES[basis]
             qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
             if not trivial:
                 for target_circuit in self._rewrite_targets():
@@ -873,12 +865,12 @@ class _Segment:
                 msg = _verification_message(self._segment_index, flow, "rewritten flow missing from source")
                 raise MppRewriteVerificationError(msg)
 
-    def exit_prepared(self) -> dict[int, str]:
+    def exit_prepared(self) -> dict[int, Axis]:
         r"""Return the prepared-qubit map carried into the next segment.
 
         Returns
         -------
-        `dict`\[`int`, `str`\]
+        `dict`\[`int`, `Axis`\]
             Prepared Pauli bases still valid at the next segment's start.
         """
         carried = {
@@ -922,7 +914,7 @@ class _VerbatimSegment:
         *,
         num_qubits: int,
         segment_index: int,
-        entry_prepared: dict[int, str],
+        entry_prepared: dict[int, Axis],
         dirty: dict[int, int],
         measurement_index: int,
     ) -> None:
@@ -947,7 +939,7 @@ class _VerbatimSegment:
             self._process_measurement(instruction)
 
     def _process_reset(self, instruction: stim.CircuitInstruction) -> None:
-        basis = _RESET_BASES[instruction.name]
+        basis = RESET_AXES[instruction.name]
         for target in instruction.targets_copy():
             qubit = _plain_qubit(target, instruction.name)
             self._prepared[qubit] = basis
@@ -978,8 +970,8 @@ class _VerbatimSegment:
                 )
             )
             self.measurement_index += 1
-        if instruction.name in _MEASURE_RESET_GATES:
-            basis = _MEASURE_RESET_GATES[instruction.name][0]
+        if instruction.name in MEASURE_RESET_AXES:
+            basis = MEASURE_RESET_AXES[instruction.name]
             for qubit in qubits:
                 self._prepared[qubit] = basis
 
@@ -994,12 +986,12 @@ class _VerbatimSegment:
         for qubit in qubits:
             self._prepared.pop(qubit, None)
 
-    def exit_prepared(self) -> dict[int, str]:
+    def exit_prepared(self) -> dict[int, Axis]:
         r"""Return the prepared-qubit map carried into the next segment.
 
         Returns
         -------
-        `dict`\[`int`, `str`\]
+        `dict`\[`int`, `Axis`\]
             Prepared Pauli bases still valid at the next segment's start.
         """
         return dict(self._prepared)
@@ -1283,28 +1275,28 @@ def _verification_message(segment_index: int, flow: stim.Flow, direction: str) -
 
 def _measurement_observables(instruction: stim.CircuitInstruction, num_qubits: int) -> list[_SourceObservable]:
     name = instruction.name
-    if name in _SINGLE_MEASUREMENT_BASES or name in _MEASURE_RESET_GATES:
-        basis = _SINGLE_MEASUREMENT_BASES.get(name) or _MEASURE_RESET_GATES[name][0]
+    if name in DIRECT_MEASUREMENT_AXES:
+        basis = DIRECT_MEASUREMENT_AXES[name]
         return [_single_qubit_observable(group, basis, name, num_qubits) for group in instruction.target_groups()]
-    if name in _PAIR_MEASUREMENT_BASES:
-        basis = _PAIR_MEASUREMENT_BASES[name]
+    if name in PAIR_MEASUREMENT_AXES:
+        basis = PAIR_MEASUREMENT_AXES[name]
         return [_pair_observable(group, basis, name, num_qubits) for group in instruction.target_groups()]
     return [_mpp_observable(group, num_qubits) for group in instruction.target_groups()]
 
 
 def _single_qubit_observable(
-    group: Sequence[stim.GateTarget], basis: str, name: str, num_qubits: int
+    group: Sequence[stim.GateTarget], basis: Axis, name: str, num_qubits: int
 ) -> _SourceObservable:
     (target,) = group
     qubit = _plain_qubit(target, name)
     observable = stim.PauliString(num_qubits)
-    observable[qubit] = basis
+    observable[qubit] = _PAULI_CODES[basis]
     if target.is_inverted_result_target:
         observable.sign = -1
     return _SourceObservable(observable=observable, source_qubit=qubit)
 
 
-def _pair_observable(group: Sequence[stim.GateTarget], basis: str, name: str, num_qubits: int) -> _SourceObservable:
+def _pair_observable(group: Sequence[stim.GateTarget], basis: Axis, name: str, num_qubits: int) -> _SourceObservable:
     if len(group) != _PAIR_GROUP_SIZE:
         msg = f"{name} expects qubit pairs."
         raise UnsupportedSyndromeCircuitError(msg)
@@ -1315,7 +1307,7 @@ def _pair_observable(group: Sequence[stim.GateTarget], basis: str, name: str, nu
         if observable[qubit] != 0:
             msg = f"{name} pairs the same qubit {qubit} with itself."
             raise UnsupportedSyndromeCircuitError(msg)
-        observable[qubit] = basis
+        observable[qubit] = _PAULI_CODES[basis]
         if target.is_inverted_result_target:
             sign = -sign
     observable.sign = sign
@@ -1327,10 +1319,10 @@ def _mpp_observable(group: Sequence[stim.GateTarget], num_qubits: int) -> _Sourc
     for target in group:
         qubit = _plain_qubit(target, "MPP")
         pauli = target.pauli_type
-        if pauli not in _PAULI_CODES:
+        if pauli not in Axis.__members__:
             msg = f"MPP contains a non-Pauli target on qubit {qubit}."
             raise UnsupportedSyndromeCircuitError(msg)
-        factor = stim.PauliString({qubit: _PAULI_CODES[pauli]})
+        factor = stim.PauliString({qubit: _PAULI_CODES[Axis[pauli]]})
         if target.is_inverted_result_target:
             factor.sign = -1
         observable *= factor
