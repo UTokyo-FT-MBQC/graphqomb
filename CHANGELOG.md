@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MPP rewriter validated constructively**: `rewrite_to_mpp` now pulls measurement products and residual Clifford frames out of an in-house sparse F2 symplectic tableau of each segment body, applying ancilla substitution and the residual frame only when their algebraic preconditions hold. This replaces the mirrored-circuit `flow_generators` verification and the flow-matching local-frame search, and takes Stim off the analysis path (surface-code memory d=9 r=9: 0.26 s → 0.18 s). `MppRewriteVerificationError` is retained but no longer raised; residual frames that were only representable through the flow-matching search now fall back gate-level.
+
 ### Added
 
 - **In-Place Graph Composition**: `graphstate.compose_into(graph1, graph2)` composes `graph2` into `graph1` by mutation with the same connection rule and validation as `compose`, keeping `graph1` node indices stable, plus `GraphState.unregister_output()` to drop an output registration. The Stim importer's fragment fold now uses it, replacing the per-step full-graph copy (quadratic in total) with a linear fold: on the 15-to-1 lattice-surgery proxy the compose stage drops from 5.0 s to 0.4 s (k=1, 23k nodes) and 54 s to 3.3 s (k=2, 101k nodes) — end-to-end import from 175 s to 82 s at k=2. The composed graph is identical up to node relabeling.

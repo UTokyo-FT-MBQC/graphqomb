@@ -1,12 +1,17 @@
 """Rewrite Stim syndrome-extraction circuits into abstract MPP measurements.
 
-This experimental module recognizes the standard syndrome-extraction shape
-(reset ancillas, apply Clifford unitaries, measure ancillas) and replaces each
-gate-level extraction block with ``MPP`` instructions that directly measure the
-inferred data Pauli products. Circuit-level noise remains unsupported; a
-segment that cannot be rewritten either falls back the whole circuit or, with
-``fallback="segment"``, stays gate-level on its own while the other segments
-are rewritten.
+This module recognizes the standard syndrome-extraction shape (reset ancillas,
+apply Clifford unitaries, measure) and replaces each gate-level segment with
+``MPP`` instructions that measure the inferred data Pauli products directly.
+
+Correctness is established constructively instead of by after-the-fact
+verification: measurement observables are pulled through the segment body with
+a sparse F2 symplectic tableau (``U† P U``), fresh-ancilla stabilizers are
+substituted only where their algebraic preconditions hold, and the residual
+Clifford frame on surviving qubits is the symplectic restriction of the body
+tableau, built only when that restriction exists. A segment whose
+preconditions fail is emitted gate-level (``fallback="segment"``) or falls the
+whole circuit back to its flattened source (``fallback="circuit"``).
 
 This module provides:
 
@@ -14,16 +19,18 @@ This module provides:
 - `MppRewriteResult`: Rewritten circuit with its per-measurement Pauli products.
 - `CheckMapping`: Mapping from one measurement record to its Pauli product.
 - `UnsupportedSyndromeCircuitError`: Error for unsupported syndrome circuits.
-- `MppRewriteVerificationError`: Error for a failed segment verification.
+- `MppRewriteVerificationError`: Retained for API compatibility; no longer raised.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from itertools import combinations
-from typing import TYPE_CHECKING, Literal, cast
+from dataclasses import dataclass, field
+from functools import cache
+from typing import TYPE_CHECKING, Any, Literal, cast
 
+import numpy as np
 import stim
+from scipy.sparse import csr_array, lil_array
 
 from graphqomb.common import Axis
 from graphqomb.stim_glue._parse import (
@@ -39,12 +46,18 @@ from graphqomb.stim_glue._parse import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from collections.abc import Set as AbstractSet
-_PAULI_CODES = {Axis.X: 1, Axis.Y: 2, Axis.Z: 3}
-_PAIR_GROUP_SIZE = 2
+
+    from numpy.typing import NDArray
 
 _InstructionKind = Literal["annotation", "mpad", "reset", "measurement", "unitary"]
 _FallbackMode = Literal["circuit", "segment"]
+
+_PAIR_GROUP_SIZE = 2
+# (x bit, z bit) of each Pauli axis in the [x | z] component convention.
+_AXIS_BITS: dict[Axis, tuple[int, int]] = {Axis.X: (1, 0), Axis.Y: (1, 1), Axis.Z: (0, 1)}
+_SIGN_FROM_EXPONENT: tuple[complex, ...] = (1, 1j, -1, -1j)
+# i**2 = -1: the phase of a deterministic-minus identity product.
+_MINUS_PHASE = 2
 
 
 class UnsupportedSyndromeCircuitError(ValueError):
@@ -52,47 +65,21 @@ class UnsupportedSyndromeCircuitError(ValueError):
 
 
 class MppRewriteVerificationError(ValueError):
-    """Raised when a rewritten segment fails stabilizer-flow verification."""
-
-
-class _ResidualFrameSynthesisError(RuntimeError):
-    """Raised when the removed body cannot be represented by a residual Clifford frame."""
-
-
-class _SegmentRepresentabilityError(UnsupportedSyndromeCircuitError):
-    """Raised when one segment cannot be rewritten but its gate-level source remains valid."""
-
-
-class _RewrittenStateReuseError(UnsupportedSyndromeCircuitError):
-    """Raised when a segment consumes a post-state that an earlier rewritten segment trashed.
-
-    A rewritten segment is only verified to match its source with the
-    post-states of its measured-out qubits reset, so a later use of such a
-    post-state is unsound no matter how the later segment is emitted. The
-    segment-fallback mode reacts by forcing the recorded source segment to
-    stay gate-level and rerunning the rewrite.
-    """
-
-    def __init__(self, message: str, *, source_segment: int) -> None:
-        super().__init__(message)
-        self.source_segment = source_segment
-
-
-_SEGMENT_FALLBACK_ERRORS = (MppRewriteVerificationError, _ResidualFrameSynthesisError, _SegmentRepresentabilityError)
+    """Retained for API compatibility; the rewrite is validated constructively and no longer raises this."""
 
 
 @dataclass(frozen=True)
 class CheckMapping:
-    """Sidecar mapping from one source measurement to its inferred Pauli product.
+    r"""Mapping from one measurement record to the Pauli product it measures.
 
     Attributes
     ----------
     measurement_index : `int`
-        Global measurement-record index, identical in source and rewritten circuits.
+        Global measurement-record index in the rewritten circuit.
     segment_index : `int`
-        Index of the extraction segment that produced this measurement.
+        Index of the segment the measurement belongs to.
     product : ``stim.PauliString``
-        Inferred signed Pauli product measured at this record position.
+        Measured Pauli product in source-circuit qubit coordinates.
     source_qubit : `int` | `None`
         Measured qubit for single-qubit source measurements, `None` for
         source ``MPP``/``MXX``/``MYY``/``MZZ`` products.
@@ -133,9 +120,199 @@ class _SourceObservable:
     source_qubit: int | None
 
 
+@dataclass(frozen=True)
+class _Pauli:
+    """Pauli operator ``i**phase · X^x Z^z`` with components stored as ``[x | z]``."""
+
+    bits: NDArray[np.bool_]
+    phase: int
+
+
+def _pauli_mul(left: _Pauli, right: _Pauli) -> _Pauli:
+    """Multiply two Pauli operators in the ``i**phase · X^x Z^z`` convention.
+
+    Returns
+    -------
+    `_Pauli`
+        The product ``left * right``.
+    """
+    half = left.bits.shape[0] // 2
+    cross = int(np.count_nonzero(left.bits[half:] & right.bits[:half])) & 1
+    return _Pauli(bits=left.bits ^ right.bits, phase=(left.phase + right.phase + 2 * cross) % 4)
+
+
+def _pauli_from_stim(pauli: stim.PauliString) -> _Pauli:
+    """Convert a Stim Pauli string into component form.
+
+    Returns
+    -------
+    `_Pauli`
+        Component representation of the same operator.
+    """
+    xs, zs = pauli.to_numpy()
+    y_count = int(np.count_nonzero(xs & zs))
+    exponent = _SIGN_FROM_EXPONENT.index(pauli.sign)
+    return _Pauli(bits=np.concatenate([xs, zs]), phase=(y_count + exponent) % 4)
+
+
+def _pauli_to_stim(pauli: _Pauli) -> stim.PauliString:
+    """Convert a component-form Pauli into a Stim Pauli string.
+
+    Returns
+    -------
+    ``stim.PauliString``
+        The same operator as a Stim Pauli string.
+    """
+    half = pauli.bits.shape[0] // 2
+    xs = pauli.bits[:half]
+    zs = pauli.bits[half:]
+    result = stim.PauliString.from_numpy(xs=xs, zs=zs)
+    y_count = int(np.count_nonzero(xs & zs))
+    result.sign = _SIGN_FROM_EXPONENT[(pauli.phase - y_count) % 4]
+    return result
+
+
+@cache
+def _gate_generator_images(name: str) -> tuple[tuple[tuple[int, ...], int], ...]:
+    r"""Return the local generator images under conjugation by the inverse gate.
+
+    For gate ``g`` this is ``g† P g`` for each local generator ``P`` in
+    ``X_0..X_{k-1}, Z_0..Z_{k-1}`` order, so appending ``g`` to a circuit
+    updates a backward map ``P -> U† P U`` by rewriting these generators. Each
+    image is spelled as the ascending local generator indices whose ordered
+    product it is, with its phase.
+
+    Returns
+    -------
+    `tuple`\[`tuple`\[`tuple`\[`int`, ...\], `int`\], ...\]
+        One ``(local generator indices, phase)`` pair per local generator.
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        If the gate has no tableau (it is not a unitary gate).
+    """
+    tableau = stim.gate_data(name).tableau
+    if tableau is None:
+        msg = f"{name} is not a unitary gate."
+        raise UnsupportedSyndromeCircuitError(msg)
+    inverse = tableau.inverse()
+    num_qubits = len(inverse)
+    outputs = [inverse.x_output(qubit) for qubit in range(num_qubits)]
+    outputs += [inverse.z_output(qubit) for qubit in range(num_qubits)]
+    images = []
+    for output in outputs:
+        pauli = _pauli_from_stim(output)
+        images.append((tuple(int(index) for index in np.flatnonzero(pauli.bits)), pauli.phase))
+    return tuple(images)
+
+
+class _BodyTableau:
+    """Backward conjugation map ``P -> U† P U`` of a Clifford body over F2.
+
+    Row ``j`` holds the component support of the image of generator ``j``
+    (``X_j`` for ``j < n``, ``Z_{j-n}`` otherwise) as an index set — the LIL
+    layout — with phases tracked per generator modulo 4, because per-gate
+    updates and pull-backs combine a handful of small supports at a time. The
+    matrix-level work (the transposed column view behind the symplectic
+    inverse) goes through scipy sparse, so one incremental structure serves
+    product pull-back and residual-frame construction.
+    """
+
+    def __init__(self, num_qubits: int) -> None:
+        self._num_qubits = num_qubits
+        size = 2 * num_qubits
+        self._supports: list[set[int]] = [{index} for index in range(size)]
+        self._phases: list[int] = [0] * size
+        self._gate_count = 0
+        self._columns: csr_array[Any, tuple[int, int]] | None = None
+
+    @property
+    def gate_count(self) -> int:
+        """Number of gates appended to the body."""
+        return self._gate_count
+
+    def _fold(self, indices: Sequence[int], phase: int) -> tuple[set[int], int]:
+        r"""Multiply the stored generator images selected by ``indices`` in order.
+
+        Returns
+        -------
+        `tuple`\[`set`\[`int`\], `int`\]
+            Support and phase of ``i**phase · prod(A(gen_j))``.
+        """
+        half = self._num_qubits
+        support: set[int] = set()
+        for index in indices:
+            row = self._supports[index]
+            cross = sum(1 for component in row if component < half and component + half in support)
+            phase = (phase + self._phases[index] + 2 * (cross & 1)) % 4
+            support ^= row
+        return support, phase
+
+    def append(self, name: str, qubits: Sequence[int]) -> None:
+        """Extend the body by one gate application."""
+        images = _gate_generator_images(name)
+        generator_indices = [*qubits, *(self._num_qubits + qubit for qubit in qubits)]
+        folded = [
+            self._fold([generator_indices[local] for local in image_support], image_phase)
+            for image_support, image_phase in images
+        ]
+        for index, (support, phase) in zip(generator_indices, folded, strict=True):
+            self._supports[index] = support
+            self._phases[index] = phase
+        self._gate_count += 1
+        self._columns = None
+
+    def pull(self, pauli: _Pauli) -> _Pauli:
+        """Return ``U† P U`` for a Pauli measured after the body.
+
+        Returns
+        -------
+        `_Pauli`
+            The pulled-back operator.
+        """
+        support, phase = self._fold([int(index) for index in np.flatnonzero(pauli.bits)], pauli.phase)
+        return _Pauli(bits=_dense_bits(support, 2 * self._num_qubits), phase=phase)
+
+    def forward_generator(self, index: int) -> _Pauli:
+        """Return ``U gen U†`` through the symplectic inverse of the stored map.
+
+        Returns
+        -------
+        `_Pauli`
+            Forward image of generator ``index``.
+        """
+        if self._columns is None:
+            matrix = lil_array((2 * self._num_qubits, 2 * self._num_qubits), dtype=np.bool_)
+            for row, support in enumerate(self._supports):
+                columns = sorted(support)
+                matrix.rows[row] = columns
+                matrix.data[row] = [True] * len(columns)
+            self._columns = csr_array(matrix.T)
+        half = self._num_qubits
+        partner = (index + half) % (2 * half)
+        start, stop = self._columns.indptr[partner], self._columns.indptr[partner + 1]
+        preimage = sorted((int(row) + half) % (2 * half) for row in self._columns.indices[start:stop])
+        _, pulled_phase = self._fold(preimage, 0)
+        return _Pauli(bits=_dense_bits(set(preimage), 2 * half), phase=(-pulled_phase) % 4)
+
+
+def _dense_bits(support: set[int], size: int) -> NDArray[np.bool_]:
+    r"""Materialize an index set as a dense boolean component vector.
+
+    Returns
+    -------
+    ``NDArray``\[``np.bool_``\]
+        The dense vector.
+    """
+    bits = np.zeros(size, dtype=np.bool_)
+    bits[list(support)] = True
+    return bits
+
+
 @dataclass
 class _SegmentBounds:
-    """Segment-boundary state shared by the rewriter and the fallback mapper.
+    """Segment-boundary state shared by segmentation and fallback numbering.
 
     A segment ends before a unitary that follows the segment's measurements,
     and before a measurement that follows a reset issued after those
@@ -168,44 +345,62 @@ class _SegmentBounds:
         return boundary
 
 
+@dataclass
+class _SourceSegment:
+    """One reset/Clifford/measure segment of the flattened source circuit.
+
+    Carries the classified instructions with per-position measured observables
+    (``sources``), the measured-out qubits with their single-qubit measurement
+    bases, reset/unreset bookkeeping for post-state tracking, and
+    ``blocked_message`` when feedback or a reset-after-entangle rules the
+    segment out regardless of its algebra.
+    """
+
+    index: int
+    items: list[tuple[stim.CircuitInstruction, _InstructionKind]] = field(default_factory=list)
+    sources: dict[int, tuple[_SourceObservable, ...]] = field(default_factory=dict)
+    measured_bases: dict[int, set[Axis]] = field(default_factory=dict)
+    unitary_qubits: set[int] = field(default_factory=set)
+    reset_qubits: set[int] = field(default_factory=set)
+    unreset_measured: set[int] = field(default_factory=set)
+    seen_measurement: bool = False
+    blocked_message: str | None = None
+
+
+@dataclass(frozen=True)
+class _Conflict:
+    """A segment consumed a measurement post-state trashed by a rewritten segment."""
+
+    producer: int
+    message: str
+
+
 def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "circuit") -> MppRewriteResult:
     """Rewrite a noiseless Stim syndrome-extraction circuit into MPP form.
 
-    The inference conjugates each final measurement Pauli backwards through the
-    segment's Clifford body (``U† P U`` via ``stim.PauliString.before``) and
-    substitutes +1 for stabilizers of freshly initialized, measured-out
-    ancillas. A segment ends when a unitary follows its measurements, or when a
-    measurement follows a reset issued after those measurements (including the
-    implicit reset of ``MR``); trailing data measurements therefore start a
-    fresh segment with an empty Clifford body and pass through verbatim.
-    Clifford frames left on surviving qubits are retained after the inferred
-    measurements. Each source measurement maps to exactly one measurement in
-    the rewritten circuit, so ``DETECTOR`` and ``OBSERVABLE_INCLUDE``
-    annotations are copied verbatim.
+    Each segment's measurement observables are pulled backwards through its
+    Clifford body (``U† P U``) with a sparse F2 tableau. Stabilizers of
+    freshly prepared, measured-out ancillas are substituted with +1 when every
+    product's factor on that ancilla is the prepared basis or identity and the
+    substituted products still commute pairwise per instruction. Clifford
+    frames left on surviving qubits are appended as the symplectic restriction
+    of the body tableau when that restriction exists; a component on a
+    measured-out qubit must anticommute with every measurement basis of that
+    qubit to be absorbed. Each source measurement maps to exactly one
+    measurement in the rewritten circuit, so ``DETECTOR`` and
+    ``OBSERVABLE_INCLUDE`` annotations are copied verbatim.
 
     ``REPEAT`` blocks are flattened before rewriting, which also bakes
     ``SHIFT_COORDS`` offsets into ``DETECTOR`` coordinate arguments.
 
-    Every rewritten segment is cross-checked against its source by stabilizer-
-    flow generators, with measured-out ancilla post-states reset in both copies
-    before comparison. If a segment cannot be represented by MPP measurements
-    plus a residual Clifford frame, or fails that check, ``fallback="circuit"``
-    returns the flattened gate-level circuit unchanged; the Stim importer
-    handles reset-based qubit reuse natively. The check is not optional: it is
-    what selects between the optimized rewrite, the unsubstituted retry, and
-    the gate-level fallback.
-
-    ``fallback="segment"`` keeps only the failing segments gate-level instead
-    of abandoning the whole circuit, so the result mixes MPP segments with
-    verbatim source segments; `MppRewriteResult.fallback_segments` lists the
-    verbatim ones. In this mode a segment whose measurement post-state is used
-    again without a reset, or that applies measurement-record-controlled
-    feedback, also falls back verbatim instead of raising. Because a rewritten
-    segment is only verified with the post-states of its measured-out qubits
-    reset, a later segment that consumes such a post-state forces the segment
-    that produced it to stay gate-level as well (verbatim segments preserve
-    their post-states exactly), and the rewrite reruns until that fixed point
-    is reached. Noise remains rejected in both modes.
+    When a segment's preconditions fail, ``fallback="circuit"`` returns the
+    flattened gate-level circuit unchanged, while ``fallback="segment"`` keeps
+    only the failing segments gate-level, listed in
+    `MppRewriteResult.fallback_segments`. In segment mode a segment that
+    applies measurement-record-controlled feedback, or that consumes a
+    measurement post-state an earlier rewritten segment trashed, also stays
+    gate-level (the producing segment is forced gate-level as well, because
+    only verbatim segments preserve their post-states exactly).
 
     Parameters
     ----------
@@ -233,110 +428,799 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
         raise ValueError(msg)
     source = circuit if isinstance(circuit, stim.Circuit) else stim.Circuit(circuit)
     flattened = source.flattened()
-    try:
-        return _rewrite_flattened_to_mpp(flattened, fallback=fallback)
-    except (MppRewriteVerificationError, _ResidualFrameSynthesisError):
-        return MppRewriteResult(
-            circuit=flattened,
-            checks=_check_mappings(flattened),
-            fallback_segments=tuple(range(_segment_count(flattened))),
-        )
+    segments = _split_segments(flattened)
+    forced_verbatim: set[int] = set()
+    while True:
+        outcome = _rewrite_pass(segments, flattened.num_qubits, fallback=fallback, forced_verbatim=forced_verbatim)
+        if outcome is None:
+            return _passthrough_result(flattened, segments)
+        if isinstance(outcome, _Conflict):
+            forced_verbatim.add(outcome.producer)
+            continue
+        return outcome
 
 
-def _rewrite_flattened_to_mpp(flattened: stim.Circuit, *, fallback: _FallbackMode) -> MppRewriteResult:
-    """Rewrite a flattened circuit through the optimized MPP path.
+def _split_segments(circuit: stim.Circuit) -> list[_SourceSegment]:
+    r"""Split a flattened circuit into segments and validate its instructions.
 
     Returns
     -------
-    `MppRewriteResult`
-        Optimized rewrite result.
+    `list`\[`_SourceSegment`\]
+        Segments in circuit order.
+    """
+    segments: list[_SourceSegment] = []
+    bounds = _SegmentBounds()
+    current = _SourceSegment(index=0)
+    num_qubits = circuit.num_qubits
+    for instruction in iter_instructions(circuit):
+        kind = _instruction_kind(instruction)
+        if bounds.starts_new_segment(instruction, kind) and current.items:
+            segments.append(current)
+            current = _SourceSegment(index=current.index + 1)
+        _collect_item(current, instruction, kind, num_qubits)
+    if current.items:
+        segments.append(current)
+    return segments
+
+
+def _collect_item(
+    segment: _SourceSegment,
+    instruction: stim.CircuitInstruction,
+    kind: _InstructionKind,
+    num_qubits: int,
+) -> None:
+    """Append one classified instruction to a segment and update its metadata."""
+    position = len(segment.items)
+    segment.items.append((instruction, kind))
+    if kind == "reset":
+        for target in instruction.targets_copy():
+            qubit = _plain_qubit(target, instruction.name)
+            if not segment.seen_measurement and qubit in segment.unitary_qubits and segment.blocked_message is None:
+                segment.blocked_message = (
+                    f"Reset on qubit {qubit} after it was entangled in the same segment is not supported."
+                )
+            segment.reset_qubits.add(qubit)
+            segment.unreset_measured.discard(qubit)
+    elif kind == "unitary":
+        _collect_unitary(segment, instruction)
+    elif kind == "mpad":
+        segment.seen_measurement = True
+    elif kind == "measurement":
+        _collect_measurement(segment, instruction, position, num_qubits)
+
+
+def _collect_unitary(segment: _SourceSegment, instruction: stim.CircuitInstruction) -> None:
+    """Record one unitary instruction's qubits and feedback usage.
 
     Raises
     ------
     UnsupportedSyndromeCircuitError
-        If the circuit is outside the supported syndrome-extraction form.
-    _RewrittenStateReuseError
-        Under ``fallback="circuit"``, if a segment consumes a measurement
-        post-state that an earlier rewritten segment trashed.
-    RuntimeError
-        If the rewrite changes the measurement count or fails to converge.
+        If the unitary is controlled by a sweep bit.
     """
-    forced_verbatim: set[int] = set()
-    while True:
-        rewriter = _Rewriter(num_qubits=flattened.num_qubits, fallback=fallback, forced_verbatim=forced_verbatim)
-        try:
-            for instruction in flattened:
-                if isinstance(instruction, stim.CircuitRepeatBlock):
-                    msg = "REPEAT blocks must be flattened before rewriting."
-                    raise UnsupportedSyndromeCircuitError(msg)
-                rewriter.process(instruction)
-            result = rewriter.finish()
-        except _RewrittenStateReuseError as ex:
+    for target in instruction.targets_copy():
+        if target.is_sweep_bit_target:
+            msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
+            raise UnsupportedSyndromeCircuitError(msg)
+        if target.is_measurement_record_target:
+            if segment.blocked_message is None:
+                segment.blocked_message = (
+                    f"Classical feedback is not supported: {instruction.name} with target {target!r}."
+                )
+        elif target.qubit_value is not None:
+            segment.unitary_qubits.add(int(target.qubit_value))
+
+
+def _collect_measurement(
+    segment: _SourceSegment, instruction: stim.CircuitInstruction, position: int, num_qubits: int
+) -> None:
+    """Record one measurement instruction's observables and measured-out qubits.
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        If the measurement carries noise arguments.
+    """
+    segment.seen_measurement = True
+    if instruction.gate_args_copy():
+        msg = f"Noisy measurement {instruction.name} with arguments is not supported."
+        raise UnsupportedSyndromeCircuitError(msg)
+    segment.sources[position] = tuple(_measurement_observables(instruction, num_qubits))
+    if instruction.name in DIRECT_MEASUREMENT_AXES:
+        axis = DIRECT_MEASUREMENT_AXES[instruction.name]
+        for target in instruction.targets_copy():
+            qubit = _plain_qubit(target, instruction.name)
+            segment.measured_bases.setdefault(qubit, set()).add(axis)
+            if instruction.name in SINGLE_MEASUREMENT_AXES:
+                segment.unreset_measured.add(qubit)
+            else:
+                segment.reset_qubits.add(qubit)
+                segment.unreset_measured.discard(qubit)
+
+
+def _rewrite_pass(
+    segments: Sequence[_SourceSegment],
+    num_qubits: int,
+    *,
+    fallback: _FallbackMode,
+    forced_verbatim: set[int],
+) -> MppRewriteResult | _Conflict | None:
+    r"""Rewrite every segment once with the given forced-verbatim set.
+
+    Returns
+    -------
+    `MppRewriteResult` | `_Conflict` | `None`
+        The finished rewrite, a post-state consumption conflict that forces a
+        producing segment gate-level (segment mode), or `None` when the whole
+        circuit must take the gate-level fallback (circuit mode).
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        In circuit mode, if a segment feeds back from a measurement record,
+        resets an entangled qubit, or consumes a trashed post-state.
+    """
+    output = stim.Circuit()
+    checks: list[CheckMapping] = []
+    prepared: dict[int, Axis] = {}
+    dirty: dict[int, int] = {}
+    measurement_index = 0
+    fallback_segments: list[int] = []
+    for segment in segments:
+        verbatim = segment.index in forced_verbatim or (fallback == "segment" and segment.blocked_message is not None)
+        if not verbatim and segment.blocked_message is not None:
+            raise UnsupportedSyndromeCircuitError(segment.blocked_message)
+        analyzed: _SegmentRewrite | _Conflict | None = None
+        if not verbatim:
+            analyzed = _analyze_segment(
+                segment,
+                num_qubits,
+                prepared=prepared,
+                dirty=dirty,
+                measurement_index=measurement_index,
+                allow_negative_pads=fallback == "circuit",
+            )
+            if analyzed is None:
+                if fallback == "circuit":
+                    return None
+                verbatim = True
+        if verbatim:
+            fallback_segments.append(segment.index)
+            analyzed = _emit_verbatim(segment, prepared=prepared, dirty=dirty, measurement_index=measurement_index)
+        if isinstance(analyzed, _Conflict):
             if fallback == "circuit":
-                raise
-            if ex.source_segment in forced_verbatim:
-                msg = "A forced-verbatim segment produced a trashed post-state; this is a bug."
-                raise RuntimeError(msg) from ex
-            forced_verbatim.add(ex.source_segment)
+                raise UnsupportedSyndromeCircuitError(analyzed.message)
+            return analyzed
+        if analyzed is None:  # pragma: no cover - one branch above always assigns
             continue
-        if result.circuit.num_measurements != flattened.num_measurements:
-            msg = "MPP rewrite changed the measurement count; this is a bug."
-            raise RuntimeError(msg)
-        return result
+        output += analyzed.circuit
+        checks.extend(analyzed.checks)
+        prepared = analyzed.exit_prepared
+        dirty = analyzed.exit_dirty
+        measurement_index = analyzed.exit_measurement_index
+    return MppRewriteResult(circuit=output, checks=tuple(checks), fallback_segments=tuple(fallback_segments))
 
 
-def _segment_count(circuit: stim.Circuit) -> int:
-    """Count the segments of a circuit with the streaming rewriter's boundary rule.
+@dataclass(frozen=True)
+class _SegmentRewrite:
+    """One emitted segment with its exit bookkeeping."""
+
+    circuit: stim.Circuit
+    checks: tuple[CheckMapping, ...]
+    exit_prepared: dict[int, Axis]
+    exit_dirty: dict[int, int]
+    exit_measurement_index: int
+
+
+def _analyze_segment(  # ruff:ignore[too-many-arguments]
+    segment: _SourceSegment,
+    num_qubits: int,
+    *,
+    prepared: dict[int, Axis],
+    dirty: dict[int, int],
+    measurement_index: int,
+    allow_negative_pads: bool,
+) -> _SegmentRewrite | _Conflict | None:
+    """Rewrite one segment into MPP form when its preconditions hold.
+
+    Returns
+    -------
+    `_SegmentRewrite` | `_Conflict` | `None`
+        The rewritten segment, a trashed-post-state consumption conflict, or
+        `None` when the segment is not MPP-representable.
+    """
+    scan = _scan_segment(segment, num_qubits, prepared=prepared, dirty=dirty)
+    if isinstance(scan, _Conflict):
+        return scan
+    products = _substituted_products(
+        segment, scan.pulled, scan.prepared, num_qubits, allow_negative_pads=allow_negative_pads
+    )
+    if products is None:
+        return None
+    frame = _residual_frame(scan.body, scan.body_touched, segment, num_qubits)
+    if frame is None:
+        return None
+
+    circuit, checks, exit_measurement_index = _emit_segment(
+        segment, products, frame, measurement_index=measurement_index, late_resets=scan.late_resets
+    )
+    exit_prepared = {
+        qubit: axis
+        for qubit, axis in scan.prepared.items()
+        if qubit not in scan.body_touched and qubit not in scan.measured_any
+    }
+    exit_prepared.update(scan.late_resets)
+    exit_dirty = scan.dirty
+    exit_dirty.update(dict.fromkeys(segment.unreset_measured, segment.index))
+    return _SegmentRewrite(
+        circuit=circuit,
+        checks=checks,
+        exit_prepared=exit_prepared,
+        exit_dirty=exit_dirty,
+        exit_measurement_index=exit_measurement_index,
+    )
+
+
+@dataclass
+class _SegmentScan:
+    """Algebraic state of one segment after streaming its instructions."""
+
+    body: _BodyTableau
+    prepared: dict[int, Axis]
+    dirty: dict[int, int]
+    late_resets: dict[int, Axis] = field(default_factory=dict)
+    body_touched: set[int] = field(default_factory=set)
+    measured_any: set[int] = field(default_factory=set)
+    pulled: dict[int, list[_Pauli]] = field(default_factory=dict)
+
+
+def _scan_segment(
+    segment: _SourceSegment,
+    num_qubits: int,
+    *,
+    prepared: dict[int, Axis],
+    dirty: dict[int, int],
+) -> _SegmentScan | _Conflict:
+    """Stream one segment, building its body tableau and pulled products.
+
+    Returns
+    -------
+    `_SegmentScan` | `_Conflict`
+        The collected state, or a trashed-post-state consumption conflict.
+    """
+    scan = _SegmentScan(body=_BodyTableau(num_qubits), prepared=dict(prepared), dirty=dict(dirty))
+    seen_measurement = False
+    for position, (instruction, kind) in enumerate(segment.items):
+        if kind == "reset":
+            axis = RESET_AXES[instruction.name]
+            for target in instruction.targets_copy():
+                qubit = _plain_qubit(target, instruction.name)
+                if seen_measurement:
+                    scan.late_resets[qubit] = axis
+                else:
+                    scan.prepared[qubit] = axis
+                scan.dirty.pop(qubit, None)
+        elif kind == "unitary":
+            conflict = _scan_unitary(scan, instruction)
+            if conflict is not None:
+                return conflict
+        elif kind == "measurement":
+            seen_measurement = True
+            supports = {qubit for source in segment.sources[position] for qubit in source.observable.pauli_indices()}
+            conflict = _consumed_dirty(supports, scan.dirty, instruction.name, remeasured=True)
+            if conflict is not None:
+                return conflict
+            scan.measured_any |= supports
+            scan.pulled[position] = [
+                scan.body.pull(_pauli_from_stim(source.observable)) for source in segment.sources[position]
+            ]
+        elif kind == "mpad":
+            seen_measurement = True
+    return scan
+
+
+def _scan_unitary(scan: _SegmentScan, instruction: stim.CircuitInstruction) -> _Conflict | None:
+    """Fold one unitary instruction into the body tableau.
+
+    Returns
+    -------
+    `_Conflict` | `None`
+        A trashed-post-state consumption conflict, or `None`.
+    """
+    qubits = {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
+    conflict = _consumed_dirty(qubits, scan.dirty, instruction.name, remeasured=False)
+    if conflict is not None:
+        return conflict
+    for group in instruction.target_groups():
+        scan.body.append(instruction.name, [_plain_qubit(target, instruction.name) for target in group])
+    scan.body_touched |= qubits
+    return None
+
+
+def _consumed_dirty(
+    qubits: set[int], dirty: dict[int, int], instruction_name: str, *, remeasured: bool
+) -> _Conflict | None:
+    """Report a touch of a qubit whose post-state a rewritten segment trashed.
+
+    Returns
+    -------
+    `_Conflict` | `None`
+        The conflict, or `None` when no trashed qubit is touched.
+    """
+    consumed = sorted(qubits & dirty.keys())
+    if not consumed:
+        return None
+    if remeasured:
+        msg = (
+            f"{instruction_name} measures qubit(s) {consumed} whose earlier measurement "
+            "post-state was never reset; correlated re-measurement is not supported."
+        )
+    else:
+        msg = (
+            f"{instruction_name} acts on measured-but-not-reset qubit(s) {consumed}; "
+            "reusing measurement post-states is not supported."
+        )
+    return _Conflict(producer=dirty[consumed[0]], message=msg)
+
+
+def _substituted_products(
+    segment: _SourceSegment,
+    pulled: dict[int, list[_Pauli]],
+    prepared: dict[int, Axis],
+    num_qubits: int,
+    *,
+    allow_negative_pads: bool,
+) -> dict[int, list[_Pauli]] | None:
+    r"""Substitute fresh-ancilla stabilizers into the pulled products.
+
+    Substitution on a prepared, measured-out qubit is applied only when every
+    product's factor on that qubit is the prepared basis or identity, so the
+    stabilizer still holds when each product is measured. The substituted
+    products of one instruction must commute pairwise; otherwise the
+    unsubstituted products are used, and if those also fail (anticommuting
+    source products or a disallowed negative pad) the segment is not
+    representable.
+
+    Returns
+    -------
+    `dict`\[`int`, `list`\[`_Pauli`\]\] | `None`
+        Products per measurement item position, or `None`.
+    """
+    substitutable = _substitutable_qubits(segment, pulled, prepared, num_qubits)
+    for qubits in (substitutable, frozenset[int]()):
+        candidate = {
+            position: [_without_stabilizer_factors(product, qubits, num_qubits) for product in products]
+            for position, products in pulled.items()
+        }
+        if _products_admissible(candidate, allow_negative_pads=allow_negative_pads):
+            return candidate
+        if not qubits:
+            return None
+    return None
+
+
+def _substitutable_qubits(
+    segment: _SourceSegment,
+    pulled: dict[int, list[_Pauli]],
+    prepared: dict[int, Axis],
+    num_qubits: int,
+) -> frozenset[int]:
+    r"""Return the prepared, measured-out qubits whose stabilizer can be dropped.
+
+    Returns
+    -------
+    `frozenset`\[`int`\]
+        Qubits satisfying the substitution precondition.
+    """
+    candidates = set(prepared) & set(segment.measured_bases)
+    for products in pulled.values():
+        for product in products:
+            for qubit in list(candidates):
+                x_bit, z_bit = _AXIS_BITS[prepared[qubit]]
+                factor = (int(product.bits[qubit]), int(product.bits[num_qubits + qubit]))
+                if factor not in {(0, 0), (x_bit, z_bit)}:
+                    candidates.discard(qubit)
+    return frozenset(candidates)
+
+
+def _without_stabilizer_factors(product: _Pauli, qubits: frozenset[int], num_qubits: int) -> _Pauli:
+    """Divide the prepared stabilizer factors on the given qubits out of a product.
+
+    Returns
+    -------
+    `_Pauli`
+        The reduced product.
+    """
+    bits = product.bits.copy()
+    phase = product.phase
+    for qubit in qubits:
+        if bits[qubit] or bits[num_qubits + qubit]:
+            if bits[qubit] and bits[num_qubits + qubit]:
+                phase = (phase - 1) % 4
+            bits[qubit] = False
+            bits[num_qubits + qubit] = False
+    return _Pauli(bits=bits, phase=phase)
+
+
+def _products_admissible(products: dict[int, list[_Pauli]], *, allow_negative_pads: bool) -> bool:
+    """Check pairwise commutation per instruction and the negative-pad rule.
+
+    Returns
+    -------
+    `bool`
+        Whether the products can be emitted.
+    """
+    for instruction_products in products.values():
+        if len(instruction_products) > 1 and _anticommutation_matrix(instruction_products).any():
+            return False
+        for product in instruction_products:
+            if not product.bits.any() and product.phase % 4 == _MINUS_PHASE and not allow_negative_pads:
+                return False
+    return True
+
+
+def _anticommutation_matrix(paulis: Sequence[_Pauli]) -> NDArray[np.uint8]:
+    r"""Return the pairwise anticommutation parities of a list of Paulis.
+
+    Returns
+    -------
+    ``NDArray``\[``np.uint8``\]
+        Symmetric 0/1 matrix with a zero diagonal.
+    """
+    half = paulis[0].bits.shape[0] // 2
+    x_bits = np.array([pauli.bits[:half] for pauli in paulis], dtype=np.uint8)
+    z_bits = np.array([pauli.bits[half:] for pauli in paulis], dtype=np.uint8)
+    return (x_bits @ z_bits.T + z_bits @ x_bits.T) % 2
+
+
+def _residual_frame(
+    body: _BodyTableau,
+    body_touched: set[int],
+    segment: _SourceSegment,
+    num_qubits: int,
+) -> stim.Circuit | None:
+    """Build the residual Clifford frame left on qubits that were not measured out.
+
+    The frame is the body tableau restricted to the surviving qubits. A
+    component on a measured-out qubit is absorbed by that qubit's measurement
+    only when it anticommutes with every measurement basis of the qubit, and
+    the restricted generators must satisfy the canonical symplectic relations;
+    otherwise the segment is not MPP-representable.
+
+    Returns
+    -------
+    ``stim.Circuit`` | `None`
+        The residual frame circuit (possibly empty), or `None`.
+    """
+    if body.gate_count == 0:
+        return stim.Circuit()
+    survivors = sorted(body_touched - set(segment.measured_bases))
+    if not survivors:
+        return stim.Circuit()
+    survivor_index = {qubit: local for local, qubit in enumerate(survivors)}
+    xs: list[stim.PauliString] = []
+    zs: list[stim.PauliString] = []
+    for offset, collector in ((0, xs), (num_qubits, zs)):
+        for qubit in survivors:
+            forward = body.forward_generator(qubit + offset)
+            restricted = _restrict_forward_image(forward, survivor_index, segment.measured_bases, num_qubits)
+            if restricted is None:
+                return None
+            collector.append(restricted)
+    if not _symplectic_generators(xs, zs):
+        return None
+    tableau = stim.Tableau.from_conjugated_generators(xs=xs, zs=zs)
+    if tableau == stim.Tableau(len(survivors)):
+        return stim.Circuit()
+    return _remap_tableau_circuit(tableau, survivors)
+
+
+def _restrict_forward_image(
+    forward: _Pauli,
+    survivor_index: dict[int, int],
+    measured_bases: dict[int, set[Axis]],
+    num_qubits: int,
+) -> stim.PauliString | None:
+    """Restrict a forward generator image to the surviving qubits.
+
+    Returns
+    -------
+    ``stim.PauliString`` | `None`
+        The restricted image, or `None` when a measured-out component fails to
+        anticommute with a measurement basis of its qubit.
+    """
+    size = len(survivor_index)
+    bits = np.zeros(2 * size, dtype=np.bool_)
+    phase = forward.phase
+    supports = np.flatnonzero(forward.bits[:num_qubits] | forward.bits[num_qubits:])
+    for qubit_index in supports:
+        qubit = int(qubit_index)
+        x_bit = bool(forward.bits[qubit])
+        z_bit = bool(forward.bits[num_qubits + qubit])
+        local = survivor_index.get(qubit)
+        if local is not None:
+            bits[local] = x_bit
+            bits[size + local] = z_bit
+            continue
+        axis = next(axis for axis, axis_bits in _AXIS_BITS.items() if axis_bits == (int(x_bit), int(z_bit)))
+        if axis in measured_bases[qubit]:
+            return None
+        if x_bit and z_bit:
+            phase = (phase - 1) % 4
+    return _pauli_to_stim(_Pauli(bits=bits, phase=phase % 4))
+
+
+def _symplectic_generators(xs: Sequence[stim.PauliString], zs: Sequence[stim.PauliString]) -> bool:
+    """Check that restricted generator images satisfy the canonical symplectic relations.
+
+    Returns
+    -------
+    `bool`
+        Whether ``xs`` and ``zs`` define a valid Clifford tableau.
+    """
+    size = len(xs)
+    generators = [_pauli_from_stim(pauli) for pauli in [*xs, *zs]]
+    canonical = np.zeros((2 * size, 2 * size), dtype=np.uint8)
+    for row in range(size):
+        canonical[row, row + size] = 1
+        canonical[row + size, row] = 1
+    return np.array_equal(_anticommutation_matrix(generators), canonical)
+
+
+def _emit_segment(
+    segment: _SourceSegment,
+    products: dict[int, list[_Pauli]],
+    frame: stim.Circuit,
+    *,
+    measurement_index: int,
+    late_resets: dict[int, Axis],
+) -> tuple[stim.Circuit, tuple[CheckMapping, ...], int]:
+    r"""Emit one rewritten segment.
+
+    Returns
+    -------
+    `tuple`\[``stim.Circuit``, `tuple`\[`CheckMapping`, ...\], `int`\]
+        The segment circuit, its check mappings, and the next measurement index.
+    """
+    output = stim.Circuit()
+    checks: list[CheckMapping] = []
+    seen_measurement = False
+    for position, (instruction, kind) in enumerate(segment.items):
+        if kind == "unitary":
+            continue
+        if kind in {"annotation", "reset"}:
+            output.append(instruction)
+            continue
+        if kind == "mpad":
+            output.append(instruction)
+            measurement_index += instruction.num_measurements
+            seen_measurement = True
+            continue
+        if seen_measurement:
+            output.append("TICK", [])
+        seen_measurement = True
+        measurement_index = _emit_measurement_instruction(
+            output,
+            checks,
+            instruction,
+            sources=segment.sources[position],
+            products=products[position],
+            segment_index=segment.index,
+            measurement_index=measurement_index,
+            late_resets=late_resets,
+        )
+    output += frame
+    return output, tuple(checks), measurement_index
+
+
+def _emit_measurement_instruction(  # ruff:ignore[too-many-arguments]
+    output: stim.Circuit,
+    checks: list[CheckMapping],
+    instruction: stim.CircuitInstruction,
+    *,
+    sources: tuple[_SourceObservable, ...],
+    products: list[_Pauli],
+    segment_index: int,
+    measurement_index: int,
+    late_resets: dict[int, Axis],
+) -> int:
+    """Emit one measurement instruction as its source form or inferred products.
 
     Returns
     -------
     `int`
-        Number of segments the rewriter would flush.
+        The next measurement-record index.
     """
-    bounds = _SegmentBounds()
-    count = 0
-    pending = False
-    for instruction in iter_instructions(circuit):
-        if bounds.starts_new_segment(instruction, _instruction_kind(instruction)) and pending:
-            count += 1
-            pending = False
-        pending = True
-    return count + int(pending)
+    trivial = all(
+        np.array_equal(product.bits, source_pauli.bits) and product.phase == source_pauli.phase
+        for product, source_pauli in zip(
+            products, (_pauli_from_stim(source.observable) for source in sources), strict=True
+        )
+    )
+    if trivial:
+        output.append(instruction)
+    else:
+        _append_products(output, products, tag=instruction.tag)
+    if instruction.name in MEASURE_RESET_AXES:
+        axis = MEASURE_RESET_AXES[instruction.name]
+        qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
+        if not trivial:
+            output.append(RESET_GATES[axis], qubits, [], tag=instruction.tag)
+        for qubit in qubits:
+            late_resets[qubit] = axis
+    for product, source in zip(products, sources, strict=True):
+        checks.append(
+            CheckMapping(
+                measurement_index=measurement_index,
+                segment_index=segment_index,
+                product=_pauli_to_stim(product),
+                source_qubit=source.source_qubit,
+            )
+        )
+        measurement_index += 1
+    return measurement_index
 
 
-def _check_mappings(circuit: stim.Circuit) -> tuple[CheckMapping, ...]:
-    r"""Build pass-through measurement mappings for a gate-level fallback.
+def _append_products(output: stim.Circuit, products: Sequence[_Pauli], *, tag: str) -> None:
+    """Append inferred products, using MPAD for deterministic identities."""
+    with_support = [product.bits.any() for product in products]
+    if all(with_support):
+        targets: list[stim.GateTarget] = []
+        for product in products:
+            # The stim stub mistypes the return as a single GateTarget; the
+            # runtime returns a list of targets with combiners.
+            targets.extend(cast("list[stim.GateTarget]", stim.target_combined_paulis(_pauli_to_stim(product))))
+        output.append("MPP", targets, [], tag=tag)
+        return
+    for product, has_support in zip(products, with_support, strict=True):
+        if has_support:
+            product_targets = cast("list[stim.GateTarget]", stim.target_combined_paulis(_pauli_to_stim(product)))
+            output.append("MPP", product_targets, [], tag=tag)
+        else:
+            output.append("MPAD", [int(product.phase % 4 == _MINUS_PHASE)], [], tag=tag)
+
+
+def _emit_verbatim(
+    segment: _SourceSegment,
+    *,
+    prepared: dict[int, Axis],
+    dirty: dict[int, int],
+    measurement_index: int,
+) -> _SegmentRewrite | _Conflict:
+    """Emit one segment gate-level with exit-state bookkeeping only.
 
     Returns
     -------
-    `tuple`\[`CheckMapping`, ...\]
-        One mapping for each Pauli measurement record.
+    `_SegmentRewrite` | `_Conflict`
+        The verbatim segment, or a trashed-post-state consumption conflict.
+    """
+    output = stim.Circuit()
+    checks: list[CheckMapping] = []
+    exit_prepared = dict(prepared)
+    exit_dirty = dict(dirty)
+    for position, (instruction, kind) in enumerate(segment.items):
+        output.append(instruction)
+        if kind == "reset":
+            for target in instruction.targets_copy():
+                qubit = _plain_qubit(target, instruction.name)
+                exit_prepared[qubit] = RESET_AXES[instruction.name]
+                exit_dirty.pop(qubit, None)
+        elif kind == "unitary":
+            qubits = {
+                int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None
+            }
+            conflict = _consumed_dirty(qubits, exit_dirty, instruction.name, remeasured=False)
+            if conflict is not None:
+                return conflict
+            for qubit in qubits:
+                exit_prepared.pop(qubit, None)
+        elif kind == "measurement":
+            outcome = _verbatim_measurement(
+                checks,
+                instruction,
+                sources=segment.sources[position],
+                segment_index=segment.index,
+                measurement_index=measurement_index,
+                prepared=exit_prepared,
+                dirty=exit_dirty,
+            )
+            if isinstance(outcome, _Conflict):
+                return outcome
+            measurement_index = outcome
+        elif kind == "mpad":
+            measurement_index += instruction.num_measurements
+    return _SegmentRewrite(
+        circuit=output,
+        checks=tuple(checks),
+        exit_prepared=exit_prepared,
+        exit_dirty=exit_dirty,
+        exit_measurement_index=measurement_index,
+    )
+
+
+def _verbatim_measurement(  # ruff:ignore[too-many-arguments]
+    checks: list[CheckMapping],
+    instruction: stim.CircuitInstruction,
+    *,
+    sources: tuple[_SourceObservable, ...],
+    segment_index: int,
+    measurement_index: int,
+    prepared: dict[int, Axis],
+    dirty: dict[int, int],
+) -> int | _Conflict:
+    """Track one verbatim measurement's mappings and prepared-basis effects.
+
+    Returns
+    -------
+    `int` | `_Conflict`
+        The next measurement-record index, or a consumption conflict.
+    """
+    supports = {qubit for source in sources for qubit in source.observable.pauli_indices()}
+    conflict = _consumed_dirty(supports, dirty, instruction.name, remeasured=True)
+    if conflict is not None:
+        return conflict
+    for qubit in supports:
+        prepared.pop(qubit, None)
+    for source in sources:
+        checks.append(
+            CheckMapping(
+                measurement_index=measurement_index,
+                segment_index=segment_index,
+                product=source.observable,
+                source_qubit=source.source_qubit,
+            )
+        )
+        measurement_index += 1
+    if instruction.name in MEASURE_RESET_AXES:
+        for target in instruction.targets_copy():
+            prepared[_plain_qubit(target, instruction.name)] = MEASURE_RESET_AXES[instruction.name]
+    return measurement_index
+
+
+def _passthrough_result(circuit: stim.Circuit, segments: Sequence[_SourceSegment]) -> MppRewriteResult:
+    """Return the flattened source circuit as a whole-circuit fallback result.
+
+    Returns
+    -------
+    `MppRewriteResult`
+        The unchanged circuit with pass-through check mappings.
     """
     checks: list[CheckMapping] = []
     measurement_index = 0
-    segment_index = 0
-    bounds = _SegmentBounds()
-    for instruction in iter_instructions(circuit):
-        kind = _instruction_kind(instruction)
-        if bounds.starts_new_segment(instruction, kind):
-            segment_index += 1
-        if kind == "mpad":
-            measurement_index += instruction.num_measurements
-        elif kind == "measurement":
-            for source in _measurement_observables(instruction, circuit.num_qubits):
-                checks.append(
-                    CheckMapping(
-                        measurement_index=measurement_index,
-                        segment_index=segment_index,
-                        product=source.observable,
-                        source_qubit=source.source_qubit,
+    for segment in segments:
+        for position, (instruction, kind) in enumerate(segment.items):
+            if kind == "mpad":
+                measurement_index += instruction.num_measurements
+            elif kind == "measurement":
+                for source in segment.sources[position]:
+                    checks.append(
+                        CheckMapping(
+                            measurement_index=measurement_index,
+                            segment_index=segment.index,
+                            product=source.observable,
+                            source_qubit=source.source_qubit,
+                        )
                     )
-                )
-                measurement_index += 1
-    return tuple(checks)
+                    measurement_index += 1
+    return MppRewriteResult(
+        circuit=circuit,
+        checks=tuple(checks),
+        fallback_segments=tuple(segment.index for segment in segments),
+    )
 
 
 def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
+    """Classify one instruction for segmentation.
+
+    Returns
+    -------
+    `_InstructionKind`
+        The instruction class.
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        If the instruction is outside the supported basis.
+    """
     name = instruction.name
     if name in ANNOTATION_GATES:
         return "annotation"
@@ -355,10 +1239,6 @@ def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
 def _plain_qubit(target: stim.GateTarget, instruction_name: str) -> int:
     """Return the Stim qubit id a target acts on.
 
-    Unlike `_parse.plain_qubit_target`, Pauli-typed and inverted-result
-    targets are accepted: the rewriter only needs the qubit id here, and it
-    reports unsupported targets as `UnsupportedSyndromeCircuitError`.
-
     Returns
     -------
     `int`
@@ -374,637 +1254,6 @@ def _plain_qubit(target: stim.GateTarget, instruction_name: str) -> int:
         msg = f"{instruction_name} contains unsupported target {target!r}; only qubit targets are supported."
         raise UnsupportedSyndromeCircuitError(msg)
     return int(qubit_value)
-
-
-def _check_no_feedback_targets(instruction: stim.CircuitInstruction) -> None:
-    for target in instruction.targets_copy():
-        if target.is_sweep_bit_target:
-            msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
-            raise UnsupportedSyndromeCircuitError(msg)
-        if target.is_measurement_record_target:
-            # Measurement-record feedback cannot be inferred through, but its
-            # gate-level segment stays valid, so segment fallback may keep it.
-            msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
-            raise _SegmentRepresentabilityError(msg)
-
-
-class _Rewriter:
-    """Streaming rewriter that buffers and rewrites one segment at a time."""
-
-    def __init__(
-        self,
-        *,
-        num_qubits: int,
-        fallback: _FallbackMode = "circuit",
-        forced_verbatim: AbstractSet[int] = frozenset(),
-    ) -> None:
-        self._num_qubits = num_qubits
-        self._fallback = fallback
-        self._forced_verbatim = forced_verbatim
-        self._output = stim.Circuit()
-        self._checks: list[CheckMapping] = []
-        self._measurement_index = 0
-        self._segment_index = 0
-        self._dirty: dict[int, int] = {}
-        self._entry_prepared: dict[int, Axis] = {}
-        self._fallback_segments: list[int] = []
-        self._items: list[tuple[stim.CircuitInstruction, _InstructionKind]] = []
-        self._bounds = _SegmentBounds()
-
-    def process(self, instruction: stim.CircuitInstruction) -> None:
-        """Buffer one instruction, flushing the current segment at a boundary.
-
-        The boundary rule lives in `_SegmentBounds`, so the gate-level fallback
-        numbers its segments the same way.
-        """
-        kind = _instruction_kind(instruction)
-        if self._bounds.starts_new_segment(instruction, kind):
-            self._flush_segment()
-        self._items.append((instruction, kind))
-
-    def finish(self) -> MppRewriteResult:
-        """Flush the final segment and return the rewrite result.
-
-        Returns
-        -------
-        `MppRewriteResult`
-            Rewritten circuit and per-measurement Pauli-product mappings.
-        """
-        self._flush_segment()
-        return MppRewriteResult(
-            circuit=self._output,
-            checks=tuple(self._checks),
-            fallback_segments=tuple(self._fallback_segments),
-        )
-
-    def _flush_segment(self) -> None:
-        if not self._items:
-            return
-        segment = self._build_segment()
-        self._output += segment.output
-        self._checks.extend(segment.checks)
-        self._measurement_index = segment.measurement_index
-        self._entry_prepared = segment.exit_prepared()
-        self._dirty = segment.exit_dirty()
-        self._segment_index += 1
-        self._items = []
-
-    def _build_segment(self) -> _Segment | _VerbatimSegment:
-        """Rewrite the buffered segment, or emit it verbatim under segment fallback.
-
-        Returns
-        -------
-        `_Segment` | `_VerbatimSegment`
-            Completed segment.
-        """
-        if self._fallback == "segment":
-            if self._segment_index in self._forced_verbatim:
-                return self._verbatim_segment()
-            try:
-                return self._rewrite_segment(substitute_prepared=True)
-            except _SEGMENT_FALLBACK_ERRORS:
-                pass
-            try:
-                return self._rewrite_segment(substitute_prepared=False)
-            except _SEGMENT_FALLBACK_ERRORS:
-                return self._verbatim_segment()
-        try:
-            return self._rewrite_segment(substitute_prepared=True)
-        except (MppRewriteVerificationError, _ResidualFrameSynthesisError):
-            return self._rewrite_segment(substitute_prepared=False)
-
-    def _verbatim_segment(self) -> _VerbatimSegment:
-        """Emit the buffered segment gate-level with exit-state bookkeeping only.
-
-        Returns
-        -------
-        `_VerbatimSegment`
-            Completed verbatim segment.
-        """
-        segment = _VerbatimSegment(
-            num_qubits=self._num_qubits,
-            segment_index=self._segment_index,
-            entry_prepared=dict(self._entry_prepared),
-            dirty=dict(self._dirty),
-            measurement_index=self._measurement_index,
-        )
-        for instruction, kind in self._items:
-            segment.process(instruction, kind)
-        self._fallback_segments.append(self._segment_index)
-        return segment
-
-    def _rewrite_segment(self, *, substitute_prepared: bool) -> _Segment:
-        """Rewrite and verify the buffered segment using one ancilla-substitution policy.
-
-        Returns
-        -------
-        `_Segment`
-            Completed segment rewrite.
-        """
-        segment = _Segment(
-            num_qubits=self._num_qubits,
-            segment_index=self._segment_index,
-            entry_prepared=dict(self._entry_prepared),
-            dirty=dict(self._dirty),
-            measurement_index=self._measurement_index,
-            substitute_prepared=substitute_prepared,
-            allow_negative_pads=self._fallback == "circuit",
-        )
-        segment.prescan(self._items)
-        for instruction, kind in self._items:
-            segment.process(instruction, kind)
-        segment.append_residual_frame()
-        segment.verify()
-        return segment
-
-
-class _Segment:
-    """Rewrite state for one reset/Clifford/measure segment of the source circuit."""
-
-    def __init__(  # ruff:ignore[too-many-arguments]
-        self,
-        *,
-        num_qubits: int,
-        segment_index: int,
-        entry_prepared: dict[int, Axis],
-        dirty: dict[int, int],
-        measurement_index: int,
-        substitute_prepared: bool,
-        allow_negative_pads: bool = True,
-    ) -> None:
-        self._num_qubits = num_qubits
-        self._segment_index = segment_index
-        self._prepared = entry_prepared
-        self._dirty = dirty
-        self._substitute_prepared = substitute_prepared
-        self._allow_negative_pads = allow_negative_pads
-        self.measurement_index = measurement_index
-        self.output = stim.Circuit()
-        self.checks: list[CheckMapping] = []
-        self._body = stim.Circuit()
-        self._body_touched: set[int] = set()
-        self._seen_measurement = False
-        self._late_resets: dict[int, Axis] = {}
-        self._measured_out: set[int] = set()
-        self._measured_any: set[int] = set()
-        self._measured_unreset: set[int] = set()
-        # Source and rewritten copies of this segment as standalone channels.
-        # Both residual-frame synthesis and `verify` compare their stabilizer
-        # flows, so they are always mirrored while the segment is rewritten.
-        self._orig_verify = stim.Circuit()
-        self._conv_verify = stim.Circuit()
-        for qubit, basis in sorted(entry_prepared.items()):
-            for target_circuit in (self._orig_verify, self._conv_verify):
-                target_circuit.append(RESET_GATES[basis], [qubit])
-
-    def process(self, instruction: stim.CircuitInstruction, kind: _InstructionKind) -> None:
-        """Rewrite one buffered instruction of this segment."""
-        if kind == "annotation":
-            self.output.append(instruction)
-        elif kind == "mpad":
-            self._process_mpad(instruction)
-        elif kind == "reset":
-            self._process_reset(instruction)
-        elif kind == "unitary":
-            self._process_unitary(instruction)
-        else:
-            self._process_measurement(instruction)
-
-    def prescan(self, items: Sequence[tuple[stim.CircuitInstruction, _InstructionKind]]) -> None:
-        """Collect the segment-wide set of measured-out qubits before rewriting."""
-        for instruction, kind in items:
-            if kind != "measurement":
-                continue
-            name = instruction.name
-            if name in DIRECT_MEASUREMENT_AXES:
-                for target in instruction.targets_copy():
-                    self._measured_out.add(_plain_qubit(target, name))
-
-    def _append_verbatim(self, instruction: stim.CircuitInstruction) -> None:
-        self.output.append(instruction)
-        self._orig_verify.append(instruction)
-        self._conv_verify.append(instruction)
-
-    def _rewrite_targets(self) -> tuple[stim.Circuit, stim.Circuit]:
-        r"""Return the circuits every rewritten instruction is appended to.
-
-        Returns
-        -------
-        `tuple`\[``stim.Circuit``, ``stim.Circuit``\]
-            The emitted output and its verification mirror.
-        """
-        return (self.output, self._conv_verify)
-
-    def _process_mpad(self, instruction: stim.CircuitInstruction) -> None:
-        self._append_verbatim(instruction)
-        self.measurement_index += len(instruction.targets_copy())
-        self._seen_measurement = True
-
-    def _process_reset(self, instruction: stim.CircuitInstruction) -> None:
-        basis = RESET_AXES[instruction.name]
-        for target in instruction.targets_copy():
-            qubit = _plain_qubit(target, instruction.name)
-            if self._seen_measurement:
-                self._late_resets[qubit] = basis
-            elif qubit in self._body_touched:
-                msg = f"Reset on qubit {qubit} after it was entangled in the same segment is not supported."
-                raise _SegmentRepresentabilityError(msg)
-            else:
-                self._prepared[qubit] = basis
-            self._dirty.pop(qubit, None)
-            self._measured_unreset.discard(qubit)
-        self._append_verbatim(instruction)
-
-    def _process_unitary(self, instruction: stim.CircuitInstruction) -> None:
-        _check_no_feedback_targets(instruction)
-        touched = {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
-        dirty_touched = sorted(touched & self._dirty.keys())
-        if dirty_touched:
-            msg = (
-                f"{instruction.name} acts on measured-but-not-reset qubit(s) {dirty_touched}; "
-                "reusing measurement post-states is not supported."
-            )
-            raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_touched[0]])
-        self._body.append(instruction)
-        self._orig_verify.append(instruction)
-        self._body_touched |= touched
-
-    def _process_measurement(self, instruction: stim.CircuitInstruction) -> None:
-        if instruction.gate_args_copy():
-            msg = f"Noisy measurement {instruction.name} with arguments is not supported."
-            raise UnsupportedSyndromeCircuitError(msg)
-        sources = _measurement_observables(instruction, self._num_qubits)
-        self._validate_measured_qubits(instruction, sources)
-        separate_from_previous = self._seen_measurement
-        self._seen_measurement = True
-        products = [self._infer_product(source) for source in sources]
-        if any(not left.commutes(right) for left, right in combinations(products, 2)):
-            msg = f"Segment {self._segment_index} ancilla substitution made commuting source measurements anticommute."
-            raise _ResidualFrameSynthesisError(msg)
-        for product, source in zip(products, sources, strict=True):
-            self.checks.append(
-                CheckMapping(
-                    measurement_index=self.measurement_index,
-                    segment_index=self._segment_index,
-                    product=product,
-                    source_qubit=source.source_qubit,
-                )
-            )
-            self.measurement_index += 1
-        if separate_from_previous:
-            self.output.append("TICK", [])
-            self._conv_verify.append("TICK", [])
-        self._emit_measurement(instruction, sources, products)
-        self._orig_verify.append(instruction)
-
-    def _validate_measured_qubits(
-        self, instruction: stim.CircuitInstruction, sources: Sequence[_SourceObservable]
-    ) -> None:
-        qubits = {qubit for source in sources for qubit in source.observable.pauli_indices()}
-        dirty_measured = sorted(qubits & self._dirty.keys())
-        if dirty_measured:
-            msg = (
-                f"{instruction.name} measures qubit(s) {dirty_measured} whose earlier measurement "
-                "post-state was never reset; correlated re-measurement is not supported."
-            )
-            raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_measured[0]])
-        self._measured_any |= qubits
-        if instruction.name in SINGLE_MEASUREMENT_AXES:
-            self._measured_unreset |= qubits
-
-    def _infer_product(self, source: _SourceObservable) -> stim.PauliString:
-        pulled = source.observable.before(self._body) if len(self._body) else source.observable.copy()
-        if not self._substitute_prepared:
-            return pulled
-        for qubit in pulled.pauli_indices():
-            prepared_basis = self._prepared.get(qubit)
-            if prepared_basis is None or qubit not in self._measured_out:
-                continue
-            if _PAULI_CODES[prepared_basis] == pulled[qubit]:
-                pulled[qubit] = 0
-        if pulled.sign not in {1, -1}:
-            msg = f"Non-Hermitian inferred observable: {pulled}."
-            raise _SegmentRepresentabilityError(msg)
-        return pulled
-
-    def _emit_measurement(
-        self,
-        instruction: stim.CircuitInstruction,
-        sources: Sequence[_SourceObservable],
-        products: Sequence[stim.PauliString],
-    ) -> None:
-        trivial = all(product == source.observable for product, source in zip(products, sources, strict=True))
-        if trivial:
-            for target_circuit in self._rewrite_targets():
-                target_circuit.append(instruction)
-        else:
-            self._emit_inferred_products(products, tag=instruction.tag)
-        if instruction.name in MEASURE_RESET_AXES:
-            basis = MEASURE_RESET_AXES[instruction.name]
-            reset_gate = RESET_GATES[basis]
-            qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
-            if not trivial:
-                for target_circuit in self._rewrite_targets():
-                    target_circuit.append(reset_gate, qubits, [], tag=instruction.tag)
-            for qubit in qubits:
-                self._late_resets[qubit] = basis
-                self._measured_unreset.discard(qubit)
-
-    def _emit_inferred_products(self, products: Sequence[stim.PauliString], *, tag: str) -> None:
-        """Append inferred products, using MPAD for deterministic identities.
-
-        Raises
-        ------
-        _SegmentRepresentabilityError
-            If a deterministic-minus record would become ``MPAD 1`` while
-            negative pads are disallowed (segment fallback).
-        """
-        product_has_support = [bool(product.pauli_indices()) for product in products]
-        target_circuits = self._rewrite_targets()
-        if all(product_has_support):
-            targets: list[stim.GateTarget] = []
-            for product in products:
-                # The stim stub mistypes the return as a single GateTarget; the
-                # runtime returns a list of targets with combiners.
-                targets.extend(cast("list[stim.GateTarget]", stim.target_combined_paulis(product)))
-            for target_circuit in target_circuits:
-                target_circuit.append("MPP", targets, [], tag=tag)
-            return
-
-        for product, has_support in zip(products, product_has_support, strict=True):
-            if has_support:
-                product_targets = cast("list[stim.GateTarget]", stim.target_combined_paulis(product))
-                for target_circuit in target_circuits:
-                    target_circuit.append("MPP", product_targets, [], tag=tag)
-            else:
-                pad_bit = int(product.sign == -1)
-                if pad_bit and not self._allow_negative_pads:
-                    # The Stim importer rejects MPAD 1 (detector parity offsets
-                    # are not represented), so under segment fallback a
-                    # deterministic-minus record must stay a real measurement:
-                    # the unsubstituted retry keeps it a signed MPP, or the
-                    # segment falls back verbatim.
-                    msg = f"Segment {self._segment_index} infers a deterministic-minus record (MPAD 1)."
-                    raise _SegmentRepresentabilityError(msg)
-                for target_circuit in target_circuits:
-                    target_circuit.append("MPAD", [pad_bit], [], tag=tag)
-
-    def append_residual_frame(self) -> None:
-        """Preserve the Clifford frame left on qubits that were not measured out."""
-        if len(self._body) == 0:
-            return
-        survivors = sorted(self._body_touched - self._measured_out)
-        if not survivors:
-            return
-
-        try:
-            residual_frame = self._residual_frame_from_body(survivors)
-        except ValueError:
-            residual_frame = self._residual_local_frame_from_flows(survivors)
-        if len(residual_frame) == 0:
-            return
-        self.output += residual_frame
-        self._conv_verify += residual_frame
-
-    def _residual_frame_from_body(self, survivors: Sequence[int]) -> stim.Circuit:
-        """Return the body tableau restricted to surviving qubits.
-
-        Returns
-        -------
-        ``stim.Circuit``
-            A synthesized residual Clifford circuit.
-        """
-        xs = [self._restricted_body_output(qubit, "X", survivors) for qubit in survivors]
-        zs = [self._restricted_body_output(qubit, "Z", survivors) for qubit in survivors]
-        tableau = stim.Tableau.from_conjugated_generators(xs=xs, zs=zs)
-        if tableau == stim.Tableau(len(survivors)):
-            return stim.Circuit()
-        return _remap_tableau_circuit(tableau, survivors)
-
-    def _residual_local_frame_from_flows(self, survivors: Sequence[int]) -> stim.Circuit:
-        """Infer a tensor product of one-qubit residual Cliffords from channel flows.
-
-        Returns
-        -------
-        ``stim.Circuit``
-            A local Clifford circuit satisfying all matched flow generators.
-        """
-        original, converted = self._padded_channels()
-        pairs = _matched_flow_output_pairs(original, converted, survivors, self._segment_index)
-        axis_maps = _local_axis_maps(pairs, len(survivors), self._segment_index)
-        local_tableaus = [_unsigned_local_tableau(axis_map, self._segment_index) for axis_map in axis_maps]
-        equations = _local_sign_equations(pairs, local_tableaus, self._segment_index)
-        return _materialize_local_frame(survivors, local_tableaus, _solve_binary_equations(equations))
-
-    def _padded_channels(self) -> tuple[stim.Circuit, stim.Circuit]:
-        r"""Return the source and rewritten channels with ancilla post-states reset.
-
-        Resetting the measured-out ancillas in both copies models the
-        optimized-rewrite semantics: the rewrite is only required to agree with
-        its source on the qubits that survive the segment.
-
-        Returns
-        -------
-        `tuple`\[``stim.Circuit``, ``stim.Circuit``\]
-            Padded copies of the source and rewritten channels.
-        """
-        padding = sorted(self._measured_out)
-        original = self._orig_verify.copy()
-        converted = self._conv_verify.copy()
-        if padding:
-            original.append("R", padding)
-            converted.append("R", padding)
-        return original, converted
-
-    def _restricted_body_output(
-        self,
-        qubit: int,
-        basis: Literal["X", "Z"],
-        survivors: Sequence[int],
-    ) -> stim.PauliString:
-        """Return one body-tableau generator with measured-out support removed.
-
-        Returns
-        -------
-        ``stim.PauliString``
-            Conjugated generator restricted to the surviving qubits.
-        """
-        source = stim.PauliString(self._num_qubits)
-        source[qubit] = basis
-        transformed = source.after(self._body)
-        restricted = stim.PauliString(len(survivors))
-        restricted.sign = transformed.sign
-        for local_qubit, global_qubit in enumerate(survivors):
-            restricted[local_qubit] = transformed[global_qubit]
-        return restricted
-
-    def verify(self) -> None:
-        """Cross-check stabilizer-flow generators of the source and rewritten segment.
-
-        Raises
-        ------
-        MppRewriteVerificationError
-            If the rewritten segment is not flow-equivalent to its source.
-        """
-        if len(self._body) == 0 and self._orig_verify == self._conv_verify:
-            return
-        original, converted = self._padded_channels()
-        original_flows = original.flow_generators()
-        converted_flows = converted.flow_generators()
-        # Stim currently returns a canonical sorted basis. Equality is a fast
-        # path only; the per-flow fallback remains authoritative if the chosen
-        # generator bases differ across equivalent circuits or Stim versions.
-        if original_flows == converted_flows:
-            return
-        for flow in original_flows:
-            if not converted.has_flow(flow):
-                msg = _verification_message(self._segment_index, flow, "source flow missing from rewrite")
-                raise MppRewriteVerificationError(msg)
-        for flow in converted_flows:
-            if not original.has_flow(flow):
-                msg = _verification_message(self._segment_index, flow, "rewritten flow missing from source")
-                raise MppRewriteVerificationError(msg)
-
-    def exit_prepared(self) -> dict[int, Axis]:
-        r"""Return the prepared-qubit map carried into the next segment.
-
-        Returns
-        -------
-        `dict`\[`int`, `Axis`\]
-            Prepared Pauli bases still valid at the next segment's start.
-        """
-        carried = {
-            qubit: basis
-            for qubit, basis in self._prepared.items()
-            if qubit not in self._body_touched and qubit not in self._measured_any
-        }
-        carried.update(self._late_resets)
-        return carried
-
-    def exit_dirty(self) -> dict[int, int]:
-        r"""Return qubits whose post-measurement state diverges after this segment.
-
-        The rewrite deletes the Clifford body, so a qubit measured out without
-        a subsequent reset is left in a state that was only verified up to
-        resetting it; the map records which rewritten segment trashed it.
-
-        Returns
-        -------
-        `dict`\[`int`, `int`\]
-            Trashed qubits mapped to the rewritten segment that trashed them.
-        """
-        dirty = dict(self._dirty)
-        dirty.update(dict.fromkeys(self._measured_unreset, self._segment_index))
-        return dirty
-
-
-class _VerbatimSegment:
-    """One segment emitted gate-level under segment fallback.
-
-    The output states of a verbatim segment are exactly the source's, so its
-    own unreset measured qubits carry faithful post-states and contribute no
-    dirty entries; only qubits trashed by earlier rewritten segments stay
-    dirty until a reset re-synchronizes the two circuits. Prepared bases are
-    tracked per qubit so later segments substitute correctly: any touch
-    invalidates the basis, a reset or measure-reset re-establishes it.
-    """
-
-    def __init__(
-        self,
-        *,
-        num_qubits: int,
-        segment_index: int,
-        entry_prepared: dict[int, Axis],
-        dirty: dict[int, int],
-        measurement_index: int,
-    ) -> None:
-        self._num_qubits = num_qubits
-        self._segment_index = segment_index
-        self._prepared = entry_prepared
-        self._dirty = dirty
-        self.measurement_index = measurement_index
-        self.output = stim.Circuit()
-        self.checks: list[CheckMapping] = []
-
-    def process(self, instruction: stim.CircuitInstruction, kind: _InstructionKind) -> None:
-        """Append one buffered instruction verbatim and track its state effects."""
-        self.output.append(instruction)
-        if kind == "mpad":
-            self.measurement_index += instruction.num_measurements
-        elif kind == "reset":
-            self._process_reset(instruction)
-        elif kind == "unitary":
-            self._process_unitary(instruction)
-        elif kind == "measurement":
-            self._process_measurement(instruction)
-
-    def _process_reset(self, instruction: stim.CircuitInstruction) -> None:
-        basis = RESET_AXES[instruction.name]
-        for target in instruction.targets_copy():
-            qubit = _plain_qubit(target, instruction.name)
-            self._prepared[qubit] = basis
-            self._dirty.pop(qubit, None)
-
-    def _process_unitary(self, instruction: stim.CircuitInstruction) -> None:
-        for target in instruction.targets_copy():
-            if target.is_sweep_bit_target:
-                msg = f"Classical feedback is not supported: {instruction.name} with target {target!r}."
-                raise UnsupportedSyndromeCircuitError(msg)
-        touched = {int(target.qubit_value) for target in instruction.targets_copy() if target.qubit_value is not None}
-        self._touch(touched, instruction.name)
-
-    def _process_measurement(self, instruction: stim.CircuitInstruction) -> None:
-        if instruction.gate_args_copy():
-            msg = f"Noisy measurement {instruction.name} with arguments is not supported."
-            raise UnsupportedSyndromeCircuitError(msg)
-        sources = _measurement_observables(instruction, self._num_qubits)
-        qubits = {qubit for source in sources for qubit in source.observable.pauli_indices()}
-        self._touch(qubits, instruction.name)
-        for source in sources:
-            self.checks.append(
-                CheckMapping(
-                    measurement_index=self.measurement_index,
-                    segment_index=self._segment_index,
-                    product=source.observable,
-                    source_qubit=source.source_qubit,
-                )
-            )
-            self.measurement_index += 1
-        if instruction.name in MEASURE_RESET_AXES:
-            basis = MEASURE_RESET_AXES[instruction.name]
-            for qubit in qubits:
-                self._prepared[qubit] = basis
-
-    def _touch(self, qubits: AbstractSet[int], instruction_name: str) -> None:
-        dirty_touched = sorted(qubits & self._dirty.keys())
-        if dirty_touched:
-            msg = (
-                f"{instruction_name} acts on measured-but-not-reset qubit(s) {dirty_touched}; "
-                "reusing measurement post-states is not supported."
-            )
-            raise _RewrittenStateReuseError(msg, source_segment=self._dirty[dirty_touched[0]])
-        for qubit in qubits:
-            self._prepared.pop(qubit, None)
-
-    def exit_prepared(self) -> dict[int, Axis]:
-        r"""Return the prepared-qubit map carried into the next segment.
-
-        Returns
-        -------
-        `dict`\[`int`, `Axis`\]
-            Prepared Pauli bases still valid at the next segment's start.
-        """
-        return dict(self._prepared)
-
-    def exit_dirty(self) -> dict[int, int]:
-        r"""Return qubits whose post-measurement state diverges after this segment.
-
-        Returns
-        -------
-        `dict`\[`int`, `int`\]
-            Trashed qubits mapped to the rewritten segment that trashed them.
-        """
-        return dict(self._dirty)
 
 
 def _remap_tableau_circuit(tableau: stim.Tableau, qubits: Sequence[int]) -> stim.Circuit:
@@ -1030,250 +1279,14 @@ def _remap_tableau_circuit(tableau: stim.Tableau, qubits: Sequence[int]) -> stim
     return result
 
 
-def _matched_flow_output_pairs(
-    original: stim.Circuit,
-    converted: stim.Circuit,
-    qubits: Sequence[int],
-    segment_index: int,
-) -> list[tuple[stim.PauliString, stim.PauliString]]:
-    r"""Match channel-flow outputs by their input Pauli and measurement parity.
-
-    Returns
-    -------
-    `list`\[`tuple`\[``stim.PauliString``, ``stim.PauliString``\]\]
-        Converted/original output-Pauli pairs restricted to qubits.
-
-    Raises
-    ------
-    _ResidualFrameSynthesisError
-        If the two channels' canonical flow generators cannot be aligned.
-    """
-    original_by_key = {_flow_key(flow): flow for flow in original.flow_generators()}
-    converted_by_key = {_flow_key(flow): flow for flow in converted.flow_generators()}
-    if original_by_key.keys() != converted_by_key.keys():
-        msg = f"Segment {segment_index} flow generators cannot be aligned to infer a residual frame."
-        raise _ResidualFrameSynthesisError(msg)
-    return [
-        (
-            _restrict_pauli(converted_by_key[key].output_copy(), qubits),
-            _restrict_pauli(original_by_key[key].output_copy(), qubits),
-        )
-        for key in original_by_key
-    ]
-
-
-def _local_axis_maps(
-    pairs: Sequence[tuple[stim.PauliString, stim.PauliString]],
-    num_qubits: int,
-    segment_index: int,
-) -> list[dict[int, int]]:
-    r"""Infer unsigned one-qubit Pauli-axis maps from matched flow outputs.
-
-    Returns
-    -------
-    `list`\[`dict`\[`int`, `int`\]\]
-        Source-to-target Pauli-axis maps for each dense qubit.
-
-    Raises
-    ------
-    _ResidualFrameSynthesisError
-        If a residual frame changes Pauli support or has inconsistent local
-        axis constraints.
-    """
-    axis_maps: list[dict[int, int]] = [{} for _ in range(num_qubits)]
-    for converted_pauli, original_pauli in pairs:
-        if converted_pauli.pauli_indices() != original_pauli.pauli_indices():
-            msg = f"Segment {segment_index} residual frame is not local on the surviving qubits."
-            raise _ResidualFrameSynthesisError(msg)
-        for qubit in converted_pauli.pauli_indices():
-            source_axis = converted_pauli[qubit]
-            target_axis = original_pauli[qubit]
-            previous = axis_maps[qubit].setdefault(source_axis, target_axis)
-            if previous != target_axis:
-                msg = f"Segment {segment_index} has inconsistent local Clifford flow constraints."
-                raise _ResidualFrameSynthesisError(msg)
-    return axis_maps
-
-
-def _local_sign_equations(
-    pairs: Sequence[tuple[stim.PauliString, stim.PauliString]],
-    tableaus: Sequence[stim.Tableau],
-    segment_index: int,
-) -> list[tuple[int, int]]:
-    r"""Build Pauli-correction equations for local residual Clifford signs.
-
-    Returns
-    -------
-    `list`\[`tuple`\[`int`, `int`\]\]
-        Bit-packed GF(2) equations.
-
-    Raises
-    ------
-    _ResidualFrameSynthesisError
-        If the unsigned local tableaus do not satisfy the axis constraints.
-    """
-    equations: list[tuple[int, int]] = []
-    for converted_pauli, original_pauli in pairs:
-        mapped = _apply_local_tableaus(converted_pauli, tableaus)
-        if mapped.pauli_indices() != original_pauli.pauli_indices() or any(
-            mapped[qubit] != original_pauli[qubit] for qubit in mapped.pauli_indices()
-        ):
-            msg = f"Segment {segment_index} local Clifford axes do not satisfy its flow constraints."
-            raise _ResidualFrameSynthesisError(msg)
-        coefficients = 0
-        for qubit in mapped.pauli_indices():
-            axis = mapped[qubit]
-            if axis in {2, 3}:
-                coefficients ^= 1 << (2 * qubit)
-            if axis in {1, 2}:
-                coefficients ^= 1 << (2 * qubit + 1)
-        equations.append((coefficients, int(mapped.sign != original_pauli.sign)))
-    return equations
-
-
-def _materialize_local_frame(
-    qubits: Sequence[int],
-    tableaus: Sequence[stim.Tableau],
-    correction_bits: int,
-) -> stim.Circuit:
-    """Materialize local tableaus and their output-Pauli sign corrections.
-
-    Returns
-    -------
-    ``stim.Circuit``
-        Residual local Clifford circuit on the requested Stim qubits.
-    """
-    frame = stim.Circuit()
-    for global_qubit, tableau in zip(qubits, tableaus, strict=True):
-        if tableau != stim.Tableau(1):
-            frame += _remap_tableau_circuit(tableau, [global_qubit])
-    x_targets = [qubits[qubit] for qubit in range(len(qubits)) if correction_bits >> (2 * qubit) & 1]
-    z_targets = [qubits[qubit] for qubit in range(len(qubits)) if correction_bits >> (2 * qubit + 1) & 1]
-    if x_targets:
-        frame.append("X", x_targets)
-    if z_targets:
-        frame.append("Z", z_targets)
-    return frame
-
-
-def _flow_key(flow: stim.Flow) -> tuple[str, tuple[int, ...]]:
-    r"""Return the flow fields unchanged by an output Clifford frame.
-
-    Returns
-    -------
-    `tuple`\[`str`, `tuple`\[`int`, ...\]\]
-        Input-Pauli spelling and measurement-record parity.
-    """
-    return str(flow.input_copy()), tuple(flow.measurements_copy())
-
-
-def _restrict_pauli(pauli: stim.PauliString, qubits: Sequence[int]) -> stim.PauliString:
-    """Restrict a Pauli string to an ordered qubit subset.
-
-    Returns
-    -------
-    ``stim.PauliString``
-        Pauli string on dense indices corresponding to ``qubits``.
-    """
-    result = stim.PauliString(len(qubits))
-    result.sign = pauli.sign
-    for local_qubit, global_qubit in enumerate(qubits):
-        # Stim trims trailing identity factors from flow-output Paulis.
-        result[local_qubit] = pauli[global_qubit] if global_qubit < len(pauli) else 0
-    return result
-
-
-def _unsigned_local_tableau(axis_map: dict[int, int], segment_index: int) -> stim.Tableau:
-    """Choose a one-qubit Clifford with the requested unsigned axis mapping.
-
-    Returns
-    -------
-    ``stim.Tableau``
-        A matching one-qubit Clifford tableau.
-
-    Raises
-    ------
-    _ResidualFrameSynthesisError
-        If no one-qubit Clifford satisfies the axis mapping.
-    """
-    for tableau in stim.Tableau.iter_all(1, unsigned=True):
-        matches = True
-        for source_axis, target_axis in axis_map.items():
-            source = stim.PauliString(1)
-            source[0] = source_axis
-            if tableau(source)[0] != target_axis:
-                matches = False
-                break
-        if matches:
-            return tableau
-    msg = f"Segment {segment_index} flow constraints do not define a one-qubit Clifford."
-    raise _ResidualFrameSynthesisError(msg)
-
-
-def _apply_local_tableaus(pauli: stim.PauliString, tableaus: Sequence[stim.Tableau]) -> stim.PauliString:
-    """Conjugate a Pauli string by a tensor product of one-qubit tableaus.
-
-    Returns
-    -------
-    ``stim.PauliString``
-        Conjugated Pauli string.
-    """
-    result = stim.PauliString(len(pauli))
-    result.sign = pauli.sign
-    for qubit in pauli.pauli_indices():
-        source = stim.PauliString(1)
-        source[0] = pauli[qubit]
-        transformed = tableaus[qubit](source)
-        result[qubit] = transformed[0]
-        result.sign *= transformed.sign
-    return result
-
-
-def _solve_binary_equations(equations: Sequence[tuple[int, int]]) -> int:
-    """Solve bit-packed linear equations over GF(2), setting free variables to zero.
-
-    Returns
-    -------
-    `int`
-        Bit-packed solution.
-
-    Raises
-    ------
-    _ResidualFrameSynthesisError
-        If the equations are inconsistent.
-    """
-    pivots: dict[int, tuple[int, int]] = {}
-    for initial_mask, initial_rhs in equations:
-        mask = initial_mask
-        rhs = initial_rhs
-        while mask:
-            pivot = (mask & -mask).bit_length() - 1
-            existing = pivots.get(pivot)
-            if existing is None:
-                pivots[pivot] = (mask, rhs)
-                break
-            mask ^= existing[0]
-            rhs ^= existing[1]
-        if mask == 0 and rhs:
-            msg = "Residual Clifford sign constraints are inconsistent."
-            raise _ResidualFrameSynthesisError(msg)
-
-    solution = 0
-    for pivot in sorted(pivots, reverse=True):
-        mask, rhs = pivots[pivot]
-        if (mask & solution).bit_count() % 2 != rhs:
-            solution |= 1 << pivot
-    return solution
-
-
-def _verification_message(segment_index: int, flow: stim.Flow, direction: str) -> str:
-    return (
-        f"Segment {segment_index} failed flow verification ({direction}): {flow}. "
-        "The removed Clifford body likely acts on data qubits beyond measuring the inferred products."
-    )
-
-
 def _measurement_observables(instruction: stim.CircuitInstruction, num_qubits: int) -> list[_SourceObservable]:
+    r"""Extract the measured observables of one measurement instruction.
+
+    Returns
+    -------
+    `list`\[`_SourceObservable`\]
+        One observable per measurement record, in record order.
+    """
     name = instruction.name
     if name in DIRECT_MEASUREMENT_AXES:
         basis = DIRECT_MEASUREMENT_AXES[name]
@@ -1287,16 +1300,35 @@ def _measurement_observables(instruction: stim.CircuitInstruction, num_qubits: i
 def _single_qubit_observable(
     group: Sequence[stim.GateTarget], basis: Axis, name: str, num_qubits: int
 ) -> _SourceObservable:
+    """Build the observable of one single-qubit measurement target.
+
+    Returns
+    -------
+    `_SourceObservable`
+        The measured observable.
+    """
     (target,) = group
     qubit = _plain_qubit(target, name)
     observable = stim.PauliString(num_qubits)
-    observable[qubit] = _PAULI_CODES[basis]
+    observable[qubit] = _pauli_code(basis)
     if target.is_inverted_result_target:
         observable.sign = -1
     return _SourceObservable(observable=observable, source_qubit=qubit)
 
 
 def _pair_observable(group: Sequence[stim.GateTarget], basis: Axis, name: str, num_qubits: int) -> _SourceObservable:
+    """Build the observable of one pair-measurement target group.
+
+    Returns
+    -------
+    `_SourceObservable`
+        The measured observable.
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        If the group is not a pair of distinct qubits.
+    """
     if len(group) != _PAIR_GROUP_SIZE:
         msg = f"{name} expects qubit pairs."
         raise UnsupportedSyndromeCircuitError(msg)
@@ -1307,7 +1339,7 @@ def _pair_observable(group: Sequence[stim.GateTarget], basis: Axis, name: str, n
         if observable[qubit] != 0:
             msg = f"{name} pairs the same qubit {qubit} with itself."
             raise UnsupportedSyndromeCircuitError(msg)
-        observable[qubit] = _PAULI_CODES[basis]
+        observable[qubit] = _pauli_code(basis)
         if target.is_inverted_result_target:
             sign = -sign
     observable.sign = sign
@@ -1315,6 +1347,18 @@ def _pair_observable(group: Sequence[stim.GateTarget], basis: Axis, name: str, n
 
 
 def _mpp_observable(group: Sequence[stim.GateTarget], num_qubits: int) -> _SourceObservable:
+    """Build the observable of one MPP product group.
+
+    Returns
+    -------
+    `_SourceObservable`
+        The measured observable.
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        If the product contains a non-Pauli target or is not Hermitian.
+    """
     observable = stim.PauliString(num_qubits)
     for target in group:
         qubit = _plain_qubit(target, "MPP")
@@ -1322,8 +1366,22 @@ def _mpp_observable(group: Sequence[stim.GateTarget], num_qubits: int) -> _Sourc
         if pauli not in Axis.__members__:
             msg = f"MPP contains a non-Pauli target on qubit {qubit}."
             raise UnsupportedSyndromeCircuitError(msg)
-        factor = stim.PauliString({qubit: _PAULI_CODES[Axis[pauli]]})
+        factor = stim.PauliString({qubit: _pauli_code(Axis[pauli])})
         if target.is_inverted_result_target:
             factor.sign = -1
         observable *= factor
+    if observable.sign not in {1, -1}:
+        msg = f"Non-Hermitian measurement product: {observable}."
+        raise UnsupportedSyndromeCircuitError(msg)
     return _SourceObservable(observable=observable, source_qubit=None)
+
+
+def _pauli_code(axis: Axis) -> int:
+    """Return the Stim numeric Pauli code of an axis.
+
+    Returns
+    -------
+    `int`
+        1 for X, 2 for Y, 3 for Z.
+    """
+    return {Axis.X: 1, Axis.Y: 2, Axis.Z: 3}[axis]
