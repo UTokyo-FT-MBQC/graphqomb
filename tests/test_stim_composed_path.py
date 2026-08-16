@@ -141,6 +141,62 @@ def test_feedback_barrier_on_deterministic_one_record_imports() -> None:
     assert _uncoordinated_node_count(composed) == 0
 
 
+def test_commuting_pulled_mpps_share_one_graph_layer_before_tick() -> None:
+    source = stim.Circuit(
+        """
+        R 4 5
+        CX 0 4
+        M[first] 4
+        CX 1 5
+        M[second] 5
+        """
+    )
+
+    rewritten = rewrite_to_mpp(source).circuit
+    composed = stim_circuit_to_pattern(rewritten)
+
+    assert rewritten == stim.Circuit(
+        """
+        R 4 5
+        MPP[first] Z0
+        MPP[second] Z1
+        CX 0 4 1 5
+        """
+    )
+    assert len(composed.mpp_extractions) == 1
+    assert composed.mpp_extractions[0].supports == (((0, "Z"),), ((1, "Z"),))
+
+
+def test_source_tick_keeps_commuting_pulled_mpps_in_separate_graph_layers() -> None:
+    source = stim.Circuit(
+        """
+        R 4 5
+        CX 0 4
+        M[first] 4
+        TICK
+        CX 1 5
+        M[second] 5
+        """
+    )
+
+    rewritten = rewrite_to_mpp(source).circuit
+    composed = stim_circuit_to_pattern(rewritten)
+
+    assert rewritten == stim.Circuit(
+        """
+        R 4 5
+        MPP[first] Z0
+        TICK
+        MPP[second] Z1
+        CX 0 4 1 5
+        """
+    )
+    assert [extraction.supports for extraction in composed.mpp_extractions] == [
+        (((0, "Z"),),),
+        (((1, "Z"),),),
+    ]
+
+
 def test_externally_pre_split_circuit_imports_like_the_original() -> None:
     # A caller may hand the importer a circuit whose reset lifetimes already
     # sit on fresh qubit ids (id 2 continues id 1 below). The importer cannot

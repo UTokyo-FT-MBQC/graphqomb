@@ -62,6 +62,11 @@ arguments are rejected. ``DETECTOR``, ``OBSERVABLE_INCLUDE``, tags, and qubit
 coordinates are copied while retaining their measurement-record indices.
 ``REPEAT`` blocks are flattened first.
 
+Commuting pulled products emitted inside one source ``TICK`` interval are
+collected by the importer into one MPP graph fragment, even when tags keep them
+as separate Stim instructions. A source ``TICK`` is a hard boundary: products
+on opposite sides are built as separate graph layers and are never coalesced.
+
 The historical ``fallback`` argument and ``fallback_segments`` result field
 remain for API compatibility. ``fallback="circuit"`` and
 ``fallback="segment"`` select the same exact pipeline, and
