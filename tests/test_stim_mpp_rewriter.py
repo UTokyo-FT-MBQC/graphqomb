@@ -201,7 +201,7 @@ def test_detectors_and_observables_are_copied_verbatim() -> None:
     _assert_same_reference_signs(result.circuit, source)
 
 
-def test_generated_surface_code_memory_rewrites_and_verifies() -> None:
+def test_generated_surface_code_memory_rewrites_every_round() -> None:
     source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3)
 
     result = rewrite_to_mpp(source)
@@ -227,7 +227,7 @@ def test_generated_surface_code_memory_rewrites_and_verifies() -> None:
     )
 
 
-def test_generated_repetition_code_memory_rewrites_and_verifies() -> None:
+def test_generated_repetition_code_memory_rewrites() -> None:
     source = stim.Circuit.generated("repetition_code:memory", distance=3, rounds=4)
 
     result = rewrite_to_mpp(source)
@@ -252,6 +252,23 @@ def test_mpp_repeated_qubit_factors_are_reduced_in_mapping_and_pass_through() ->
     assert [check.product for check in result.checks] == [
         stim.PauliString("+_X_"),
         stim.PauliString("+___"),
+    ]
+
+
+def test_mpp_products_with_high_qubit_indices_parse_exactly() -> None:
+    # Regression: each factor must be built by indexed assignment. Passing a
+    # dict to stim.PauliString iterates its keys as per-qubit pauli codes,
+    # which misparsed Z1*Z2 as X0*Y0 = +iZ0 and rejected it as non-Hermitian.
+    source = "MPP Z1*Z2 X0*X3 !Z0*Z1*Z3 Y0*X1*Z2"
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit(source)
+    assert [check.product for check in result.checks] == [
+        stim.PauliString("+_ZZ_"),
+        stim.PauliString("+X__X"),
+        stim.PauliString("-ZZ_Z"),
+        stim.PauliString("+YXZ_"),
     ]
 
 
@@ -371,17 +388,20 @@ def test_mpad_advances_following_check_mapping_index() -> None:
     assert [check.measurement_index for check in result.checks] == [2]
 
 
-def test_matching_flow_generators_skip_per_flow_verification(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_on_per_flow_verification(_circuit: stim.Circuit, _flow: stim.Flow, *, unsigned: bool = False) -> bool:
-        del unsigned
-        msg = "matching canonical generators should not invoke per-flow verification"
+def test_rewrite_never_invokes_stim_flow_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args: object, **_kwargs: object) -> object:
+        msg = "the constructive rewrite must not consult stim flow analysis"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(stim.Circuit, "has_flow", fail_on_per_flow_verification)
+    monkeypatch.setattr(stim.Circuit, "flow_generators", fail)
+    monkeypatch.setattr(stim.Circuit, "has_flow", fail)
 
-    result = rewrite_to_mpp("R 4\nCX 0 4 1 4\nM 4")
+    source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=2)
 
-    assert result.circuit == stim.Circuit("R 4\nMPP Z0*Z1")
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit.num_measurements == source.num_measurements
+    assert result.fallback_segments == ()
 
 
 def test_reusing_unreset_measured_qubit_is_rejected() -> None:
@@ -498,7 +518,11 @@ def test_unsupported_residual_channel_falls_back_to_gate_level_source() -> None:
     assert [check.source_qubit for check in result.checks] == [1, 1]
 
 
-def test_nonlocal_body_rewrites_via_channel_flows() -> None:
+def test_nonlocal_body_without_representable_frame_falls_back_gate_level() -> None:
+    # The SWAP frame moves the survivor's state onto the measured-out qubit,
+    # and its Z image commutes with that qubit's Z measurement, so the
+    # residual frame has no symplectic restriction onto the survivors and the
+    # segment stays gate-level.
     source = stim.Circuit(
         """
         R 0 1
@@ -509,9 +533,10 @@ def test_nonlocal_body_rewrites_via_channel_flows() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 0 1\nMPP Z1")
-    assert result.checks[0].product == stim.PauliString("+_Z")
-    assert result.circuit.flow_generators() == source.flow_generators()
+    assert result.circuit == source.flattened()
+    assert result.fallback_segments == (0,)
+    assert result.checks[0].product == stim.PauliString("+Z_")
+    assert result.checks[0].source_qubit == 0
 
 
 @pytest.mark.parametrize(
@@ -520,9 +545,9 @@ def test_nonlocal_body_rewrites_via_channel_flows() -> None:
 )
 def test_nonlocal_body_with_residual_frame_stays_flow_equivalent(residual: str) -> None:
     # A body that is not local on the surviving qubit is only representable
-    # when the residual Clifford frame can be synthesized from the segment's
-    # channel flows; otherwise the gate-level fallback must win. Either way the
-    # rewrite has to keep every stabilizer flow of its source.
+    # when the residual frame has a symplectic restriction onto the survivors;
+    # otherwise the gate-level fallback must win. Either way the rewrite has
+    # to keep every stabilizer flow of its source.
     source = stim.Circuit(f"R 0 1\nH 0\nSWAP 0 1\n{residual}\nM 0")
 
     result = rewrite_to_mpp(source)
@@ -611,8 +636,8 @@ def test_fallback_preserves_qubit_coordinates() -> None:
 
 def test_basis_mismatched_residual_on_measured_ancilla_is_kept_in_the_product() -> None:
     # The ancilla measurement pulls back to X on the Z-prepared, measured-out
-    # qubit 5. The mismatched support cannot be substituted away, so it stays
-    # in the product; flow verification confirms the rewrite is still sound.
+    # qubit 5. The mismatched factor fails the substitution precondition, so
+    # it stays in the emitted product instead of being replaced by +1.
     result = rewrite_to_mpp(
         """
         R 4 5
@@ -685,16 +710,22 @@ def test_segment_fallback_forces_reused_post_state_producer_gate_level() -> None
     assert [str(check.product) for check in result.checks] == ["+____Z", "+____X"]
 
 
-def test_segment_fallback_keeps_unrewritable_reuse_chain_gate_level() -> None:
-    # Both segments depend on ancilla 4's post-state and neither rewrite
-    # verifies, so the result is the gate-level source, segment by segment.
+def test_segment_fallback_rewrites_reuse_chain_tail_against_verbatim_producer() -> None:
+    # Segment 1 consumes ancilla 4's measurement post-state, so segment 0 is
+    # forced verbatim; the tail then rewrites against the faithful post-state,
+    # measuring the joint Z0*Z4 parity as one product.
     source = stim.Circuit("R 4\nCX 0 4\nM 4\nCX 0 4\nM 4")
 
     result = rewrite_to_mpp(source, fallback="segment")
 
-    assert result.circuit == source
-    assert result.fallback_segments == (0, 1)
-    assert all(result.circuit.has_flow(flow) for flow in source.flow_generators())
+    assert result.circuit == stim.Circuit("R 4\nCX 0 4\nM 4\nMPP Z0*Z4")
+    assert result.fallback_segments == (0,)
+    assert [str(check.product) for check in result.checks] == ["+____Z", "+Z___Z"]
+    # Equivalent once the measured-out ancilla is discarded.
+    discarded_source = source + stim.Circuit("R 4")
+    discarded_result = result.circuit + stim.Circuit("R 4")
+    assert all(discarded_result.has_flow(flow) for flow in discarded_source.flow_generators())
+    assert all(discarded_source.has_flow(flow) for flow in discarded_result.flow_generators())
 
 
 def test_segment_fallback_keeps_feedback_segment_gate_level() -> None:
