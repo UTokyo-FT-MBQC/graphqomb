@@ -87,11 +87,6 @@ one. More generally, a repeated identical Pauli support starts a new internal
 layer even within one source interval. Distinct commuting supports continue to
 share a layer, so repeated identical checks are never fused together.
 
-The historical ``fallback`` argument and ``fallback_segments`` result field
-remain for API compatibility. ``fallback="circuit"`` and
-``fallback="segment"`` select the same exact pipeline, and
-``fallback_segments`` is always empty.
-
 .. code-block:: python
 
    from graphqomb.stim_glue.mpp_rewriter import rewrite_to_mpp

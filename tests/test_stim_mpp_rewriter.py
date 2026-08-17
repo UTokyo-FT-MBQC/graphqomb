@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-from typing import Literal, cast
 
 import numpy as np
 import pytest
@@ -296,7 +295,6 @@ def test_reusing_unreset_measurement_post_state_is_exact() -> None:
     result = rewrite_to_mpp(source)
 
     assert result.circuit == stim.Circuit("R 4\nMPP Z0\nMPAD 0\nCX 0 4 0 4")
-    assert result.fallback_segments == ()
     _assert_exact_channel(source, result.circuit)
 
 
@@ -315,7 +313,6 @@ def test_feedback_is_a_deterministic_flush_barrier() -> None:
     result = rewrite_to_mpp(source)
 
     assert result.circuit == stim.Circuit("R 0 1\nMPP !Z0\nX 0\nCX rec[-1] 1\nM 1")
-    assert result.fallback_segments == ()
     _assert_exact_channel(source, result.circuit)
 
 
@@ -408,7 +405,6 @@ def test_generated_memories_rewrite_exactly(generator: str) -> None:
 
     assert result.circuit.num_detectors == source.num_detectors
     assert result.circuit.num_observables == source.num_observables
-    assert result.fallback_segments == ()
     _assert_exact_channel(source, result.circuit)
 
 
@@ -417,7 +413,7 @@ def test_surface_code_checks_are_data_only() -> None:
 
     result = rewrite_to_mpp(source)
 
-    syndrome_checks = [check for check in result.checks if check.segment_index < 3]
+    syndrome_checks = [check for check in result.checks if len(check.product.pauli_indices()) > 1]
     assert len(syndrome_checks) == 24
     assert {len(check.product.pauli_indices()) for check in syndrome_checks} == {2, 4}
 
@@ -430,21 +426,6 @@ def test_noise_instruction_is_rejected() -> None:
 def test_noisy_measurement_is_rejected() -> None:
     with pytest.raises(UnsupportedSyndromeCircuitError, match="Noisy measurement"):
         rewrite_to_mpp("M(0.01) 0")
-
-
-def test_fallback_modes_are_compatibility_aliases() -> None:
-    source = stim.Circuit("R 4\nCX 0 4\nM 4")
-
-    circuit_mode = rewrite_to_mpp(source, fallback="circuit")
-    segment_mode = rewrite_to_mpp(source, fallback="segment")
-
-    assert circuit_mode == segment_mode
-    assert circuit_mode.fallback_segments == ()
-
-
-def test_unknown_fallback_mode_is_rejected() -> None:
-    with pytest.raises(ValueError, match="fallback must be"):
-        rewrite_to_mpp("M 0", fallback=cast('Literal["circuit", "segment"]', "tick"))
 
 
 def test_empty_circuit_rewrites_to_empty_circuit() -> None:

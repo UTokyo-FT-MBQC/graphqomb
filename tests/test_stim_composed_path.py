@@ -1,8 +1,7 @@
 """Contract tests for the composed ``rewrite_to_mpp`` -> ``stim_circuit_to_pattern`` path.
 
-The rewriter's output circuit is a valid importer input, whichever internal
-path (optimized rewrite or gate-level fallback) produced it. Each case checks
-the full chain: rewrite, import, compile back to Stim, and require that the
+The rewriter's output circuit is a valid importer input. Each case checks the
+full chain: rewrite, import, compile back to Stim, and require that the
 detector/observable counts match the source, that the noiseless detector error
 model is empty (every detector deterministic), and that no graph node loses
 its coordinate relative to a fully coordinated source.
@@ -10,7 +9,7 @@ its coordinate relative to a fully coordinated source.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -21,7 +20,7 @@ from graphqomb.stim_glue import rewrite_to_mpp, stim_circuit_to_pattern, stim_co
 if TYPE_CHECKING:
     from graphqomb.stim_glue import StimImportResult
 
-_FALLBACK_CIRCUIT = """
+_GENERAL_CLIFFORD_CIRCUIT = """
 QUBIT_COORDS(0, 0) 0
 QUBIT_COORDS(1, 0) 1
 R 0 1
@@ -87,14 +86,13 @@ def _assert_same_reference_signs(left: stim.Circuit, right: stim.Circuit) -> Non
             stim.Circuit.generated("repetition_code:memory", distance=3, rounds=4),
             id="repetition-code-d3",
         ),
-        pytest.param(stim.Circuit(_FALLBACK_CIRCUIT), id="gate-level-fallback"),
+        pytest.param(stim.Circuit(_GENERAL_CLIFFORD_CIRCUIT), id="general-clifford"),
         pytest.param(stim.Circuit(_SIGNED_Y_MPP_CIRCUIT), id="signed-y-mpp"),
         pytest.param(stim.Circuit(_MID_CIRCUIT_RESET_CIRCUIT), id="mid-circuit-reset"),
     ],
 )
-@pytest.mark.parametrize("fallback", ["circuit", "segment"])
-def test_rewrite_output_imports_like_the_source(source: stim.Circuit, fallback: Literal["circuit", "segment"]) -> None:
-    rewritten = rewrite_to_mpp(source, fallback=fallback).circuit
+def test_rewrite_output_imports_like_the_source(source: stim.Circuit) -> None:
+    rewritten = rewrite_to_mpp(source).circuit
 
     composed = stim_circuit_to_pattern(rewritten)
     direct = stim_circuit_to_pattern(source)
@@ -129,9 +127,8 @@ def test_feedback_barrier_on_deterministic_one_record_imports() -> None:
         """
     )
 
-    rewritten = rewrite_to_mpp(source, fallback="segment")
+    rewritten = rewrite_to_mpp(source)
 
-    assert rewritten.fallback_segments == ()
     composed = stim_circuit_to_pattern(rewritten.circuit)
     compiled = stim.Circuit(stim_compile(composed.pattern))
 

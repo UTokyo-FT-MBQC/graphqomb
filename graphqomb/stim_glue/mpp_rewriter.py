@@ -63,15 +63,10 @@ _RESET_GATE_BY_BASIS = {"X": "RX", "Y": "RY", "Z": "R"}
 _PAIR_GROUP_SIZE = 2
 
 _InstructionKind = Literal["annotation", "mpad", "reset", "measurement", "unitary"]
-_FallbackMode = Literal["circuit", "segment"]
 
 
 class UnsupportedSyndromeCircuitError(ValueError):
     """Raised when a circuit is outside the supported noiseless Clifford form."""
-
-
-class MppRewriteVerificationError(ValueError):
-    """Legacy compatibility error; the constructive rewriter never raises it."""
 
 
 @dataclass(frozen=True)
@@ -82,8 +77,6 @@ class CheckMapping:
     ----------
     measurement_index : `int`
         Global measurement-record index, identical in both circuits.
-    segment_index : `int`
-        Source segment index under the historical boundary convention.
     product : ``stim.PauliString``
         Signed product emitted for this record.
     source_qubit : `int` | `None`
@@ -91,7 +84,6 @@ class CheckMapping:
     """
 
     measurement_index: int
-    segment_index: int
     product: stim.PauliString
     source_qubit: int | None
 
@@ -99,9 +91,6 @@ class CheckMapping:
 @dataclass(frozen=True)
 class MppRewriteResult:
     r"""Result of moving Clifford gates behind Pauli measurements.
-
-    ``fallback_segments`` is retained for API compatibility and is always
-    empty because this pipeline has no optimized-versus-verbatim branches.
 
     Attributes
     ----------
@@ -117,15 +106,12 @@ class MppRewriteResult:
         qubits were independent reset outputs.
     eliminated_qubits : `tuple`\[`int`, ...\]
         Source qubits omitted from ``foliation_circuit``.
-    fallback_segments : `tuple`\[`int`, ...\]
-        Always empty.
     """
 
     circuit: stim.Circuit
     checks: tuple[CheckMapping, ...]
     foliation_circuit: stim.Circuit
     eliminated_qubits: tuple[int, ...] = ()
-    fallback_segments: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,37 +120,7 @@ class _SourceObservable:
     source_qubit: int | None
 
 
-@dataclass
-class _SegmentBounds:
-    """Historical segment numbering retained for `CheckMapping`."""
-
-    seen_measurement: bool = False
-    seen_late_reset: bool = False
-
-    def starts_new_segment(self, instruction: stim.CircuitInstruction, kind: _InstructionKind) -> bool:
-        """Return whether this source instruction opens a new segment.
-
-        Returns
-        -------
-        `bool`
-            Whether the instruction starts a new historical segment.
-        """
-        boundary = (kind == "unitary" and self.seen_measurement) or (
-            kind in {"measurement", "mpad"} and self.seen_late_reset
-        )
-        if boundary:
-            self.seen_measurement = False
-            self.seen_late_reset = False
-        if kind in {"measurement", "mpad"}:
-            self.seen_measurement = True
-            if instruction.name in _MEASURE_RESET_BASES:
-                self.seen_late_reset = True
-        elif kind == "reset" and self.seen_measurement:
-            self.seen_late_reset = True
-        return boundary
-
-
-def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "circuit") -> MppRewriteResult:
+def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     r"""Move Clifford gates behind measurements and expose pulled Pauli products.
 
     A pending Clifford circuit ``U`` is commuted through every Pauli
@@ -182,16 +138,12 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
     of the importer's unsupported ``MPAD 1``.
 
     ``REPEAT`` blocks are flattened before processing. Noise and noisy
-    measurement arguments remain unsupported. The ``fallback`` argument is
-    accepted for compatibility; both values select this same fallback-free
-    pipeline.
+    measurement arguments remain unsupported.
 
     Parameters
     ----------
     circuit : ``stim.Circuit`` | `str`
         Source circuit or Stim text.
-    fallback : ``"circuit"`` | ``"segment"``, optional
-        Compatibility parameter; it does not change the rewrite.
 
     Returns
     -------
@@ -200,14 +152,9 @@ def rewrite_to_mpp(circuit: stim.Circuit | str, *, fallback: _FallbackMode = "ci
 
     Raises
     ------
-    ValueError
-        If ``fallback`` is not a recognized compatibility value.
     RuntimeError
         If an internal bug changes the number of measurement records.
     """
-    if fallback not in {"circuit", "segment"}:
-        msg = f"fallback must be 'circuit' or 'segment', not {fallback!r}."
-        raise ValueError(msg)
     source = circuit if isinstance(circuit, stim.Circuit) else stim.Circuit(circuit)
     flattened = source.flattened()
     rewriter = _PendingCliffordRewriter(flattened.num_qubits)
@@ -234,16 +181,11 @@ class _PendingCliffordRewriter:
         self._prepared: dict[int, str] = {}
         self._checks: list[CheckMapping] = []
         self._measurement_index = 0
-        self._segment_index = 0
-        self._bounds = _SegmentBounds()
         self._contracted_source_qubits: set[int] = set()
 
     def process(self, instruction: stim.CircuitInstruction) -> None:
         """Consume one flattened source instruction."""
         kind = _instruction_kind(instruction)
-        if self._bounds.starts_new_segment(instruction, kind):
-            self._segment_index += 1
-
         if kind == "annotation":
             self._output.append(instruction)
         elif kind == "mpad":
@@ -392,7 +334,6 @@ class _PendingCliffordRewriter:
             self._checks.append(
                 CheckMapping(
                     measurement_index=self._measurement_index,
-                    segment_index=self._segment_index,
                     product=product,
                     source_qubit=source.source_qubit,
                 )
