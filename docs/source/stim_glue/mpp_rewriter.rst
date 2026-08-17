@@ -81,6 +81,11 @@ Commuting pulled products emitted inside one source ``TICK`` interval are
 collected by the importer into one MPP graph fragment, even when tags keep them
 as separate Stim instructions. A source ``TICK`` is a hard boundary: products
 on opposite sides are built as separate graph layers and are never coalesced.
+Removing a contracted measure-reset ancilla also preserves its round boundary:
+if there is no source ``TICK`` before the next MPP, ``foliation_circuit`` inserts
+one. More generally, a repeated identical Pauli support starts a new internal
+layer even within one source interval. Distinct commuting supports continue to
+share a layer, so repeated identical checks are never fused together.
 
 The historical ``fallback`` argument and ``fallback_segments`` result field
 remain for API compatibility. ``fallback="circuit"`` and

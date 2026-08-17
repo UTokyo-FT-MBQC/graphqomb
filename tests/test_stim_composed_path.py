@@ -213,6 +213,41 @@ def test_foliation_replaces_surface_check_ancillas_instead_of_duplicating_them()
     _assert_same_reference_signs(compiled, source)
 
 
+def test_removed_ancilla_reset_still_separates_repeated_mpp_layers() -> None:
+    source = stim.Circuit(
+        """
+        R 4
+        CX 0 4 1 4
+        MR 4
+        CX 0 4 1 4
+        MR 4
+        DETECTOR rec[-1] rec[-2]
+        """
+    )
+
+    rewrite = rewrite_to_mpp(source)
+    imported = stim_circuit_to_pattern(rewrite.foliation_circuit)
+
+    assert len(imported.mpp_extractions) == 2
+    assert [extraction.supports for extraction in imported.mpp_extractions] == [
+        (((0, "Z"), (1, "Z")),),
+        (((0, "Z"), (1, "Z")),),
+    ]
+
+
+def test_explicit_duplicate_mpp_supports_import_as_separate_layers() -> None:
+    rewrite = rewrite_to_mpp("MPP Z0*Z1 X2*X3 Z1*Z0 X3*X2")
+
+    imported = stim_circuit_to_pattern(rewrite.foliation_circuit)
+
+    assert [
+        tuple(frozenset(support) for support in extraction.supports) for extraction in imported.mpp_extractions
+    ] == [
+        (frozenset({(0, "Z"), (1, "Z")}), frozenset({(2, "X"), (3, "X")})),
+        (frozenset({(0, "Z"), (1, "Z")}), frozenset({(2, "X"), (3, "X")})),
+    ]
+
+
 def test_externally_pre_split_circuit_imports_like_the_original() -> None:
     # A caller may hand the importer a circuit whose reset lifetimes already
     # sit on fresh qubit ids (id 2 continues id 1 below). The importer cannot

@@ -126,12 +126,79 @@ def test_measure_reset_contracts_replaced_ancilla_body() -> None:
     )
     assert result.foliation_circuit == stim.Circuit(
         """
-        MPP Z0*Z1 Z0*Z1
+        MPP Z0*Z1
+        TICK
+        MPP Z0*Z1
         DETECTOR rec[-1] rec[-2]
         """
     )
     assert result.eliminated_qubits == (4,)
     _assert_exact_channel(source, result.circuit)
+
+
+def test_retained_reset_target_does_not_hide_contracted_round_boundary() -> None:
+    source = stim.Circuit(
+        """
+        R 4
+        CX 0 4 1 4
+        MR 4
+        R 5
+        CX 0 4 1 4
+        MR 4
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == stim.Circuit(
+        """
+        MPP Z0*Z1
+        R 5
+        TICK
+        MPP Z0*Z1
+        """
+    )
+    assert result.eliminated_qubits == (4,)
+    _assert_exact_channel(source, result.circuit)
+
+
+def test_source_tick_supplies_contracted_round_boundary() -> None:
+    source = stim.Circuit(
+        """
+        R 4
+        CX 0 4 1 4
+        MR 4
+        TICK
+        CX 0 4 1 4
+        MR 4
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == stim.Circuit(
+        """
+        MPP Z0*Z1
+        TICK
+        MPP Z0*Z1
+        """
+    )
+    _assert_exact_channel(source, result.circuit)
+
+
+def test_duplicate_mpp_support_starts_a_new_internal_layer() -> None:
+    source = stim.Circuit("MPP Z0*Z1 X2*X3 !Z1*Z0 X3*X2")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == source
+    assert result.foliation_circuit == stim.Circuit(
+        """
+        MPP Z0*Z1 X2*X3
+        TICK
+        MPP !Z1*Z0 X3*X2
+        """
+    )
 
 
 def test_measure_reset_keeps_noncontractible_data_clifford() -> None:

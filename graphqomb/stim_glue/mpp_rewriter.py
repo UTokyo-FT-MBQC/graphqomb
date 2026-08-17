@@ -269,6 +269,7 @@ class _PendingCliffordRewriter:
             self._output,
             self._contracted_source_qubits,
         )
+        foliation_circuit = _separate_repeated_mpp_products(foliation_circuit)
         return MppRewriteResult(
             circuit=self._output,
             checks=tuple(self._checks),
@@ -506,18 +507,129 @@ def _without_idle_contracted_qubits(
         return circuit.copy(), ()
 
     result = stim.Circuit()
+    mpp_since_tick = False
+    removed_reset_boundary = False
     for instruction in iter_instructions(circuit):
+        if instruction.name == "TICK":
+            result.append(instruction)
+            mpp_since_tick = False
+            removed_reset_boundary = False
+            continue
         if instruction.name in _RESET_BASES or instruction.name == "QUBIT_COORDS":
-            targets = [
-                target
-                for target in instruction.targets_copy()
-                if _plain_qubit(target, instruction.name) not in eliminated
-            ]
-            if targets:
-                result.append(instruction.name, targets, instruction.gate_args_copy(), tag=instruction.tag)
+            # A removed reset ended one physical check-ancilla lifetime. Keep
+            # that round boundary so a later identical MPP is not fused into
+            # the same Foliation layer, even if this reset has retained targets.
+            removed_reset_boundary |= (
+                _append_without_eliminated_targets(
+                    result,
+                    instruction,
+                    eliminated,
+                )
+                and mpp_since_tick
+            )
+        else:
+            if instruction.name == "MPP" and removed_reset_boundary and mpp_since_tick:
+                result.append("TICK", [])
+                mpp_since_tick = False
+                removed_reset_boundary = False
+            result.append(instruction)
+            if instruction.name == "MPP":
+                mpp_since_tick = True
+    return result, tuple(sorted(eliminated))
+
+
+def _append_without_eliminated_targets(
+    output: stim.Circuit,
+    instruction: stim.CircuitInstruction,
+    eliminated: set[int],
+) -> bool:
+    """Append retained targets and report whether a reset target was removed.
+
+    Returns
+    -------
+    ``bool``
+        Whether the instruction is a reset with at least one removed target.
+    """
+    original_targets = instruction.targets_copy()
+    targets = [target for target in original_targets if _plain_qubit(target, instruction.name) not in eliminated]
+    if targets:
+        output.append(instruction.name, targets, instruction.gate_args_copy(), tag=instruction.tag)
+    return instruction.name in _RESET_BASES and len(targets) != len(original_targets)
+
+
+def _separate_repeated_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
+    """Keep identical Pauli products out of the same Foliation layer.
+
+    Products remain in record order. Distinct products still share the source
+    TICK interval; encountering a repeated unsigned support starts the next
+    internal layer.
+
+    Returns
+    -------
+    ``stim.Circuit``
+        Import-oriented circuit with repeated MPP supports separated by TICK.
+    """
+    result = stim.Circuit()
+    supports_in_layer: set[tuple[tuple[int, str], ...]] = set()
+    for instruction in iter_instructions(circuit):
+        if instruction.name == "TICK":
+            result.append(instruction)
+            supports_in_layer.clear()
+        elif instruction.name == "MPP":
+            for group in instruction.target_groups():
+                support = _mpp_group_support(group)
+                if support in supports_in_layer:
+                    result.append("TICK", [])
+                    supports_in_layer.clear()
+                result.append(
+                    "MPP",
+                    _combined_group_targets(group),
+                    instruction.gate_args_copy(),
+                    tag=instruction.tag,
+                )
+                supports_in_layer.add(support)
         else:
             result.append(instruction)
-    return result, tuple(sorted(eliminated))
+    return result
+
+
+def _mpp_group_support(group: Sequence[stim.GateTarget]) -> tuple[tuple[int, str], ...]:
+    """Return the unsigned, order-independent support of one MPP product.
+
+    Returns
+    -------
+    `tuple`[`tuple`[`int`, `str`], ...]
+        Canonically ordered qubit and Pauli pairs.
+
+    Raises
+    ------
+    UnsupportedSyndromeCircuitError
+        If the group contains a non-Pauli target.
+    """
+    support: list[tuple[int, str]] = []
+    for target in group:
+        pauli = target.pauli_type
+        if pauli not in _PAULI_CODES:
+            msg = f"MPP contains a non-Pauli target {target!r}."
+            raise UnsupportedSyndromeCircuitError(msg)
+        support.append((_plain_qubit(target, "MPP"), pauli))
+    return tuple(sorted(support))
+
+
+def _combined_group_targets(group: Sequence[stim.GateTarget]) -> list[stim.GateTarget]:
+    """Restore Stim combiners between the factors of one MPP product.
+
+    Returns
+    -------
+    `list`[`stim.GateTarget`]
+        Product targets in Stim's combined-target representation.
+    """
+    targets: list[stim.GateTarget] = []
+    for target in group:
+        if targets:
+            targets.append(stim.target_combiner())
+        targets.append(target)
+    return targets
 
 
 def _instruction_kind(instruction: stim.CircuitInstruction) -> _InstructionKind:
