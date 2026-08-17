@@ -247,6 +247,8 @@ class _PendingCliffordRewriter:
         if instruction.gate_args_copy():
             msg = f"Noisy measurement {instruction.name} with arguments is not supported."
             raise UnsupportedSyndromeCircuitError(msg)
+        if self._split_repeated_measure_reset(instruction):
+            return
         sources = _measurement_observables(instruction, self._num_qubits)
         pulled_products: list[stim.PauliString] = []
         products: list[stim.PauliString] = []
@@ -294,6 +296,28 @@ class _PendingCliffordRewriter:
             qubits = [_plain_qubit(target, instruction.name) for target in instruction.targets_copy()]
             self._output.append(reset_gate, qubits, [], tag=instruction.tag)
             self._set_measure_reset_preparations(instruction)
+
+    def _split_repeated_measure_reset(self, instruction: stim.CircuitInstruction) -> bool:
+        """Consume a repeated-qubit measure-reset one target at a time.
+
+        Stim measures and resets measure-reset targets in sequence, so a
+        repeated qubit measures its own earlier reset output.
+
+        Returns
+        -------
+        `bool`
+            Whether the instruction was consumed target by target.
+        """
+        if instruction.name not in _MEASURE_RESET_BASES:
+            return False
+        targets = instruction.targets_copy()
+        qubits = [_plain_qubit(target, instruction.name) for target in targets]
+        if len(set(qubits)) == len(qubits):
+            return False
+        for target in targets:
+            singleton = stim.CircuitInstruction(instruction.name, [target], [], tag=instruction.tag)
+            self._process_measurement(singleton)
+        return True
 
     def _pull(self, observable: stim.PauliString) -> stim.PauliString:
         if len(self._pending) == 0:
@@ -369,7 +393,9 @@ class _PendingCliffordRewriter:
         comparison circuits. The source side then applies the exact pending
         Clifford and measure-reset; the candidate side applies the reduced
         products and the same reset. Equal canonical flow bases certify the
-        complete record-and-quantum channel at this reset boundary.
+        complete record-and-quantum channel at this reset boundary. The
+        certificate is exactly as sound as Stim's flow analysis, hence the
+        ``stim>=1.16`` requirement of the Stim extra.
 
         Returns
         -------

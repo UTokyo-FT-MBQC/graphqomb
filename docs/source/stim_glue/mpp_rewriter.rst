@@ -57,7 +57,8 @@ initialization, interaction, and measurement. ``result.circuit`` retains any
 independent reset-only source outputs so it stays exactly equivalent as a
 standalone Stim channel. ``result.foliation_circuit`` additionally removes
 those idle source ancillas for import, and ``result.eliminated_qubits`` reports
-their Stim ids.
+their Stim ids. This certificate is exactly as sound as Stim's flow analysis,
+so the Stim extra requires ``stim>=1.16``.
 
 Factors are considered in measurement-record order. An earlier product that
 anticommutes with a stored reset stabilizer invalidates it before later
