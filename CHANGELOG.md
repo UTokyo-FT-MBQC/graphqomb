@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Exact Pending-Clifford MPP Rewrite**: `rewrite_to_mpp` now applies the instrument identity `Π(P) U = U Π(U† P U)` directly: Clifford bodies move unchanged behind their pulled Pauli measurements and materialize at resets, feedback barriers, or circuit exit. At a measure-reset, equal canonical Stim flows certify that the reduced MPP has replaced the source extraction ancilla, whose pending body is then discarded; the new `foliation_circuit` drops the reset-only source ancillas listed in `eliminated_qubits`. Source `TICK`s and repeated identical supports bound the imported MPP graph layers. The Stim extra now requires `stim>=1.16`, whose flow analysis the contraction certificate relies on.
+
+### Removed
+
+- **Legacy MPP Rewrite Compatibility API**: Removed the unused `fallback` argument from `rewrite_to_mpp`, the always-empty `MppRewriteResult.fallback_segments` field, the never-raised `MppRewriteVerificationError`, and the fallback-era `CheckMapping.segment_index`. The exact pending-Clifford rewrite is now the only public path.
+
 ### Added
 
 - **In-Place Graph Composition**: `graphstate.compose_into(graph1, graph2)` composes `graph2` into `graph1` by mutation with the same connection rule and validation as `compose`, keeping `graph1` node indices stable, plus `GraphState.unregister_output()` to drop an output registration. The Stim importer's fragment fold now uses it, replacing the per-step full-graph copy (quadratic in total) with a linear fold: on the 15-to-1 lattice-surgery proxy the compose stage drops from 5.0 s to 0.4 s (k=1, 23k nodes) and 54 s to 3.3 s (k=2, 101k nodes) — end-to-end import from 175 s to 82 s at k=2. The composed graph is identical up to node relabeling.

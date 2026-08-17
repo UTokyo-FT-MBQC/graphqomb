@@ -1,8 +1,7 @@
 """Contract tests for the composed ``rewrite_to_mpp`` -> ``stim_circuit_to_pattern`` path.
 
-The rewriter's output circuit is a valid importer input, whichever internal
-path (optimized rewrite or gate-level fallback) produced it. Each case checks
-the full chain: rewrite, import, compile back to Stim, and require that the
+The rewriter's output circuit is a valid importer input. Each case checks the
+full chain: rewrite, import, compile back to Stim, and require that the
 detector/observable counts match the source, that the noiseless detector error
 model is empty (every detector deterministic), and that no graph node loses
 its coordinate relative to a fully coordinated source.
@@ -10,7 +9,7 @@ its coordinate relative to a fully coordinated source.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -21,7 +20,7 @@ from graphqomb.stim_glue import rewrite_to_mpp, stim_circuit_to_pattern, stim_co
 if TYPE_CHECKING:
     from graphqomb.stim_glue import StimImportResult
 
-_FALLBACK_CIRCUIT = """
+_GENERAL_CLIFFORD_CIRCUIT = """
 QUBIT_COORDS(0, 0) 0
 QUBIT_COORDS(1, 0) 1
 R 0 1
@@ -87,14 +86,13 @@ def _assert_same_reference_signs(left: stim.Circuit, right: stim.Circuit) -> Non
             stim.Circuit.generated("repetition_code:memory", distance=3, rounds=4),
             id="repetition-code-d3",
         ),
-        pytest.param(stim.Circuit(_FALLBACK_CIRCUIT), id="gate-level-fallback"),
+        pytest.param(stim.Circuit(_GENERAL_CLIFFORD_CIRCUIT), id="general-clifford"),
         pytest.param(stim.Circuit(_SIGNED_Y_MPP_CIRCUIT), id="signed-y-mpp"),
         pytest.param(stim.Circuit(_MID_CIRCUIT_RESET_CIRCUIT), id="mid-circuit-reset"),
     ],
 )
-@pytest.mark.parametrize("fallback", ["circuit", "segment"])
-def test_rewrite_output_imports_like_the_source(source: stim.Circuit, fallback: Literal["circuit", "segment"]) -> None:
-    rewritten = rewrite_to_mpp(source, fallback=fallback).circuit
+def test_rewrite_output_imports_like_the_source(source: stim.Circuit) -> None:
+    rewritten = rewrite_to_mpp(source).circuit
 
     composed = stim_circuit_to_pattern(rewritten)
     direct = stim_circuit_to_pattern(source)
@@ -112,10 +110,10 @@ def test_rewrite_output_imports_like_the_source(source: stim.Circuit, fallback: 
         assert _uncoordinated_node_count(direct) == 0
 
 
-def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None:
-    # The rewritten producer of a deterministic-1 record must stay a real
-    # measurement (a signed MPP here, never MPAD 1, which the importer
-    # rejects), so the verbatim feedback segment consuming it still fires.
+def test_feedback_barrier_on_deterministic_one_record_imports() -> None:
+    # The rewritten producer of a deterministic-1 record stays a real signed
+    # measurement (never MPAD 1, which the importer rejects). The pending
+    # Clifford is flushed before the feedback instruction, so it still fires.
     source = stim.Circuit(
         """
         QUBIT_COORDS(0, 0) 0
@@ -129,9 +127,8 @@ def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None
         """
     )
 
-    rewritten = rewrite_to_mpp(source, fallback="segment")
+    rewritten = rewrite_to_mpp(source)
 
-    assert rewritten.fallback_segments == (1,)
     composed = stim_circuit_to_pattern(rewritten.circuit)
     compiled = stim.Circuit(stim_compile(composed.pattern))
 
@@ -139,6 +136,113 @@ def test_segment_fallback_feedback_on_deterministic_one_record_imports() -> None
     assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
     _assert_same_reference_signs(compiled, source)
     assert _uncoordinated_node_count(composed) == 0
+
+
+def test_commuting_pulled_mpps_share_one_graph_layer_before_tick() -> None:
+    source = stim.Circuit(
+        """
+        R 4 5
+        CX 0 4
+        M[first] 4
+        CX 1 5
+        M[second] 5
+        """
+    )
+
+    rewritten = rewrite_to_mpp(source).circuit
+    composed = stim_circuit_to_pattern(rewritten)
+
+    assert rewritten == stim.Circuit(
+        """
+        R 4 5
+        MPP[first] Z0
+        MPP[second] Z1
+        CX 0 4 1 5
+        """
+    )
+    assert len(composed.mpp_extractions) == 1
+    assert composed.mpp_extractions[0].supports == (((0, "Z"),), ((1, "Z"),))
+
+
+def test_source_tick_keeps_commuting_pulled_mpps_in_separate_graph_layers() -> None:
+    source = stim.Circuit(
+        """
+        R 4 5
+        CX 0 4
+        M[first] 4
+        TICK
+        CX 1 5
+        M[second] 5
+        """
+    )
+
+    rewritten = rewrite_to_mpp(source).circuit
+    composed = stim_circuit_to_pattern(rewritten)
+
+    assert rewritten == stim.Circuit(
+        """
+        R 4 5
+        MPP[first] Z0
+        TICK
+        MPP[second] Z1
+        CX 0 4 1 5
+        """
+    )
+    assert [extraction.supports for extraction in composed.mpp_extractions] == [
+        (((0, "Z"),),),
+        (((1, "Z"),),),
+    ]
+
+
+def test_foliation_replaces_surface_check_ancillas_instead_of_duplicating_them() -> None:
+    source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3).flattened()
+
+    direct = stim_circuit_to_pattern(source)
+    rewrite = rewrite_to_mpp(source)
+    contracted = stim_circuit_to_pattern(rewrite.foliation_circuit)
+    compiled = stim.Circuit(stim_compile(contracted.pattern))
+
+    assert direct.pattern.pauli_frame.graphstate.number_of_nodes() == 201
+    assert contracted.pattern.pauli_frame.graphstate.number_of_nodes() == 87
+    assert len(contracted.mpp_extractions) == 3
+    assert rewrite.eliminated_qubits == (2, 9, 11, 13, 14, 16, 18, 25)
+    assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
+    _assert_same_reference_signs(compiled, source)
+
+
+def test_removed_ancilla_reset_still_separates_repeated_mpp_layers() -> None:
+    source = stim.Circuit(
+        """
+        R 4
+        CX 0 4 1 4
+        MR 4
+        CX 0 4 1 4
+        MR 4
+        DETECTOR rec[-1] rec[-2]
+        """
+    )
+
+    rewrite = rewrite_to_mpp(source)
+    imported = stim_circuit_to_pattern(rewrite.foliation_circuit)
+
+    assert len(imported.mpp_extractions) == 2
+    assert [extraction.supports for extraction in imported.mpp_extractions] == [
+        (((0, "Z"), (1, "Z")),),
+        (((0, "Z"), (1, "Z")),),
+    ]
+
+
+def test_explicit_duplicate_mpp_supports_import_as_separate_layers() -> None:
+    rewrite = rewrite_to_mpp("MPP Z0*Z1 X2*X3 Z1*Z0 X3*X2")
+
+    imported = stim_circuit_to_pattern(rewrite.foliation_circuit)
+
+    assert [
+        tuple(frozenset(support) for support in extraction.supports) for extraction in imported.mpp_extractions
+    ] == [
+        (frozenset({(0, "Z"), (1, "Z")}), frozenset({(2, "X"), (3, "X")})),
+        (frozenset({(0, "Z"), (1, "Z")}), frozenset({(2, "X"), (3, "X")})),
+    ]
 
 
 def test_externally_pre_split_circuit_imports_like_the_original() -> None:
