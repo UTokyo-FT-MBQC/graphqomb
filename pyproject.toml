@@ -53,7 +53,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "mypy==2.3.0",
-    "pre-commit==4.6.1",
+    "pre-commit==4.6.2",
     "pyright==1.1.411",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
