@@ -15,7 +15,7 @@ from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Plane, PlannerMeasBasis, is_close_angle, meas_basis
 from graphqomb.feedforward import check_flow, pauli_simplification, propagate_correction_map, signal_shifting
 from graphqomb.graphstate import GraphState
-from graphqomb.pattern import Pattern
+from graphqomb.pattern import Pattern, is_runnable
 from graphqomb.pauli_frame import CliffordFrame
 from graphqomb.qompiler import qompile
 from graphqomb.scheduler import Scheduler
@@ -298,3 +298,25 @@ def test_feedforward_rewrites_reject_cflow() -> None:
         pauli_simplification(graph, xflow, cflow=cflow)
     with pytest.raises(NotImplementedError, match="not supported yet"):
         propagate_correction_map(0, graph, xflow, cflow=cflow)
+
+
+def test_is_runnable_sees_cflow_dependencies() -> None:
+    """A measurement ordered before its cflow source is rejected."""
+    graph = _t_gadget_graph()
+    frame = CliffordFrame(graph, xflow={}, zflow={}, cflow={0: {1: ca.S}})
+    pattern = Pattern(
+        input_node_indices=graph.input_node_indices,
+        output_node_indices=graph.output_node_indices,
+        commands=(
+            N(2),
+            E((0, 1)),
+            E((1, 2)),
+            M(1, PlannerMeasBasis(Plane.XY, 0.0)),
+            M(0, PlannerMeasBasis(Plane.XY, 0.0)),
+            TICK(),
+        ),
+        pauli_frame=frame,
+        input_initializations=graph.input_initializations,
+    )
+    with pytest.raises(ValueError, match="depend on a unmeasured output"):
+        is_runnable(pattern)
