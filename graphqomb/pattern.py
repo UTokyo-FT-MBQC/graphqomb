@@ -23,7 +23,7 @@ from graphqomb.common import Initialization
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from graphqomb.pauli_frame import PauliFrame
+    from graphqomb.pauli_frame import CliffordFrame
 
 
 @dataclasses.dataclass(frozen=True)
@@ -38,8 +38,8 @@ class Pattern(Sequence[Command]):
         The map of output nodes to their logical qubit indices
     commands : `tuple`\[`Command`, ...\]
         Commands of the pattern
-    pauli_frame : `PauliFrame`
-        Pauli frame of the pattern to track the Pauli state of each node
+    pauli_frame : `CliffordFrame`
+        Correction frame of the pattern to track the frame of each node
     input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes (2D or 3D)
     input_initializations : `dict`\[`int`, `Initialization`\]
@@ -50,7 +50,7 @@ class Pattern(Sequence[Command]):
     input_node_indices: dict[int, int]
     output_node_indices: dict[int, int]
     commands: tuple[Command, ...]
-    pauli_frame: PauliFrame
+    pauli_frame: CliffordFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
 
