@@ -10,14 +10,14 @@ This module provides:
 - `C1Element`: A single-qubit Clifford (mod phase) as a signed axis permutation.
 - `compose`: Compose two elements with the matrix-product convention.
 - `inverse`: Invert an element.
-- `decompose`: Split an element as ``coset * X^a * Z^b`` with the coset in `TRANSVERSAL`.
+- `decompose`: Split an element as ``coset * X^a * Z^b`` with the coset in ``TRANSVERSAL``.
 - `act_on_axis`: Image of a Pauli axis under conjugation.
 - `act_on_plane_angle`: Action on measurement-basis labels ``(plane, angle)``.
 - `is_z_axis_preserving`: Whether the element maps the Z axis to itself up to sign.
 - `to_matrix`: A 2x2 unitary representative (arbitrary phase).
 - `from_matrix`: Construct an element from a 2x2 unitary.
 - `from_local_clifford`: Construct an element from a `graphqomb.euler.LocalClifford`.
-- Constants: `IDENTITY`, `X`, `Y`, `Z`, `S`, `H`, `SH`, `HS`, `HSH`, `TRANSVERSAL`, `COSET_NAMES`.
+- Constants: ``IDENTITY``, ``X``, ``Y``, ``Z``, ``S``, ``H``, ``SH``, ``HS``, ``HSH``, ``TRANSVERSAL``, ``COSET_NAMES``.
 """
 
 from __future__ import annotations
@@ -180,7 +180,7 @@ _COSET_BY_PERMUTATION: dict[tuple[Axis, Axis], C1Element] = {(d.x_axis, d.z_axis
 
 
 def decompose(c: C1Element) -> tuple[C1Element, bool, bool]:
-    r"""Split ``c = coset * X^a * Z^b`` with the coset in `TRANSVERSAL`.
+    r"""Split ``c = coset * X^a * Z^b`` with the coset in ``TRANSVERSAL``.
 
     Parameters
     ----------

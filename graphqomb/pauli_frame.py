@@ -27,7 +27,7 @@ class CliffordFrame:
     r"""Clifford frame tracker.
 
     Each node's runtime frame has the normal form ``D * X^a * Z^b`` with the
-    coset ``D`` drawn from `graphqomb.clifford_algebra.TRANSVERSAL`.  The
+    coset ``D`` drawn from ``graphqomb.clifford_algebra.TRANSVERSAL``.  The
     supplied ``cflow`` corrections are normalized at construction: the Pauli
     part is folded into ``xflow``/``zflow`` and only nontrivial cosets are
     stored.

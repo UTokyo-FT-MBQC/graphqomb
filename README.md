@@ -18,7 +18,7 @@ This design makes GraphQOMB useful both as an executable MBQC compiler and as a 
 GraphQOMB is organized around three explicit compiler interfaces:
 
 - **Labelled graph state**: the resource state, measurement bases, and I/O registration.
-- **Feedforward maps**: explicit `xflow` and optional `zflow` describing classical dependencies.
+- **Feedforward maps**: explicit `xflow` and optional `zflow`/`cflow` describing classical dependencies.
 - **Scheduler**: preparation, entanglement, and measurement order for executable slices.
 
 These are lowered with `qompile(...)` into a `Pattern` carrying:
@@ -123,6 +123,8 @@ If you already have a graph-state design and explicit feedforward maps, you can 
 ## Current Scope
 
 GraphQOMB currently targets static, branch-free MBQC workflows. It is designed around causal feedforward dependencies and explicit scheduling, which makes it a good fit for pattern generation, simulation, and offline analysis of executable or fault-tolerant MBQC pipelines.
+
+Patterns support classically-controlled single-qubit Clifford feedforward: an optional `cflow` map assigns each measured node a conditional Clifford correction on its targets, tracked at runtime by the pattern's Clifford frame (`CliffordFrame`, of which `PauliFrame` is now an alias). Stim export and detector/observable certification remain Pauli-frame-only for now.
 
 ## Development
 

@@ -309,7 +309,7 @@ def stim_compile(
     Non-Pauli measurements will raise a ValueError.
 
     Each parity check group compiles to a ``DETECTOR`` instruction, and the
-    group's tag from `graphqomb.pauli_frame.PauliFrame.parity_check_tags` is
+    group's tag from `graphqomb.pauli_frame.CliffordFrame.parity_check_tags` is
     emitted as a Stim instruction tag (for example ``DETECTOR[type=flag]``).
     Use `graphqomb.stim_glue.postselect.flag_postselection_mask` on the
     compiled circuit to post-select flag detectors with sinter.
