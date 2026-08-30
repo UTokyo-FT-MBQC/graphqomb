@@ -296,6 +296,12 @@ def stim_compile(
     `str`
         The compiled stim string.
 
+    Raises
+    ------
+    ValueError
+        If the pattern's frame carries Clifford feedforward (cflow): stim
+        classical feedback is Pauli-only, so such patterns cannot be exported.
+
     Notes
     -----
     Stim only supports Clifford gates, therefore this compiler only supports
@@ -325,6 +331,12 @@ def stim_compile(
     >>> #     ]
     >>> # )
     """
+    if pattern.pauli_frame.cflow:
+        msg = (
+            "Stim export supports Pauli-frame feedforward only: the pattern's frame carries "
+            "Clifford feedforward (cflow), which stim classical feedback cannot express."
+        )
+        raise ValueError(msg)
     compiler = _StimCompiler(
         pattern,
         emit_qubit_coords=emit_qubit_coords,

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import typing_extensions
 
 from graphqomb._tag import escape_tag, unescape_tag
+from graphqomb.clifford_algebra import COSET_NAMES, C1Element
 from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.common import (
     Axis,
@@ -42,16 +43,21 @@ from graphqomb.pauli_frame import PauliFrame
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-PTN_VERSION = 4
-SUPPORTED_PTN_VERSIONS = frozenset({1, 2, 3, PTN_VERSION})
-# Version 3 added detector tags (".detector[tag] ...") and version 4 added
-# input initialization tags (".input_tag[tag] node ..."). A file is written
-# with the smallest version whose grammar it uses, so external parsers that
-# only know version 2 keep reading tag-free files, and a tagged file announces
-# itself with a version those parsers reject up front.
+PTN_VERSION = 5
+SUPPORTED_PTN_VERSIONS = frozenset({1, 2, 3, 4, PTN_VERSION})
+# Version 3 added detector tags (".detector[tag] ..."), version 4 added input
+# initialization tags (".input_tag[tag] node ..."), and version 5 added
+# Clifford feedforward (".cflow src -> tgt:NAME"). A file is written with the
+# smallest version whose grammar it uses, so external parsers that only know
+# version 2 keep reading tag-free files, and a tagged file announces itself
+# with a version those parsers reject up front.
 _DETECTOR_TAG_VERSION = 3
 _INPUT_TAG_VERSION = 4
+_CFLOW_VERSION = 5
 _BASE_VERSION = 2
+
+# Normalized coset names accepted by the .cflow directive (identity excluded).
+_COSET_BY_NAME: dict[str, C1Element] = {name: coset for coset, name in COSET_NAMES.items() if name != "I"}
 
 # A timeslice marker may skip ahead of the previous one, and every skipped slice becomes a TICK
 # command.  The index is attacker-controlled in an untrusted .ptn file, so the expansion is bounded
@@ -195,6 +201,8 @@ def _required_version(pattern: Pattern) -> int:
         Minimum version required to parse the serialized pattern.
     """
     frame = pattern.pauli_frame
+    if frame.cflow:
+        return _CFLOW_VERSION
     has_tagged_input = any(init.tag for init in pattern.input_initializations.values())
     if has_tagged_input:
         return _INPUT_TAG_VERSION
@@ -310,20 +318,26 @@ def _write_quantum_section(out: StringIO, pattern: Pattern) -> None:
         write_slice(timeslice, current_slice_commands)
 
 
+def _write_pauli_flows(out: StringIO, pauli_frame: PauliFrame) -> None:
+    """Write the .xflow and .zflow directives to output."""
+    for directive, flow in ((".xflow", pauli_frame.xflow), (".zflow", pauli_frame.zflow)):
+        for source, targets in sorted(flow.items()):
+            if targets:
+                targets_str = " ".join(str(t) for t in sorted(targets))
+                out.write(f"{directive} {source} -> {targets_str}\n")
+
+
 def _write_classical_section(out: StringIO, pauli_frame: PauliFrame) -> None:
     """Write classical frame section to output."""
     out.write("\n")
     out.write("#======== CLASSICAL ========\n")
 
-    for source, targets in sorted(pauli_frame.xflow.items()):
-        if targets:
-            targets_str = " ".join(str(t) for t in sorted(targets))
-            out.write(f".xflow {source} -> {targets_str}\n")
+    _write_pauli_flows(out, pauli_frame)
 
-    for source, targets in sorted(pauli_frame.zflow.items()):
-        if targets:
-            targets_str = " ".join(str(t) for t in sorted(targets))
-            out.write(f".zflow {source} -> {targets_str}\n")
+    for source, coset_targets in sorted(pauli_frame.cflow.items()):
+        if coset_targets:
+            targets_str = " ".join(f"{t}:{COSET_NAMES[coset]}" for t, coset in sorted(coset_targets.items()))
+            out.write(f".cflow {source} -> {targets_str}\n")
 
     for group, tag in zip(pauli_frame.parity_check_group, pauli_frame.parity_check_tags, strict=True):
         if group:
@@ -341,10 +355,11 @@ def dumps(pattern: Pattern) -> str:
     """Serialize a pattern to a .ptn format string.
 
     The header declares the smallest format version whose grammar the file
-    uses: version 4 when an input initialization carries a tag
-    (``.input_tag[tag] node``), version 3 when a parity check group carries a
-    detector tag (``.detector[tag] ...``), version 2 otherwise, so tag-free
-    files stay readable by version 2 parsers.
+    uses: version 5 when the frame carries Clifford feedforward
+    (``.cflow src -> tgt:NAME``), version 4 when an input initialization
+    carries a tag (``.input_tag[tag] node``), version 3 when a parity check
+    group carries a detector tag (``.detector[tag] ...``), version 2
+    otherwise, so tag-free files stay readable by version 2 parsers.
 
     Parameters
     ----------
@@ -522,6 +537,55 @@ def _parse_arrow_mapping(line: str, label: str) -> tuple[int, set[int]]:
     return source, targets
 
 
+def _parse_cflow_mapping(line: str) -> tuple[int, dict[int, C1Element]]:
+    r"""Parse a .cflow line: ``<src> -> <tgt>:<NAME> ...``.
+
+    Parameters
+    ----------
+    line : `str`
+        The line content after ".cflow".
+
+    Returns
+    -------
+    `tuple`\[`int`, `dict`\[`int`, `C1Element`\]\]
+        Source node and mapping from target node to coset element.
+
+    Raises
+    ------
+    ValueError
+        If the mapping is malformed or names an unknown coset.
+    """
+    parts = line.split("->")
+    if len(parts) != 2:  # ruff:ignore[magic-value-comparison]
+        msg = ".cflow must contain exactly one '->'"
+        raise ValueError(msg)
+    source_part = parts[0].strip()
+    if not source_part:
+        msg = ".cflow requires a source node"
+        raise ValueError(msg)
+    source = _parse_int(source_part, "source node")
+    pair_parts = parts[1].strip().split()
+    if not pair_parts:
+        msg = ".cflow requires at least one target:coset pair"
+        raise ValueError(msg)
+    targets: dict[int, C1Element] = {}
+    for part in pair_parts:
+        pair = part.split(":")
+        if len(pair) != 2:  # ruff:ignore[magic-value-comparison]
+            msg = f"Invalid target:coset pair: {part!r}"
+            raise ValueError(msg)
+        target = _parse_int(pair[0], "target node")
+        coset = _COSET_BY_NAME.get(pair[1])
+        if coset is None:
+            msg = f"Invalid .cflow coset name: {pair[1]!r} (expected one of {sorted(_COSET_BY_NAME)})"
+            raise ValueError(msg)
+        if target in targets:
+            msg = f"Duplicate .cflow target: {target}"
+            raise ValueError(msg)
+        targets[target] = coset
+    return source, targets
+
+
 @dataclass(slots=True)
 class _PatternData:
     r"""Container for parsed pattern data from .ptn format.
@@ -545,6 +609,8 @@ class _PatternData:
         X correction flow mapping.
     zflow : `dict`\[`int`, `set`\[`int`\]\]
         Z correction flow mapping.
+    cflow : `dict`\[`int`, `dict`\[`int`, `C1Element`\]\]
+        Clifford correction flow mapping.
     parity_check_groups : `list`\[`set`\[`int`\]\]
         Parity check groups for error detection.
     parity_check_tags : `list`\[`str`\]
@@ -560,6 +626,7 @@ class _PatternData:
     commands: list[Command] = field(default_factory=list[Command])
     xflow: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
     zflow: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
+    cflow: dict[int, dict[int, C1Element]] = field(default_factory=dict[int, dict[int, C1Element]])
     parity_check_groups: list[set[int]] = field(default_factory=list[set[int]])
     parity_check_tags: list[str] = field(default_factory=list[str])
     logical_observables: dict[int, set[int]] = field(default_factory=dict[int, set[int]])
@@ -712,6 +779,18 @@ def _input_initializations_from_data(data: _PatternData) -> dict[int, Initializa
     }
 
 
+def _collect_classical_nodes(data: _PatternData, nodes: set[int]) -> None:
+    """Add every node referenced by the classical section to ``nodes``."""
+    for flow in (data.xflow, data.zflow, data.cflow):
+        for source, targets in flow.items():
+            nodes.add(source)
+            nodes.update(targets)
+    for group in data.parity_check_groups:
+        nodes.update(group)
+    for nodes_in_observable in data.logical_observables.values():
+        nodes.update(nodes_in_observable)
+
+
 def _build_pattern(data: _PatternData) -> Pattern:
     """Build a Pattern from parsed .ptn data.
 
@@ -746,16 +825,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         elif isinstance(cmd, N) and cmd.coordinate is not None:
             coordinates[cmd.node] = cmd.coordinate
 
-    for source, targets in data.xflow.items():
-        nodes.add(source)
-        nodes.update(targets)
-    for source, targets in data.zflow.items():
-        nodes.add(source)
-        nodes.update(targets)
-    for group in data.parity_check_groups:
-        nodes.update(group)
-    for nodes_in_observable in data.logical_observables.values():
-        nodes.update(nodes_in_observable)
+    _collect_classical_nodes(data, nodes)
 
     graphstate = _LoadedGraphState(
         _input_node_indices=data.input_node_indices,
@@ -773,6 +843,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         parity_check_group=data.parity_check_groups,
         logical_observables=data.logical_observables,
         parity_check_tags=data.parity_check_tags,
+        cflow=data.cflow,
     )
     return Pattern(
         input_node_indices=dict(data.input_node_indices),
@@ -849,6 +920,9 @@ class _Parser:
         if self.version < _INPUT_TAG_VERSION and self.uses_input_tag_syntax:
             msg = f".input_tag requires .ptn version {_INPUT_TAG_VERSION} or later"
             raise ValueError(msg)
+        if self.version < _CFLOW_VERSION and self.result.cflow:
+            msg = f".cflow requires .ptn version {_CFLOW_VERSION} or later"
+            raise ValueError(msg)
 
         return _build_pattern(self.result)
 
@@ -903,18 +977,33 @@ class _Parser:
             self.result.output_node_indices = _parse_node_qubit_pairs(content.split())
         elif directive == ".coord":
             self._handle_coord(content)
-        elif directive == ".xflow":
+        elif not self._parse_flow_directive(directive, content):
+            msg = f"Unknown directive: {directive}"
+            raise ValueError(msg)
+
+    def _parse_flow_directive(self, directive: str, content: str) -> bool:
+        """Parse a correction-flow or observable directive.
+
+        Returns
+        -------
+        `bool`
+            Whether the directive was handled.
+        """
+        if directive == ".xflow":
             source, targets = _parse_arrow_mapping(content, ".xflow")
             self.result.xflow[source] = targets
         elif directive == ".zflow":
             source, targets = _parse_arrow_mapping(content, ".zflow")
             self.result.zflow[source] = targets
+        elif directive == ".cflow":
+            source, coset_targets = _parse_cflow_mapping(content)
+            self.result.cflow[source] = coset_targets
         elif directive == ".observable":
             logical_idx, nodes = _parse_arrow_mapping(content, ".observable")
             self.result.logical_observables[logical_idx] = nodes
         else:
-            msg = f"Unknown directive: {directive}"
-            raise ValueError(msg)
+            return False
+        return True
 
     def _dispatch_bracketed_directive(self, line: str) -> bool:
         """Dispatch a directive whose tag bracket may contain whitespace.
