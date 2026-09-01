@@ -336,6 +336,17 @@ def test_reset_after_entangling_is_a_deterministic_flush_barrier() -> None:
     _assert_exact_channel(source, result.circuit)
 
 
+def test_frame_flushes_before_a_reset_that_follows_measurements() -> None:
+    # The pending frame must precede the reset so the freshly prepared
+    # state survives; a frame emitted after the reset would corrupt it.
+    source = stim.Circuit("H 0\nM 1\nR 0\nH 0\nM 0")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit("M 1\nH 0\nR 0\nMPP X0\nH 0")
+    _assert_exact_channel(source, result.circuit)
+
+
 def test_feedback_is_a_deterministic_flush_barrier() -> None:
     source = stim.Circuit("R 0 1\nX 0\nM 0\nCX rec[-1] 1\nM 1")
 
