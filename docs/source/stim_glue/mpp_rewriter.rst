@@ -84,9 +84,11 @@ as separate Stim instructions. A source ``TICK`` is a hard boundary: products
 on opposite sides are built as separate graph layers and are never coalesced.
 Removing a contracted measure-reset ancilla also preserves its round boundary:
 if there is no source ``TICK`` before the next MPP, ``foliation_circuit`` inserts
-one. More generally, a repeated identical Pauli support starts a new internal
-layer even within one source interval. Distinct commuting supports continue to
-share a layer, so repeated identical checks are never fused together.
+one. More generally, a repeated identical Pauli support, or a product that
+anticommutes with one already in the layer, starts a new internal layer even
+within one source interval. Distinct commuting supports continue to share a
+layer, so repeated identical checks are never fused together and every
+imported MPP block commutes internally.
 
 .. code-block:: python
 

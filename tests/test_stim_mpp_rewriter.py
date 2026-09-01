@@ -200,6 +200,31 @@ def test_duplicate_mpp_support_starts_a_new_internal_layer() -> None:
     )
 
 
+def test_anticommuting_mpp_products_start_a_new_internal_layer() -> None:
+    source = stim.Circuit("H 0\nM 0\nSQRT_X 0\nM 0")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == stim.Circuit(
+        """
+        MPP X0
+        TICK
+        MPP !Y0
+        H 0
+        SQRT_X 0
+        """
+    )
+    _assert_exact_channel(source, result.circuit)
+
+
+def test_commuting_overlapping_mpp_products_share_a_layer() -> None:
+    source = stim.Circuit("MPP Z0*Z1 Z1*Z2 X0*X1*X2*X3")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == source
+
+
 def test_measure_reset_keeps_noncontractible_data_clifford() -> None:
     source = stim.Circuit("R 2\nH 0\nMR 2")
 

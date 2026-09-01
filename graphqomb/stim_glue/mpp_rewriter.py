@@ -211,7 +211,7 @@ class _PendingCliffordRewriter:
             self._output,
             self._contracted_source_qubits,
         )
-        foliation_circuit = _separate_repeated_mpp_products(foliation_circuit)
+        foliation_circuit = _separate_conflicting_mpp_products(foliation_circuit)
         return MppRewriteResult(
             circuit=self._output,
             checks=tuple(self._checks),
@@ -524,20 +524,20 @@ def _append_without_eliminated_targets(
     return instruction.name in _RESET_BASES and len(targets) != len(original_targets)
 
 
-def _separate_repeated_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
-    """Keep identical Pauli products out of the same Foliation layer.
+def _separate_conflicting_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
+    """Keep repeated or anticommuting Pauli products out of one Foliation layer.
 
-    Products remain in record order. Distinct products still share the source
-    TICK interval; encountering a repeated unsigned support starts the next
-    internal layer.
+    Products remain in record order. Distinct commuting products still share
+    the source TICK interval; a repeated unsigned support or a product that
+    anticommutes with one already in the layer starts the next internal layer.
 
     Returns
     -------
     ``stim.Circuit``
-        Import-oriented circuit with repeated MPP supports separated by TICK.
+        Import-oriented circuit with conflicting MPP products separated by TICK.
     """
     result = stim.Circuit()
-    supports_in_layer: set[tuple[tuple[int, str], ...]] = set()
+    supports_in_layer: list[tuple[tuple[int, str], ...]] = []
     for instruction in iter_instructions(circuit):
         if instruction.name == "TICK":
             result.append(instruction)
@@ -545,7 +545,9 @@ def _separate_repeated_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
         elif instruction.name == "MPP":
             for group in instruction.target_groups():
                 support = _mpp_group_support(group)
-                if support in supports_in_layer:
+                if support in supports_in_layer or any(
+                    _supports_anticommute(support, existing) for existing in supports_in_layer
+                ):
                     result.append("TICK", [])
                     supports_in_layer.clear()
                 result.append(
@@ -554,10 +556,26 @@ def _separate_repeated_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
                     instruction.gate_args_copy(),
                     tag=instruction.tag,
                 )
-                supports_in_layer.add(support)
+                supports_in_layer.append(support)
         else:
             result.append(instruction)
     return result
+
+
+def _supports_anticommute(
+    left: tuple[tuple[int, str], ...],
+    right: tuple[tuple[int, str], ...],
+) -> bool:
+    """Return whether two unsigned Pauli supports anticommute.
+
+    Returns
+    -------
+    `bool`
+        Whether an odd number of factor pairs anticommute.
+    """
+    left_paulis = dict(left)
+    differing = sum(1 for qubit, pauli in right if left_paulis.get(qubit, pauli) != pauli)
+    return differing % 2 == 1
 
 
 def _mpp_group_support(group: Sequence[stim.GateTarget]) -> tuple[tuple[int, str], ...]:
