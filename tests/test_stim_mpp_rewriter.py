@@ -497,6 +497,46 @@ def test_residual_frame_is_preserved_across_segments() -> None:
     assert np.array_equal(result.circuit.reference_sample(), source.reference_sample())
 
 
+def test_late_reset_follows_the_residual_frame() -> None:
+    source = stim.Circuit(
+        """
+        H 0
+        M 1
+        R 0
+        H 0
+        M 0
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == stim.Circuit("M 1\nH 0\nR 0\nMPP X0")
+    # The final X measurement acts on a freshly Z-prepared qubit put into
+    # |+> by the second segment's body, so it must stay random.
+    samples = result.circuit.compile_sampler(seed=0).sample(shots=64)
+    assert samples[:, 1].any()
+    assert not samples[:, 1].all()
+
+
+def test_late_reset_prepares_a_frame_entangled_qubit() -> None:
+    source = stim.Circuit(
+        """
+        R 0 1
+        H 0
+        CX 0 1
+        M 2
+        R 0
+        """
+    )
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit.flow_generators() == source.flow_generators()
+    probe = result.circuit + stim.Circuit("M 0")
+    samples = probe.compile_sampler(seed=0).sample(shots=64)
+    assert not samples[:, 1].any()
+
+
 def test_unsupported_residual_channel_falls_back_to_gate_level_source() -> None:
     source = stim.Circuit(
         """

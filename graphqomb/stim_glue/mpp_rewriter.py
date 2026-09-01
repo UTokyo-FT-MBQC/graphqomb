@@ -992,9 +992,15 @@ def _emit_segment(
     """
     output = stim.Circuit()
     checks: list[CheckMapping] = []
+    deferred_resets: list[stim.CircuitInstruction] = []
     seen_measurement = False
     for position, (instruction, kind) in enumerate(segment.items):
         if kind == "unitary":
+            continue
+        if kind == "reset" and seen_measurement:
+            # A late reset follows the source body, so it must also follow
+            # the residual frame that reproduces that body on survivors.
+            deferred_resets.append(instruction)
             continue
         if kind in {"annotation", "reset"}:
             output.append(instruction)
@@ -1018,6 +1024,8 @@ def _emit_segment(
             late_resets=late_resets,
         )
     output += frame
+    for instruction in deferred_resets:
+        output.append(instruction)
     return output, tuple(checks), measurement_index
 
 
