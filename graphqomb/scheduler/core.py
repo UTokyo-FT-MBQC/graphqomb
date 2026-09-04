@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Set as AbstractSet
 
+    from graphqomb.clifford_algebra import C1Element
     from graphqomb.graphstate import BaseGraphState
 
 
@@ -149,9 +150,10 @@ class Scheduler:
         graph: BaseGraphState,
         xflow: Mapping[int, AbstractSet[int]],
         zflow: Mapping[int, AbstractSet[int]] | None = None,
+        cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
     ) -> None:
         self.graph = graph
-        self.dag = dag_from_flow(graph, xflow, zflow)
+        self.dag = dag_from_flow(graph, xflow, zflow, cflow)
         self.prepare_time = dict.fromkeys(graph.nodes - graph.input_node_indices.keys())
         self.measure_time = dict.fromkeys(graph.nodes - unmeasured_output_nodes(graph))
         # Initialize entangle_time for all edges

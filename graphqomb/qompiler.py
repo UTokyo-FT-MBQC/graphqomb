@@ -16,13 +16,14 @@ from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.feedforward import check_flow, dag_from_flow
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import PauliFrame
+from graphqomb.pauli_frame import CliffordFrame
 from graphqomb.scheduler import Scheduler
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from collections.abc import Set as AbstractSet
 
+    from graphqomb.clifford_algebra import C1Element
     from graphqomb.graphstate import BaseGraphState
 
 
@@ -30,13 +31,14 @@ def qompile(  # ruff:ignore[too-many-arguments]
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, AbstractSet[int]] | None = None,
+    cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
     *,
     parity_check_group: Sequence[AbstractSet[int]] | None = None,
     logical_observables: Mapping[int, AbstractSet[int]] | None = None,
     parity_check_tags: Sequence[str] | None = None,
     scheduler: Scheduler | None = None,
 ) -> Pattern:
-    r"""Compile graph state into pattern with x/z correction flows.
+    r"""Compile graph state into pattern with x/z/Clifford correction flows.
 
     Parameters
     ----------
@@ -47,6 +49,10 @@ def qompile(  # ruff:ignore[too-many-arguments]
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         z correction flow
         if `None`, it is generated from xflow by odd neighbors
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        Clifford correction flow (source -> target -> conditional Clifford
+        applied when the source outcome is 1). Values may be arbitrary C1
+        elements; the Pauli part is folded into xflow/zflow at compile time.
     parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
         parity check group for FTQC
     logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
@@ -70,27 +76,30 @@ def qompile(  # ruff:ignore[too-many-arguments]
     graph.check_canonical_form()
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
-    check_flow(graph, xflow, zflow)
 
-    pauli_frame = PauliFrame(
+    pauli_frame = CliffordFrame(
         graph,
         xflow,
         zflow,
         parity_check_group=parity_check_group,
         logical_observables=logical_observables,
         parity_check_tags=parity_check_tags,
+        cflow=cflow,
     )
+    # Validate the normalized flows: cflow normalization may add or cancel
+    # Pauli corrections, so the check runs on the frame's folded maps.
+    check_flow(graph, pauli_frame.xflow, pauli_frame.zflow, pauli_frame.cflow)
 
     return _qompile(graph, pauli_frame, scheduler=scheduler)
 
 
 def _qompile(
     graph: BaseGraphState,
-    pauli_frame: PauliFrame,
+    pauli_frame: CliffordFrame,
     *,
     scheduler: Scheduler | None = None,
 ) -> Pattern:
-    """Compile graph state into pattern with a given Pauli frame.
+    """Compile graph state into pattern with a given correction frame.
 
     note: This is an internal function of `qompile`.
 
@@ -98,8 +107,8 @@ def _qompile(
     ----------
     graph : `BaseGraphState`
         graph state
-    pauli_frame : `PauliFrame`
-        Pauli frame to track the Pauli state of each node
+    pauli_frame : `CliffordFrame`
+        correction frame to track the frame of each node
     scheduler : `Scheduler` | `None`, optional
         scheduler to schedule the graph state preparation and measurements,
         if `None`, a `Scheduler` is constructed internally and solved with the
@@ -115,13 +124,13 @@ def _qompile(
     meas_bases = graph.meas_bases
     graph_coords = graph.coordinates
 
-    dag = dag_from_flow(graph, xflow=pauli_frame.xflow, zflow=pauli_frame.zflow)
+    dag = dag_from_flow(graph, xflow=pauli_frame.xflow, zflow=pauli_frame.zflow, cflow=pauli_frame.cflow)
     topo_order = list(TopologicalSorter(dag).static_order())
     topo_order.reverse()  # children first
 
     commands: list[Command] = []
     if scheduler is None:
-        scheduler = Scheduler(graph, pauli_frame.xflow, pauli_frame.zflow)
+        scheduler = Scheduler(graph, pauli_frame.xflow, pauli_frame.zflow, cflow=pauli_frame.cflow)
         scheduler.solve_schedule()
     else:
         scheduler.validate_schedule()

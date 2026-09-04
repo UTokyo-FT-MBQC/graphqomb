@@ -296,6 +296,12 @@ def stim_compile(
     `str`
         The compiled stim string.
 
+    Raises
+    ------
+    ValueError
+        If the pattern's frame carries Clifford feedforward (cflow): stim
+        classical feedback is Pauli-only, so such patterns cannot be exported.
+
     Notes
     -----
     Stim only supports Clifford gates, therefore this compiler only supports
@@ -303,7 +309,7 @@ def stim_compile(
     Non-Pauli measurements will raise a ValueError.
 
     Each parity check group compiles to a ``DETECTOR`` instruction, and the
-    group's tag from `graphqomb.pauli_frame.PauliFrame.parity_check_tags` is
+    group's tag from `graphqomb.pauli_frame.CliffordFrame.parity_check_tags` is
     emitted as a Stim instruction tag (for example ``DETECTOR[type=flag]``).
     Use `graphqomb.stim_glue.postselect.flag_postselection_mask` on the
     compiled circuit to post-select flag detectors with sinter.
@@ -325,6 +331,12 @@ def stim_compile(
     >>> #     ]
     >>> # )
     """
+    if pattern.pauli_frame.cflow:
+        msg = (
+            "Stim export supports Pauli-frame feedforward only: the pattern's frame carries "
+            "Clifford feedforward (cflow), which stim classical feedback cannot express."
+        )
+        raise ValueError(msg)
     compiler = _StimCompiler(
         pattern,
         emit_qubit_coords=emit_qubit_coords,

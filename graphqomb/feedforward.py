@@ -16,12 +16,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from graphlib import CycleError, TopologicalSorter
-from typing import Any, TypeGuard
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import typing_extensions
 
 from graphqomb.common import Axis, Plane, determine_pauli_axis
 from graphqomb.graphstate import BaseGraphState, odd_neighbors, unmeasured_output_nodes
+
+if TYPE_CHECKING:
+    from graphqomb.clifford_algebra import C1Element
 
 TOPO_ORDER_CYCLE_ERROR_MSG = "No nodes can be measured; possible cyclic dependency or incomplete preparation."
 
@@ -62,6 +65,7 @@ def dag_from_flow(
     graph: BaseGraphState,
     xflow: Mapping[int, int] | Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, int] | Mapping[int, AbstractSet[int]] | None = None,
+    cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
 ) -> dict[int, set[int]]:
     r"""Construct a directed acyclic graph (DAG) from a flowlike object.
 
@@ -73,6 +77,8 @@ def dag_from_flow(
         The X correction flow (flow and gflow are included)
     zflow : `collections.abc.Mapping`\[`int`, `int`\] | `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         The Z correction flow. If `None`, it is generated from xflow by odd neighbors.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        The Clifford correction flow. Its targets join the DAG edges.
 
     Returns
     -------
@@ -104,8 +110,11 @@ def dag_from_flow(
     else:
         msg = "Invalid zflow object"
         raise TypeError(msg)
+    if cflow is None:
+        cflow = {}
     for node in measured_nodes:
-        target_nodes = (xflow.get(node, set()) | zflow.get(node, set())) - {node}  # remove self-loops
+        # remove self-loops
+        target_nodes = (xflow.get(node, set()) | zflow.get(node, set()) | cflow.get(node, {}).keys()) - {node}
         dag[node] = target_nodes
     for output in unmeasured_outputs:
         dag[output] = set()
@@ -193,6 +202,7 @@ def check_flow(
     graph: BaseGraphState,
     xflow: Mapping[int, int] | Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, int] | Mapping[int, AbstractSet[int]] | None = None,
+    cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
 ) -> None:
     r"""Check if the flowlike object is causal with respect to the graph state.
 
@@ -204,13 +214,31 @@ def check_flow(
         The  X correction flow (flow and gflow are included)
     zflow : `collections.abc.Mapping`\[`int`, `int`\] | `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         The  Z correction flow. If `None`, it is generated from xflow by odd neighbors.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        The Clifford correction flow.
     """  # ruff:ignore[line-too-long]
-    dag = dag_from_flow(graph, xflow, zflow)
+    dag = dag_from_flow(graph, xflow, zflow, cflow)
     check_dag(dag)
 
 
+def _reject_cflow(cflow: Mapping[int, Mapping[int, C1Element]] | None, operation: str) -> None:
+    """Raise for a nonempty Clifford correction flow.
+
+    Raises
+    ------
+    NotImplementedError
+        If any cflow correction is present.
+    """
+    if cflow and any(targets for targets in cflow.values()):
+        msg = f"{operation} over Clifford feedforward (cflow) is not supported yet."
+        raise NotImplementedError(msg)
+
+
 def signal_shifting(
-    graph: BaseGraphState, xflow: Mapping[int, AbstractSet[int]], zflow: Mapping[int, AbstractSet[int]] | None = None
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]] | None = None,
+    cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
 ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
     r"""Convert the correction maps into more parallel-friendly forms using signal shifting.
 
@@ -222,12 +250,15 @@ def signal_shifting(
         Correction map for X.
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        Clifford correction flow. Must be empty; shifting it is unsupported.
 
     Returns
     -------
     `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `dict`\[`int`, `set`\[`int`\]\]\]
         Updated correction maps for X and Z after signal shifting.
     """
+    _reject_cflow(cflow, "Signal shifting")
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
 
@@ -252,6 +283,7 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, AbstractSet[int]] | None = None,
+    cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
 ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
     r"""Propagate the correction map through a measurement at the target node.
 
@@ -265,6 +297,8 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
         Correction map for X.
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        Clifford correction flow. Must be empty; propagating it is unsupported.
 
     Returns
     -------
@@ -284,6 +318,7 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
     This function converts the correction maps into more parallel-friendly forms.
     It is equivalent to the signal shifting technique in the measurement calculus.
     """
+    _reject_cflow(cflow, "Correction propagation")
     if target_node in graph.output_node_indices:
         msg = "Cannot propagate flow for output nodes."
         raise ValueError(msg)
@@ -337,6 +372,7 @@ def pauli_simplification(  # ruff:ignore[complex-structure, too-many-branches]
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, AbstractSet[int]] | None = None,
+    cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
 ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
     r"""Simplify the correction maps by removing redundant Pauli corrections.
 
@@ -348,12 +384,15 @@ def pauli_simplification(  # ruff:ignore[complex-structure, too-many-branches]
         Correction map for X.
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        Clifford correction flow. Must be empty; simplifying it is unsupported.
 
     Returns
     -------
     `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `dict`\[`int`, `set`\[`int`\]\]\]
         Updated correction maps for X and Z after simplification.
     """
+    _reject_cflow(cflow, "Pauli simplification")
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
 

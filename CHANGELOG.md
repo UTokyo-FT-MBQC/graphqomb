@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Clifford feedforward (Phase 1)**: `qompile(..., cflow=...)` accepts classically-controlled single-qubit Clifford corrections, tracked by the renamed `CliffordFrame` (`PauliFrame` stays as an alias) and simulated exactly; `.ptn` v5 serializes them, while Stim export and detector certification remain Pauli-frame-only (#285).
+
 - **In-Place Graph Composition**: `graphstate.compose_into(graph1, graph2)` composes `graph2` into `graph1` by mutation with the same connection rule and validation as `compose`, keeping `graph1` node indices stable, plus `GraphState.unregister_output()` to drop an output registration. The Stim importer's fragment fold now uses it, replacing the per-step full-graph copy (quadratic in total) with a linear fold: on the 15-to-1 lattice-surgery proxy the compose stage drops from 5.0 s to 0.4 s (k=1, 23k nodes) and 54 s to 3.3 s (k=2, 101k nodes) — end-to-end import from 175 s to 82 s at k=2. The composed graph is identical up to node relabeling.
 
 ## [0.5.3] - 2026-08-14

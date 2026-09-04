@@ -10,13 +10,15 @@ This module provides:
 from __future__ import annotations
 
 import functools
+import math
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from graphqomb import clifford_algebra
 from graphqomb.command import TICK, E, M, N
-from graphqomb.common import Axis, Initialization, MeasBasis, Plane
+from graphqomb.common import Axis, Initialization, MeasBasis, Plane, PlannerMeasBasis
 from graphqomb.gates import MultiGate, SingleGate, TwoQubitGate
 from graphqomb.pattern import is_runnable
 from graphqomb.rng import ensure_rng
@@ -219,14 +221,30 @@ class PatternSimulator:
             if x_pauli:
                 basis = basis.flip()
 
+        # Frame normal form is D * X^a * Z^b: the Pauli adaptation above is
+        # followed by the coset action on the (plane, angle) label.
+        coset = self.__pattern.pauli_frame.coset.get(cmd.node, clifford_algebra.IDENTITY)
+        if coset != clifford_algebra.IDENTITY:
+            plane, eps, quarter_turns = clifford_algebra.act_on_plane_angle(coset, basis.plane)
+            basis = PlannerMeasBasis(plane, eps * basis.angle + quarter_turns * math.pi / 2)
+
         return basis
 
-    def _apply_output_pauli_frame(self, node: int) -> None:
+    def _apply_output_frame(self, node: int) -> None:
         node_id = self.node_indices.index(node)
-        if self.__pattern.pauli_frame.x_pauli[node]:
+        frame = self.__pattern.pauli_frame
+        # Undo the frame F = D * X^a * Z^b: F^-1 = Z^b * X^a * D^-1 acts on the
+        # state with the coset inverse first, then the Pauli bits.
+        coset = frame.coset.get(node, clifford_algebra.IDENTITY)
+        if coset != clifford_algebra.IDENTITY:
+            self.state.evolve(clifford_algebra.to_matrix(clifford_algebra.inverse(coset)), node_id)
+        if frame.x_pauli[node]:
             self.state.evolve(_X_MATRIX, node_id)
-        if self.__pattern.pauli_frame.z_pauli[node]:
+        if frame.z_pauli[node]:
             self.state.evolve(_Z_MATRIX, node_id)
+
+    # Backwards-compatible alias.
+    _apply_output_pauli_frame = _apply_output_frame
 
     @apply_cmd.register
     def _(self, cmd: M, *, rng: np.random.Generator) -> None:
@@ -272,7 +290,7 @@ class PatternSimulator:
         # remain in output_node_indices but have been removed from node_indices.
         for node in self.node_indices:
             if node in self.__pattern.output_node_indices:
-                self._apply_output_pauli_frame(node)
+                self._apply_output_frame(node)
 
         # Measured outputs can leave sparse qindices among the remaining quantum
         # outputs. Reorder by each qindex's relative position, not by the qindex

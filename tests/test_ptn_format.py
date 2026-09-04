@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from graphqomb import clifford_algebra
 from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
@@ -107,6 +108,7 @@ def assert_pattern_equivalent(actual: Pattern, expected: Pattern) -> None:
     assert actual.input_initializations == expected.input_initializations
     assert actual.pauli_frame.xflow == expected.pauli_frame.xflow
     assert actual.pauli_frame.zflow == expected.pauli_frame.zflow
+    assert actual.pauli_frame.cflow == expected.pauli_frame.cflow
     assert actual.pauli_frame.parity_check_group == expected.pauli_frame.parity_check_group
     assert actual.pauli_frame.parity_check_tags == expected.pauli_frame.parity_check_tags
     assert actual.pauli_frame.logical_observables == expected.pauli_frame.logical_observables
@@ -1092,3 +1094,73 @@ M 0 XY 0
 """
     pattern = loads(ptn_str)
     assert list(pattern.pauli_frame.parity_check_tags) == [""]
+
+
+def _pattern_with_cflow() -> Pattern:
+    graph = GraphState()
+    n0 = graph.add_node()
+    n1 = graph.add_node()
+    n2 = graph.add_node()
+    graph.register_input(n0, 0)
+    graph.register_output(n2, 0)
+    graph.add_edge(n0, n1)
+    graph.add_edge(n1, n2)
+    graph.assign_meas_basis(n0, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(n1, PlannerMeasBasis(Plane.XY, 0.0))
+    return qompile(graph, xflow={n0: {n1}, n1: {n2}}, cflow={n0: {n1: clifford_algebra.S, n2: clifford_algebra.HSH}})
+
+
+def test_cflow_roundtrip() -> None:
+    pattern = _pattern_with_cflow()
+    ptn_str = dumps(pattern)
+    assert ".version 5" in ptn_str
+    assert ".cflow 0 -> 1:S 2:HSH" in ptn_str
+
+    result = loads(ptn_str)
+    assert_pattern_equivalent(result, pattern)
+    assert result.pauli_frame.cflow == pattern.pauli_frame.cflow
+
+
+def test_cflow_requires_version_5() -> None:
+    ptn_str = """
+.version 4
+.input 0:0
+.output 1:0
+[0]
+N 1
+E 0 1
+M 0 XY 0
+.cflow 0 -> 1:S
+"""
+    with pytest.raises(ValueError, match=r"\.cflow requires \.ptn version 5"):
+        loads(ptn_str)
+
+
+def test_cflow_rejects_unknown_coset_name() -> None:
+    ptn_str = """
+.version 5
+.input 0:0
+.output 1:0
+[0]
+N 1
+E 0 1
+M 0 XY 0
+.cflow 0 -> 1:T
+"""
+    with pytest.raises(ValueError, match=r"Invalid \.cflow coset name"):
+        loads(ptn_str)
+
+
+def test_cflow_rejects_malformed_pair() -> None:
+    ptn_str = """
+.version 5
+.input 0:0
+.output 1:0
+[0]
+N 1
+E 0 1
+M 0 XY 0
+.cflow 0 -> 1
+"""
+    with pytest.raises(ValueError, match="Invalid target:coset pair"):
+        loads(ptn_str)
