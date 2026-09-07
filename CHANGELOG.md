@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pair-measurement Foliation Layers**: `foliation_circuit` now normalizes `MXX`, `MYY`, and `MZZ` to MPP so repeated and anticommuting products, including mixtures with explicit MPPs, are separated before import.
+- **MPP Y-product Signs**: The Stim importer now compensates the Type-I foliation phase for products with one or two Y factors modulo four, preserving the fixed detector and observable signs as well as their determinism.
+
 ### Changed
 
 - **Exact Pending-Clifford MPP Rewrite**: `rewrite_to_mpp` now applies the instrument identity `Π(P) U = U Π(U† P U)` directly: Clifford bodies move unchanged behind their pulled Pauli measurements and materialize at resets, feedback barriers, or circuit exit. At a measure-reset, equal canonical Stim flows certify that the reduced MPP has replaced the source extraction ancilla, whose pending body is then discarded; the new `foliation_circuit` drops the reset-only source ancillas listed in `eliminated_qubits`. Source `TICK`s, repeated identical supports, and anticommuting products bound the imported MPP graph layers. The Stim extra now requires `stim>=1.16`, whose flow analysis the contraction certificate relies on.

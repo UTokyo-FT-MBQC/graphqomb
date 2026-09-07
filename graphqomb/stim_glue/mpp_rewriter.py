@@ -530,6 +530,7 @@ def _separate_conflicting_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
     Products remain in record order. Distinct commuting products still share
     the source TICK interval; a repeated unsigned support or a product that
     anticommutes with one already in the layer starts the next internal layer.
+    Pair measurements are converted to MPP before checking for conflicts.
 
     Returns
     -------
@@ -542,8 +543,19 @@ def _separate_conflicting_mpp_products(circuit: stim.Circuit) -> stim.Circuit:
         if instruction.name == "TICK":
             result.append(instruction)
             supports_in_layer.clear()
-        elif instruction.name == "MPP":
-            for group in instruction.target_groups():
+        elif instruction.name == "MPP" or instruction.name in _PAIR_MEASUREMENT_BASES:
+            for source_group in instruction.target_groups():
+                if instruction.name in _PAIR_MEASUREMENT_BASES:
+                    group = [
+                        stim.target_pauli(
+                            _plain_qubit(target, instruction.name),
+                            _PAIR_MEASUREMENT_BASES[instruction.name],
+                            invert=target.is_inverted_result_target,
+                        )
+                        for target in source_group
+                    ]
+                else:
+                    group = source_group
                 support = _mpp_group_support(group)
                 if support in supports_in_layer or any(
                     _supports_anticommute(support, existing) for existing in supports_in_layer

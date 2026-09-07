@@ -225,6 +225,38 @@ def test_commuting_overlapping_mpp_products_share_a_layer() -> None:
     assert result.foliation_circuit == source
 
 
+@pytest.mark.parametrize("basis", ["X", "Y", "Z"])
+def test_pair_measurements_split_repeated_supports_and_preserve_signs(basis: str) -> None:
+    source = stim.Circuit(f"M{basis}{basis}[pair] !0 1 1 !0\nDETECTOR rec[-1] rec[-2]")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.circuit == source
+    assert result.foliation_circuit == stim.Circuit(
+        f"MPP[pair] !{basis}0*{basis}1\nTICK\nMPP[pair] {basis}1*!{basis}0\nDETECTOR rec[-1] rec[-2]"
+    )
+    _assert_exact_channel(source, result.foliation_circuit)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    [
+        ("MXX 0 1\nMZZ 1 2", "MPP X0*X1\nTICK\nMPP Z1*Z2"),
+        ("MPP X0*X1\nMYY 1 2", "MPP X0*X1\nTICK\nMPP Y1*Y2"),
+        ("MZZ 1 2\nMPP X0*X1", "MPP Z1*Z2\nTICK\nMPP X0*X1"),
+        ("MXX 0 1\nMPP X1*X0", "MPP X0*X1\nTICK\nMPP X1*X0"),
+        ("MXX 0 1\nMYY 0 1", "MPP X0*X1 Y0*Y1"),
+    ],
+)
+def test_pair_and_mpp_measurements_share_conflict_detection(source_text: str, expected: str) -> None:
+    source = stim.Circuit(source_text)
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == stim.Circuit(expected)
+    _assert_exact_channel(source, result.foliation_circuit)
+
+
 def test_measure_reset_keeps_noncontractible_data_clifford() -> None:
     source = stim.Circuit("R 2\nH 0\nMR 2")
 

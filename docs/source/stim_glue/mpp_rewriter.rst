@@ -89,6 +89,9 @@ anticommutes with one already in the layer, starts a new internal layer even
 within one source interval. Distinct commuting supports continue to share a
 layer, so repeated identical checks are never fused together and every
 imported MPP block commutes internally.
+Pair measurements (``MXX``, ``MYY``, and ``MZZ``) are normalized to ``MPP``
+in ``foliation_circuit`` and follow the same layer-separation rules, including
+when mixed with explicit MPP products.
 
 .. code-block:: python
 

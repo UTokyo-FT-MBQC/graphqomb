@@ -245,6 +245,20 @@ def test_explicit_duplicate_mpp_supports_import_as_separate_layers() -> None:
     ]
 
 
+@pytest.mark.parametrize(("first", "second"), [("MXX", "MYY"), ("MYY", "MZZ"), ("MZZ", "MXX")])
+def test_conflicting_pair_measurements_import_with_deterministic_detector(first: str, second: str) -> None:
+    source = stim.Circuit(f"{first} 0 1\n{second} 1 2\n{second} 1 2\nDETECTOR rec[-1] rec[-2]")
+
+    rewrite = rewrite_to_mpp(source)
+    imported = stim_circuit_to_pattern(rewrite.foliation_circuit)
+    compiled = stim.Circuit(stim_compile(imported.pattern))
+
+    assert len(imported.mpp_extractions) == 3
+    assert compiled.num_detectors == source.num_detectors == 1
+    assert compiled.detector_error_model().num_errors == 0
+    _assert_same_reference_signs(compiled, source)
+
+
 def test_externally_pre_split_circuit_imports_like_the_original() -> None:
     # A caller may hand the importer a circuit whose reset lifetimes already
     # sit on fresh qubit ids (id 2 continues id 1 below). The importer cannot
