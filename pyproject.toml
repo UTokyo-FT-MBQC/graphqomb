@@ -59,7 +59,7 @@ dev = [
     "pytest-cov==7.1.0",
     "ruff==0.16.5",
     "scipy-stubs>=1.15.3.0",
-    "ty==0.0.76",
+    "ty==0.0.79",
     "types-networkx==3.6.1.20260903",
 ]
 doc = [
