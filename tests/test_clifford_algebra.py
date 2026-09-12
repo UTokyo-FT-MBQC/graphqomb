@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -11,6 +12,9 @@ import pytest
 from graphqomb import clifford_algebra as ca
 from graphqomb.common import Axis, Plane, PlannerMeasBasis, meas_basis
 from graphqomb.euler import LocalClifford, update_lc_basis
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 _PAULI_MATRICES = {
     Axis.X: np.asarray([[0, 1], [1, 0]], dtype=np.complex128),
@@ -30,7 +34,7 @@ def _all_elements() -> list[ca.C1Element]:
     ]
 
 
-def _proportional(a: np.ndarray, b: np.ndarray) -> bool:
+def _proportional(a: NDArray[np.complex128], b: NDArray[np.complex128]) -> bool:
     """Return whether two 2x2 unitaries are equal up to global phase."""
     return bool(np.isclose(abs(np.trace(a.conj().T @ b)), 2.0))
 
