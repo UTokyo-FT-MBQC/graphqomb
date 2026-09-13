@@ -202,8 +202,8 @@ class PatternSimulator:
 
     def _updated_measurement_basis(self, cmd: M) -> MeasBasis:
         basis = cmd.meas_basis
-        x_pauli = self.__pattern.pauli_frame.x_pauli[cmd.node]
-        z_pauli = self.__pattern.pauli_frame.z_pauli[cmd.node]
+        x_pauli = self.__pattern.clifford_frame.x_pauli[cmd.node]
+        z_pauli = self.__pattern.clifford_frame.z_pauli[cmd.node]
 
         if cmd.meas_basis.plane == Plane.XY:
             if x_pauli:
@@ -221,9 +221,10 @@ class PatternSimulator:
             if x_pauli:
                 basis = basis.flip()
 
+        # Residual F = K^-1; the executed observable is F A F^-1.
         # Frame normal form is D * X^a * Z^b: the Pauli adaptation above is
         # followed by the coset action on the (plane, angle) label.
-        coset = self.__pattern.pauli_frame.coset.get(cmd.node, clifford_algebra.IDENTITY)
+        coset = self.__pattern.clifford_frame.coset.get(cmd.node, clifford_algebra.IDENTITY)
         if coset != clifford_algebra.IDENTITY:
             plane, eps, quarter_turns = clifford_algebra.act_on_plane_angle(coset, basis.plane)
             basis = PlannerMeasBasis(plane, eps * basis.angle + quarter_turns * math.pi / 2)
@@ -232,7 +233,7 @@ class PatternSimulator:
 
     def _apply_output_frame(self, node: int) -> None:
         node_id = self.node_indices.index(node)
-        frame = self.__pattern.pauli_frame
+        frame = self.__pattern.clifford_frame
         # Undo the frame F = D * X^a * Z^b: F^-1 = Z^b * X^a * D^-1 acts on the
         # state with the coset inverse first, then the Pauli bits.
         coset = frame.coset.get(node, clifford_algebra.IDENTITY)
@@ -264,7 +265,7 @@ class PatternSimulator:
 
         # Measured outputs participate in feedforward like any other node.
         if result:
-            self.__pattern.pauli_frame.meas_flip(cmd.node)
+            self.__pattern.clifford_frame.meas_flip(cmd.node)
 
     @apply_cmd.register
     def _(self, cmd: TICK, *, rng: np.random.Generator) -> None:

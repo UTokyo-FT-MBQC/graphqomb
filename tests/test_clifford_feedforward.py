@@ -86,7 +86,7 @@ def _t_gadget_pattern() -> Pattern:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=commands,
-        pauli_frame=frame,
+        clifford_frame=frame,
         input_initializations=graph.input_initializations,
     )
 
@@ -117,7 +117,7 @@ def test_t_gadget_forced_branches(m0: bool, m1: bool) -> None:
         expected = _HADAMARD @ _T_GATE @ _HADAMARD @ psi
         assert _overlap(output, expected) == pytest.approx(1.0)
         # The recorded output frame on node 2 stays in the Pauli sector.
-        frame = pattern.pauli_frame
+        frame = pattern.clifford_frame
         assert frame.coset[2] == ca.IDENTITY
         assert frame.x_pauli[2] == m1
         assert frame.z_pauli[2] == m0
@@ -153,7 +153,7 @@ def test_qompile_folds_cflow_pauli_part() -> None:
     """A cflow value S*X folds its Pauli part into xflow, keeping the S coset."""
     graph = _t_gadget_graph()
     pattern = qompile(graph, xflow={0: {1}, 1: {2}}, cflow={0: {1: ca.compose(ca.S, ca.X)}})
-    frame = pattern.pauli_frame
+    frame = pattern.clifford_frame
     assert frame.cflow == {0: {1: ca.S}}
     # The folded X cancels the existing xflow correction 0 -> 1.
     assert frame.xflow[0] == set()
@@ -184,7 +184,7 @@ def _plane_change_pattern(theta: float) -> Pattern:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=commands,
-        pauli_frame=frame,
+        clifford_frame=frame,
         input_initializations=graph.input_initializations,
     )
 
@@ -195,7 +195,7 @@ def test_s_coset_moves_yz_measurement_to_xz_plane() -> None:
     pattern = _plane_change_pattern(theta)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=False)
 
-    pattern.pauli_frame.meas_flip(0)  # emulate outcome 1 on node 0
+    pattern.clifford_frame.meas_flip(0)  # emulate outcome 1 on node 0
     basis = simulator._updated_measurement_basis(M(1, PlannerMeasBasis(Plane.YZ, theta)))
     assert basis.plane == Plane.XZ
     # Frame S * X on (YZ, theta): the X flip gives theta + pi, then S maps
@@ -205,8 +205,8 @@ def test_s_coset_moves_yz_measurement_to_xz_plane() -> None:
     assert _overlap(basis.vector(), reference) == pytest.approx(1.0)
 
 
-def test_pure_s_coset_yz_to_xz_angle() -> None:
-    """A pure S coset (no Pauli bits) maps (YZ, theta) to (XZ, -theta)."""
+def test_s_correction_yz_to_xz_angle() -> None:
+    """Correcting S means residual S^-1 and maps (YZ, theta) to (XZ, theta)."""
     theta = 0.7
     graph = GraphState()
     n0 = graph.add_node()
@@ -220,14 +220,14 @@ def test_pure_s_coset_yz_to_xz_angle() -> None:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=(N(n1), E((0, 1)), M(0, PlannerMeasBasis(Plane.XY, 0.0)), TICK()),
-        pauli_frame=frame,
+        clifford_frame=frame,
         input_initializations=graph.input_initializations,
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=False)
     frame.meas_flip(0)
     basis = simulator._updated_measurement_basis(M(1, PlannerMeasBasis(Plane.YZ, theta)))
     assert basis.plane == Plane.XZ
-    assert is_close_angle(basis.angle, -theta)
+    assert is_close_angle(basis.angle, theta)
 
 
 def _cz_diagonal(num_qubits: int, qubit1: int, qubit2: int) -> NDArray[np.complex128]:
@@ -315,8 +315,88 @@ def test_is_runnable_sees_cflow_dependencies() -> None:
             M(0, PlannerMeasBasis(Plane.XY, 0.0)),
             TICK(),
         ),
-        pauli_frame=frame,
+        clifford_frame=frame,
         input_initializations=graph.input_initializations,
     )
     with pytest.raises(ValueError, match="depend on a unmeasured output"):
         is_runnable(pattern)
+
+
+@pytest.mark.parametrize("gate", [ca.S, ca.inverse(ca.S), ca.H, ca.SH, ca.HS])
+def test_output_applies_registered_correction(gate: ca.C1Element) -> None:
+    graph = GraphState()
+    graph.add_node()
+    graph.add_node()
+    graph.register_input(0, 0)
+    graph.register_input(1, 1)
+    graph.register_output(1, 0)
+    graph.assign_meas_basis(0, PlannerMeasBasis(Plane.XY, 0))
+    pattern = qompile(graph, xflow={}, zflow={}, cflow={0: {1: gate}})
+    simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=False)
+    simulator.simulate(_forced_rng(True))
+    plus = np.ones(2, dtype=np.complex128) / math.sqrt(2)
+    expected = ca.to_matrix(gate) @ plus
+    output = np.asarray(simulator.state.state())
+    assert _overlap(output.ravel(), expected) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("gate", [ca.S, ca.inverse(ca.S)])
+def test_s_correction_born_probability(gate: ca.C1Element) -> None:
+    graph = GraphState()
+    for node in range(3):
+        graph.add_node()
+        graph.register_input(node, node)
+    graph.register_output(2, 0)
+    graph.assign_meas_basis(0, PlannerMeasBasis(Plane.XY, 0))
+    graph.assign_meas_basis(1, PlannerMeasBasis(Plane.XY, 0))
+    pattern = qompile(graph, xflow={}, zflow={}, cflow={0: {1: gate}})
+    simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=True)
+    minus_x = np.asarray([1, -1], dtype=np.complex128) / math.sqrt(2)
+    plus_y = np.asarray([1, 1j], dtype=np.complex128) / math.sqrt(2)
+    plus_x = np.asarray([1, 1], dtype=np.complex128) / math.sqrt(2)
+    simulator.state = StateVector.from_product_states([minus_x, plus_y, plus_x])
+    simulator.simulate(np.random.default_rng(31))
+    # Explicit S |+Y> = |-X>, while S^-1 |+Y> = |+X>.
+    assert simulator.results == {0: True, 1: gate == ca.S}
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        ca.compose(d, ca.compose(x, z))
+        for d, x, z in itertools.product(ca.TRANSVERSAL, (ca.IDENTITY, ca.X), (ca.IDENTITY, ca.Z))
+    ],
+)
+@pytest.mark.parametrize("plane", list(Plane))
+@pytest.mark.parametrize("outcome", [False, True])
+def test_measurement_matches_explicit_correction_on_entangled_state(
+    gate: ca.C1Element, plane: Plane, outcome: bool
+) -> None:
+    graph = GraphState()
+    for node in range(3):
+        graph.add_node()
+        graph.register_input(node, node)
+    graph.register_output(2, 0)
+    graph.add_edge(1, 2)
+    graph.assign_meas_basis(0, PlannerMeasBasis(Plane.XY, 0))
+    graph.assign_meas_basis(1, PlannerMeasBasis(plane, 0.37))
+    pattern = qompile(graph, xflow={}, zflow={}, cflow={0: {1: gate}})
+    simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=False)
+    rng = np.random.default_rng(73)
+    target, spectator = _random_state(rng), _random_state(rng)
+    minus_x = np.asarray([1, -1], dtype=np.complex128) / math.sqrt(2)
+    simulator.state = StateVector.from_product_states([minus_x, target, spectator])
+    simulator.simulate(_forced_rng(True, outcome))
+
+    entangled = np.kron(target, spectator) * np.asarray([1, 1, 1, -1])
+    corrected = ca.to_matrix(gate) @ entangled.reshape(2, 2)
+    nominal = meas_basis(plane, 0.37 + math.pi * outcome)
+    reference = nominal.conj() @ corrected
+    # Compare the unnormalized contraction as well: normalized states alone
+    # would miss an incorrect branch probability or outcome-label sign.
+    executed = simulator._updated_measurement_basis(M(1, PlannerMeasBasis(plane, 0.37)))
+    vector = executed.flip().vector() if outcome else executed.vector()
+    actual = vector.conj() @ entangled.reshape(2, 2)
+    assert np.linalg.norm(actual) == pytest.approx(np.linalg.norm(reference))
+    assert _overlap(actual, reference) == pytest.approx(1.0)
+    assert _overlap(np.asarray(simulator.state.state()).ravel(), reference) == pytest.approx(1.0)

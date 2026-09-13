@@ -38,7 +38,7 @@ from graphqomb.common import (
 )
 from graphqomb.graphstate import BaseGraphState
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import PauliFrame
+from graphqomb.pauli_frame import CliffordFrame
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -200,7 +200,7 @@ def _required_version(pattern: Pattern) -> int:
     `int`
         Minimum version required to parse the serialized pattern.
     """
-    frame = pattern.pauli_frame
+    frame = pattern.clifford_frame
     if frame.cflow:
         return _CFLOW_VERSION
     has_tagged_input = any(init.tag for init in pattern.input_initializations.values())
@@ -318,34 +318,34 @@ def _write_quantum_section(out: StringIO, pattern: Pattern) -> None:
         write_slice(timeslice, current_slice_commands)
 
 
-def _write_pauli_flows(out: StringIO, pauli_frame: PauliFrame) -> None:
+def _write_pauli_flows(out: StringIO, clifford_frame: CliffordFrame) -> None:
     """Write the .xflow and .zflow directives to output."""
-    for directive, flow in ((".xflow", pauli_frame.xflow), (".zflow", pauli_frame.zflow)):
+    for directive, flow in ((".xflow", clifford_frame.xflow), (".zflow", clifford_frame.zflow)):
         for source, targets in sorted(flow.items()):
             if targets:
                 targets_str = " ".join(str(t) for t in sorted(targets))
                 out.write(f"{directive} {source} -> {targets_str}\n")
 
 
-def _write_classical_section(out: StringIO, pauli_frame: PauliFrame) -> None:
+def _write_classical_section(out: StringIO, clifford_frame: CliffordFrame) -> None:
     """Write classical frame section to output."""
     out.write("\n")
     out.write("#======== CLASSICAL ========\n")
 
-    _write_pauli_flows(out, pauli_frame)
+    _write_pauli_flows(out, clifford_frame)
 
-    for source, coset_targets in sorted(pauli_frame.cflow.items()):
+    for source, coset_targets in sorted(clifford_frame.cflow.items()):
         if coset_targets:
             targets_str = " ".join(f"{t}:{COSET_NAMES[coset]}" for t, coset in sorted(coset_targets.items()))
             out.write(f".cflow {source} -> {targets_str}\n")
 
-    for group, tag in zip(pauli_frame.parity_check_group, pauli_frame.parity_check_tags, strict=True):
+    for group, tag in zip(clifford_frame.parity_check_group, clifford_frame.parity_check_tags, strict=True):
         if group:
             group_str = " ".join(str(n) for n in sorted(group))
             tag_suffix = f"[{escape_tag(tag)}]" if tag else ""
             out.write(f".detector{tag_suffix} {group_str}\n")
 
-    for logical_idx, nodes in sorted(pauli_frame.logical_observables.items()):
+    for logical_idx, nodes in sorted(clifford_frame.logical_observables.items()):
         if nodes:
             nodes_str = " ".join(str(n) for n in sorted(nodes))
             out.write(f".observable {logical_idx} -> {nodes_str}\n")
@@ -374,7 +374,7 @@ def dumps(pattern: Pattern) -> str:
     out = StringIO()
     _write_header(out, pattern)
     _write_quantum_section(out, pattern)
-    _write_classical_section(out, pattern.pauli_frame)
+    _write_classical_section(out, pattern.clifford_frame)
     return out.getvalue()
 
 
@@ -836,7 +836,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         _coordinates=coordinates,
         _input_initializations=input_initializations,
     )
-    pauli_frame = PauliFrame(
+    clifford_frame = CliffordFrame(
         graphstate,
         data.xflow,
         data.zflow,
@@ -849,7 +849,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         input_node_indices=dict(data.input_node_indices),
         output_node_indices=dict(data.output_node_indices),
         commands=tuple(data.commands),
-        pauli_frame=pauli_frame,
+        clifford_frame=clifford_frame,
         input_coordinates=dict(data.input_coordinates),
         input_initializations=input_initializations,
     )

@@ -52,7 +52,7 @@ def test_meas_flip_accumulates_cosets() -> None:
     frame.meas_flip(0)
     assert frame.coset[1] == ca.S
     assert not frame.x_pauli[1]
-    assert not frame.z_pauli[1]
+    assert frame.z_pauli[1]  # residual S^-1 = S Z
 
     # S * S = Z modulo phase, so the coset resets and the Z bit toggles.
     frame.meas_flip(0)
@@ -68,7 +68,7 @@ def test_meas_flip_conjugates_pauli_through_coset() -> None:
     frame.meas_flip(0)
     assert frame.coset[2] == ca.S
     frame.meas_flip(1)
-    # X * S = S * (S^-1 X S) = S * (-Y) modulo phase, so both bits toggle.
+    # Correcting S then X leaves residual S^-1 X = S Z X, so both bits are set.
     assert frame.coset[2] == ca.S
     assert frame.x_pauli[2]
     assert frame.z_pauli[2]
@@ -145,3 +145,29 @@ def test_detector_certification_still_works_for_uninfluenced_nodes() -> None:
     )
     frame_without_cflow = CliffordFrame(graph, xflow={0: {1}}, zflow={}, parity_check_group=[{1}])
     assert frame_with_cflow.detector_groups() == frame_without_cflow.detector_groups()
+
+
+def test_event_order_is_recorded_also_for_commuting_corrections() -> None:
+    graph = _chain_graph(3)
+    frame = CliffordFrame(graph, xflow={0: {2}}, zflow={0: {2}}, cflow={0: {2: ca.S}})
+    assert frame.correction_events[0] == ((2, ca.X), (2, ca.Z), (2, ca.S))
+    commuting = CliffordFrame(graph, xflow={}, zflow={0: {2}}, cflow={0: {2: ca.S}})
+    assert commuting.correction_events[0] == ((2, ca.Z), (2, ca.S))
+
+
+@pytest.mark.parametrize("first", list(itertools.product(ca.TRANSVERSAL, (False, True), (False, True))))
+@pytest.mark.parametrize("second", list(itertools.product(ca.TRANSVERSAL, (False, True), (False, True))))
+def test_ordered_corrections_store_inverse_product(
+    first: tuple[ca.C1Element, bool, bool], second: tuple[ca.C1Element, bool, bool]
+) -> None:
+    def element(parts: tuple[ca.C1Element, bool, bool]) -> ca.C1Element:
+        coset, x_bit, z_bit = parts
+        return ca.compose(ca.compose(coset, ca.X if x_bit else ca.IDENTITY), ca.Z if z_bit else ca.IDENTITY)
+
+    c1, c2 = element(first), element(second)
+    graph = _chain_graph(3)
+    frame = CliffordFrame(graph, xflow={0: {1}}, zflow={}, cflow={0: {2: c1}, 1: {2: c2}})
+    frame.meas_flip(0)
+    frame.meas_flip(1)
+    residual = element((frame.coset[2], frame.x_pauli[2], frame.z_pauli[2]))
+    assert residual == ca.inverse(ca.compose(c2, c1))

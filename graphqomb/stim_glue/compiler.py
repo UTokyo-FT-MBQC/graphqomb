@@ -74,7 +74,7 @@ class _StimCompiler:
         tick_duration: float,
     ) -> None:
         self._pattern = pattern
-        self._pframe = pattern.pauli_frame
+        self._pframe = pattern.clifford_frame
         self._coord_lookup = pattern.coordinates
         self._emit_qubit_coords = emit_qubit_coords
         self._noise_models = noise_models
@@ -331,7 +331,7 @@ def stim_compile(
     >>> #     ]
     >>> # )
     """
-    if pattern.pauli_frame.cflow:
+    if pattern.clifford_frame.cflow:
         msg = (
             "Stim export supports Pauli-frame feedforward only: the pattern's frame carries "
             "Clifford feedforward (cflow), which stim classical feedback cannot express."

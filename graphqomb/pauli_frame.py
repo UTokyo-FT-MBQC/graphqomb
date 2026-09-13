@@ -2,7 +2,7 @@
 
 This module provides:
 
-- `CliffordFrame`: A class to track the correction frame of a quantum computation.
+- `CliffordFrame`: A class to track the residual frame of a quantum computation.
 - `PauliFrame`: Backwards-compatible alias of `CliffordFrame`.
 """
 
@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from graphqomb import clifford_algebra
 from graphqomb.common import Axis, determine_pauli_axis
+from graphqomb.feedforward import check_flow
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -24,13 +25,21 @@ if TYPE_CHECKING:
 
 
 class CliffordFrame:
-    r"""Clifford frame tracker.
+    r"""Residual Clifford frame tracker.
 
     Each node's runtime frame has the normal form ``D * X^a * Z^b`` with the
     coset ``D`` drawn from ``graphqomb.clifford_algebra.TRANSVERSAL``.  The
     supplied ``cflow`` corrections are normalized at construction: the Pauli
     part is folded into ``xflow``/``zflow`` and only nontrivial cosets are
-    stored.
+    stored. For a branch whose explicit correcting gates compose to ``K``,
+    the residual is ``F = K^-1``: ``actual = F * corrected``. Measurements
+    use ``F A F^-1`` and output correction applies ``F^-1``.
+
+    ``correction_events`` records the application order within each source:
+    X corrections, Z corrections, then coset corrections. Source events follow
+    causal measurement order. Commuting events use the same ordered structure;
+    incomparable sources are accepted only when their total corrections commute.
+    Each source/target map value represents one composite correcting gate.
 
     Attributes
     ----------
@@ -42,6 +51,8 @@ class CliffordFrame:
         Z correction flow for each  measurement flip
     cflow : `dict`\[`int`, `dict`\[`int`, `C1Element`\]\]
         Clifford correction flow (normalized, nontrivial cosets only)
+    correction_events : `dict`\[`int`, `tuple`\[`tuple`\[`int`, `C1Element`\], ...\]\]
+        Ordered correcting gates per source, including the Pauli gates.
     x_pauli : `dict`\[`int`, `bool`\]
         Current X Pauli state for each node
     z_pauli : `dict`\[`int`, `bool`\]
@@ -67,6 +78,7 @@ class CliffordFrame:
     xflow: dict[int, set[int]]
     zflow: dict[int, set[int]]
     cflow: dict[int, dict[int, C1Element]]
+    correction_events: dict[int, tuple[tuple[int, C1Element], ...]]
     x_pauli: dict[int, bool]
     z_pauli: dict[int, bool]
     coset: dict[int, C1Element]
@@ -98,6 +110,7 @@ class CliffordFrame:
         self.xflow = {node: set(targets) for node, targets in xflow.items()}
         self.zflow = {node: set(targets) for node, targets in zflow.items()}
         self._normalize_cflow(cflow)
+        check_flow(graphstate, self.xflow, self.zflow, self.cflow)
         self.x_pauli = dict.fromkeys(graphstate.nodes, False)
         self.z_pauli = dict.fromkeys(graphstate.nodes, False)
         self.coset = dict.fromkeys(graphstate.nodes, clifford_algebra.IDENTITY)
@@ -117,6 +130,7 @@ class CliffordFrame:
 
         self._build_inverse_flows()
         self._check_schedule_independence()
+        self._build_correction_events()
 
         # Pre-compute Pauli axes for performance optimization.
         # NOTE: if non-Pauli measurements are involved, the stim_compile func will error out earlier
@@ -231,6 +245,24 @@ class CliffordFrame:
                 )
                 raise ValueError(msg)
 
+    def _build_correction_events(self) -> None:
+        """Record correcting gates in application order, also for commuting events.
+
+        Normalization only combines Pauli factors belonging to the same source
+        and target. Their common control makes this equivalent modulo phase to
+        applying X, then Z, then the supplied Clifford gate. Runtime composition
+        uses this single event path for both Pauli and Clifford corrections.
+        """
+        self.correction_events = {}
+        sources = self.xflow.keys() | self.zflow.keys() | self.cflow.keys()
+        for source in sorted(sources):
+            events = [(target, clifford_algebra.X) for target in sorted(self.xflow.get(source, set()))]
+            events.extend((target, clifford_algebra.Z) for target in sorted(self.zflow.get(source, set())))
+            events.extend(sorted(self.cflow.get(source, {}).items()))
+            # Self-targets remain in the maps for flow bookkeeping, but do not
+            # control a correction on the node that produced the outcome.
+            self.correction_events[source] = tuple(event for event in events if event[0] != source)
+
     def x_flip(self, node: int) -> None:
         """Flip the X Pauli mask for the given node.
 
@@ -252,44 +284,31 @@ class CliffordFrame:
         self.z_pauli[node] = not self.z_pauli[node]
 
     def meas_flip(self, node: int) -> None:
-        """Update the frame for a measurement flip based on the given correction flows.
+        """Append this source's correcting events to the residual frame.
 
-        Each frame stays in the normal form ``D * X^a * Z^b``: Pauli corrections
-        are conjugated through the target's coset before toggling the bits, and
-        coset corrections are left-multiplied and re-normalized.
+        For correcting gates applied in order C1, ..., Cr, the correcting
+        product is K = Cr ... C1 and the residual is F = K^-1. Each event
+        therefore updates F <- F C^-1, retaining the full 24-element product.
+        For Pauli events right multiplication toggles the normal-form bits.
 
         Parameters
         ----------
         node : `int`
-            The node to flip.
+            The source whose measurement outcome is one.
         """
-        if not self.cflow:
-            for target in self.xflow.get(node, set()):
-                self.x_pauli[target] = not self.x_pauli[target]
-            for target in self.zflow.get(node, set()):
-                self.z_pauli[target] = not self.z_pauli[target]
-            return
-        for target in self.xflow.get(node, set()):
-            self._absorb_pauli(target, Axis.X)
-        for target in self.zflow.get(node, set()):
-            self._absorb_pauli(target, Axis.Z)
-        for target, coset in self.cflow.get(node, {}).items():
-            new_coset, x_bit, z_bit = clifford_algebra.decompose(clifford_algebra.compose(coset, self.coset[target]))
-            self.coset[target] = new_coset
-            if x_bit:
-                self.x_pauli[target] = not self.x_pauli[target]
-            if z_bit:
-                self.z_pauli[target] = not self.z_pauli[target]
-
-    def _absorb_pauli(self, target: int, axis: Axis) -> None:
-        """Absorb a Pauli correction into the target frame, conjugating it through the coset."""
-        coset = self.coset[target]
-        if coset != clifford_algebra.IDENTITY:
-            axis, _sign = clifford_algebra.act_on_axis(clifford_algebra.inverse(coset), axis)
-        if axis is not Axis.Z:
-            self.x_pauli[target] = not self.x_pauli[target]
-        if axis is not Axis.X:
-            self.z_pauli[target] = not self.z_pauli[target]
+        for target, correction in self.correction_events.get(node, ()):
+            if correction == clifford_algebra.X:
+                self.x_flip(target)
+            elif correction == clifford_algebra.Z:
+                self.z_flip(target)
+            else:
+                element = self.coset[target]
+                if self.x_pauli[target]:
+                    element = clifford_algebra.compose(element, clifford_algebra.X)
+                if self.z_pauli[target]:
+                    element = clifford_algebra.compose(element, clifford_algebra.Z)
+                residual = clifford_algebra.compose(element, clifford_algebra.inverse(correction))
+                self.coset[target], self.x_pauli[target], self.z_pauli[target] = clifford_algebra.decompose(residual)
 
     def children(self, node: int) -> set[int]:
         r"""Get the children of a node in the correction frame.

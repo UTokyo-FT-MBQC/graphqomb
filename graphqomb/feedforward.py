@@ -24,6 +24,8 @@ from graphqomb.common import Axis, Plane, determine_pauli_axis
 from graphqomb.graphstate import BaseGraphState, odd_neighbors, unmeasured_output_nodes
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from graphqomb.clifford_algebra import C1Element
 
 TOPO_ORDER_CYCLE_ERROR_MSG = "No nodes can be measured; possible cyclic dependency or incomplete preparation."
@@ -112,6 +114,10 @@ def dag_from_flow(
         raise TypeError(msg)
     if cflow is None:
         cflow = {}
+    # Validate sources before unmeasured outputs lose their outgoing DAG edges.
+    # Empty entries are harmless; self-targets remain valid on measured nodes.
+    for flow in (xflow, zflow, cflow):
+        _check_flow_sources(measured_nodes, flow)
     for node in measured_nodes:
         # remove self-loops
         target_nodes = (xflow.get(node, set()) | zflow.get(node, set()) | cflow.get(node, {}).keys()) - {node}
@@ -120,6 +126,20 @@ def dag_from_flow(
         dag[output] = set()
 
     return dag
+
+
+def _check_flow_sources(measured_nodes: AbstractSet[int], flow: Mapping[int, Collection[int]]) -> None:
+    """Check that each nonempty correction map has a measured source.
+
+    Raises
+    ------
+    ValueError
+        If a correction source has no measurement outcome.
+    """
+    for source, targets in flow.items():
+        if targets and source not in measured_nodes:
+            msg = f"Flow source {source} is not measured; unmeasured outputs cannot control corrections."
+            raise ValueError(msg)
 
 
 def check_dag(dag: Mapping[int, Iterable[int]]) -> None:
@@ -216,6 +236,12 @@ def check_flow(
         The  Z correction flow. If `None`, it is generated from xflow by odd neighbors.
     cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
         The Clifford correction flow.
+
+    Notes
+    -----
+    Nonempty flows require measured sources; the combined x/z/Clifford
+    dependency graph must be acyclic. Self-targets are allowed and excluded
+    from dependencies and runtime corrections.
     """  # ruff:ignore[line-too-long]
     dag = dag_from_flow(graph, xflow, zflow, cflow)
     check_dag(dag)

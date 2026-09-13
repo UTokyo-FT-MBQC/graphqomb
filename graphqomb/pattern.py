@@ -38,7 +38,7 @@ class Pattern(Sequence[Command]):
         The map of output nodes to their logical qubit indices
     commands : `tuple`\[`Command`, ...\]
         Commands of the pattern
-    pauli_frame : `CliffordFrame`
+    clifford_frame : `CliffordFrame`
         Correction frame of the pattern to track the frame of each node
     input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes (2D or 3D)
@@ -50,7 +50,7 @@ class Pattern(Sequence[Command]):
     input_node_indices: dict[int, int]
     output_node_indices: dict[int, int]
     commands: tuple[Command, ...]
-    pauli_frame: CliffordFrame
+    clifford_frame: CliffordFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
 
@@ -230,7 +230,7 @@ def _ensure_no_unmeasured_output_dependencies(pattern: Pattern) -> None:
     for cmd in pattern:
         if isinstance(cmd, M):
             measured.add(cmd.node)
-            children_nodes = pattern.pauli_frame.parents(cmd.node)
+            children_nodes = pattern.clifford_frame.parents(cmd.node)
             acausal_children = children_nodes - measured
             if acausal_children:
                 msg = f"These nodes depend on a unmeasured output: {sorted(acausal_children)}"

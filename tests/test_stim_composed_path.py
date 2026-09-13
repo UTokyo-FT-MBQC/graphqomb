@@ -65,7 +65,7 @@ DETECTOR rec[-1] rec[-2]
 
 
 def _uncoordinated_node_count(result: StimImportResult) -> int:
-    graph = result.pattern.pauli_frame.graphstate
+    graph = result.pattern.clifford_frame.graphstate
     return graph.number_of_nodes() - len(graph.coordinates)
 
 

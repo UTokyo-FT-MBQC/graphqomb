@@ -33,7 +33,7 @@ def _single_output_pattern(
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
         input_initializations=graph.input_initializations,
     )
     return pattern, node
@@ -58,7 +58,7 @@ def _deterministic_non_output_measurement_pattern() -> tuple[Pattern, int]:
             M(input_node, graph.meas_bases[input_node]),
             TICK(),
         ),
-        pauli_frame=PauliFrame(graph, xflow={}, zflow={input_node: {output_node}}),
+        clifford_frame=PauliFrame(graph, xflow={}, zflow={input_node: {output_node}}),
         input_initializations=graph.input_initializations,
     )
     return pattern, input_node
@@ -117,7 +117,7 @@ def test_pattern_simulator_reorders_mixed_input_axes_by_logical_qindex() -> None
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=(),
-        pauli_frame=PauliFrame(graph, xflow={}, zflow={}),
+        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
         input_initializations=graph.input_initializations,
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
@@ -151,7 +151,7 @@ def test_pattern_simulator_samples_y_initialized_non_output_exactly() -> None:
         input_node_indices=graph.input_node_indices,
         output_node_indices={},
         commands=(M(input_node, graph.meas_bases[input_node]),),
-        pauli_frame=PauliFrame(graph, xflow={}, zflow={}),
+        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
         input_initializations=graph.input_initializations,
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
@@ -176,7 +176,7 @@ def test_pattern_simulator_can_use_legacy_uniform_non_output_sampling() -> None:
 def test_pattern_simulator_applies_output_x_frame_to_statevector() -> None:
     """An unmeasured output statevector should include pending X frame corrections."""
     pattern, node = _single_output_pattern(measured=False)
-    pattern.pauli_frame.x_flip(node)
+    pattern.clifford_frame.x_flip(node)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
     simulator.state = StateVector([1.0, 0.0])
 
@@ -188,7 +188,7 @@ def test_pattern_simulator_applies_output_x_frame_to_statevector() -> None:
 def test_pattern_simulator_applies_output_z_frame_to_statevector() -> None:
     """An unmeasured output statevector should include pending Z frame corrections."""
     pattern, node = _single_output_pattern(measured=False)
-    pattern.pauli_frame.z_flip(node)
+    pattern.clifford_frame.z_flip(node)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
     simulator.state = StateVector([1 / np.sqrt(2), 1 / np.sqrt(2)])
 
@@ -200,7 +200,7 @@ def test_pattern_simulator_applies_output_z_frame_to_statevector() -> None:
 def test_pattern_simulator_measures_output_after_pauli_frame() -> None:
     """Output measurement results should be reported after applying the output Pauli frame."""
     pattern, node = _single_output_pattern(measured=True)
-    pattern.pauli_frame.x_flip(node)
+    pattern.clifford_frame.x_flip(node)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
     simulator.state = StateVector([0.0, 1.0])
 
@@ -213,7 +213,7 @@ def test_pattern_simulator_measures_output_after_pauli_frame() -> None:
 def test_pattern_simulator_measures_output_z_frame_in_x_basis() -> None:
     """A pending output Z frame should flip an X-basis output measurement result."""
     pattern, node = _single_output_pattern(measured=True, axis=Axis.X)
-    pattern.pauli_frame.z_flip(node)
+    pattern.clifford_frame.z_flip(node)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
     simulator.state = StateVector([1 / np.sqrt(2), 1 / np.sqrt(2)])
 
@@ -237,7 +237,7 @@ def test_pattern_simulator_reorders_remaining_outputs_after_terminal_measurement
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=(M(measured_node, AxisMeasBasis(Axis.Z, Sign.PLUS)),),
-        pauli_frame=PauliFrame(graph, xflow={}, zflow={}),
+        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
 
@@ -258,7 +258,7 @@ def test_pattern_simulator_reorders_outputs_by_qindex_rank() -> None:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=(),
-        pauli_frame=PauliFrame(graph, xflow={}, zflow={}),
+        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
     initial_state = np.zeros((2, 2, 2), dtype=np.complex128)

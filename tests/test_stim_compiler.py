@@ -434,7 +434,7 @@ def test_stim_compile_with_heralded_noise_updates_detectors() -> None:
 
     actual_meas_order, total_measurements = _parse_stim_measurements(stim_str)
 
-    check_groups = pattern.pauli_frame.detector_groups()
+    check_groups = pattern.clifford_frame.detector_groups()
     expected_detectors = {
         _normalize_detector(
             f"DETECTOR {' '.join(f'rec[{actual_meas_order[check] - total_measurements}]' for check in checks)}"
@@ -520,7 +520,7 @@ def test_stim_compile_uses_logical_observables_from_qompile() -> None:
     xflow = {in_node: {meas_node}, meas_node: {out_node}}
     pattern = qompile(graph, xflow, logical_observables={0: {meas_node}})
 
-    assert pattern.pauli_frame.logical_observables == {0: {meas_node}}
+    assert pattern.clifford_frame.logical_observables == {0: {meas_node}}
     assert "OBSERVABLE_INCLUDE(0)" in stim_compile(pattern)
 
 

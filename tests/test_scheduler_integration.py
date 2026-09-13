@@ -55,12 +55,14 @@ def test_manual_vs_solve_scheduler_scheduling() -> None:
     graph.register_input(node0, qindex)
     graph.register_output(node3, qindex)
 
-    flow = {node1: {node0}, node2: {node1}, node3: {node2}}
+    flow = {node0: {node1}, node1: {node2}, node2: {node3}}
 
     scheduler = Scheduler(graph, flow)
 
     # Test manual scheduling
-    scheduler.manual_schedule(prepare_time={node1: 0, node2: 1}, measure_time={node1: 1, node2: 2})
+    scheduler.manual_schedule(prepare_time={node1: 0, node2: 0, node3: 0}, measure_time={node0: 1, node1: 2, node2: 3})
+    scheduler.auto_schedule_entanglement()
+    scheduler.validate_schedule()
     manual_schedule = scheduler.timeline
 
     # Test solve_scheduler-based scheduling
@@ -83,6 +85,7 @@ def test_solve_scheduler_failure_handling() -> None:
     qindex = 0
     graph.register_input(node0, qindex)
     graph.register_output(node1, qindex)
+    graph.assign_meas_basis(node1, PlannerMeasBasis(Plane.XY, 0))
 
     flow = {node0: {node1}, node1: {node0}}  # This should be impossible to satisfy
 
@@ -91,9 +94,7 @@ def test_solve_scheduler_failure_handling() -> None:
     # Solver should return False for unsolvable problems
     config = ScheduleConfig(strategy=Strategy.MINIMIZE_TIME, use_greedy=False)
     success = scheduler.solve_schedule(config, timeout=1)
-    # Note: This might still succeed depending on the specific constraints
-    # The test mainly checks that the method doesn't crash
-    assert isinstance(success, bool)
+    assert not success
 
 
 def test_schedule_config_options() -> None:

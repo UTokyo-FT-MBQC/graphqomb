@@ -9,11 +9,10 @@ This module provides:
 
 from __future__ import annotations
 
-from graphlib import TopologicalSorter
 from typing import TYPE_CHECKING
 
 from graphqomb.command import TICK, Command, E, M, N
-from graphqomb.feedforward import check_flow, dag_from_flow
+from graphqomb.feedforward import dag_from_flow
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import Pattern
 from graphqomb.pauli_frame import CliffordFrame
@@ -53,6 +52,9 @@ def qompile(  # ruff:ignore[too-many-arguments]
         Clifford correction flow (source -> target -> conditional Clifford
         applied when the source outcome is 1). Values may be arbitrary C1
         elements; the Pauli part is folded into xflow/zflow at compile time.
+        These are correcting gates, not residuals. Each source applies X,
+        then Z, then its cflow gate; the runtime frame stores the inverse
+        of the ordered correcting product.
     parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
         parity check group for FTQC
     logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
@@ -77,7 +79,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
 
-    pauli_frame = CliffordFrame(
+    clifford_frame = CliffordFrame(
         graph,
         xflow,
         zflow,
@@ -86,16 +88,12 @@ def qompile(  # ruff:ignore[too-many-arguments]
         parity_check_tags=parity_check_tags,
         cflow=cflow,
     )
-    # Validate the normalized flows: cflow normalization may add or cancel
-    # Pauli corrections, so the check runs on the frame's folded maps.
-    check_flow(graph, pauli_frame.xflow, pauli_frame.zflow, pauli_frame.cflow)
-
-    return _qompile(graph, pauli_frame, scheduler=scheduler)
+    return _qompile(graph, clifford_frame, scheduler=scheduler)
 
 
 def _qompile(
     graph: BaseGraphState,
-    pauli_frame: CliffordFrame,
+    clifford_frame: CliffordFrame,
     *,
     scheduler: Scheduler | None = None,
 ) -> Pattern:
@@ -107,7 +105,7 @@ def _qompile(
     ----------
     graph : `BaseGraphState`
         graph state
-    pauli_frame : `CliffordFrame`
+    clifford_frame : `CliffordFrame`
         correction frame to track the frame of each node
     scheduler : `Scheduler` | `None`, optional
         scheduler to schedule the graph state preparation and measurements,
@@ -124,16 +122,14 @@ def _qompile(
     meas_bases = graph.meas_bases
     graph_coords = graph.coordinates
 
-    dag = dag_from_flow(graph, xflow=pauli_frame.xflow, zflow=pauli_frame.zflow, cflow=pauli_frame.cflow)
-    topo_order = list(TopologicalSorter(dag).static_order())
-    topo_order.reverse()  # children first
+    dag = dag_from_flow(graph, xflow=clifford_frame.xflow, zflow=clifford_frame.zflow, cflow=clifford_frame.cflow)
 
     commands: list[Command] = []
     if scheduler is None:
-        scheduler = Scheduler(graph, pauli_frame.xflow, pauli_frame.zflow, cflow=pauli_frame.cflow)
+        scheduler = Scheduler(graph, clifford_frame.xflow, clifford_frame.zflow, cflow=clifford_frame.cflow)
         scheduler.solve_schedule()
     else:
-        scheduler.validate_schedule()
+        scheduler.validate_schedule(dag=dag)
 
     timeline = scheduler.timeline
 
@@ -160,7 +156,7 @@ def _qompile(
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=tuple(commands),
-        pauli_frame=pauli_frame,
+        clifford_frame=clifford_frame,
         input_coordinates=input_coords,
         input_initializations=graph.input_initializations,
     )
