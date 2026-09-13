@@ -222,10 +222,10 @@ def test_meas_flip(simple_pauli_frame: PauliFrame, simple_nodes: list[int]) -> N
     assert pframe.x_pauli[n1] is False
     assert pframe.z_pauli[n0] is False
 
-    # Flip n0: should affect xflow[n0] = {n1} and zflow[n0] = {n0}
+    # Flip n0: update n1, but ignore the self-target in zflow[n0].
     pframe.meas_flip(n0)
     assert pframe.x_pauli[n1] is True  # n1 is in xflow[n0]
-    assert pframe.z_pauli[n0] is True  # n0 is in zflow[n0]
+    assert pframe.z_pauli[n0] is False  # Self-targets are not runtime corrections.
 
     # Flip n1: should affect xflow[n1] = {n2}
     pframe.meas_flip(n1)

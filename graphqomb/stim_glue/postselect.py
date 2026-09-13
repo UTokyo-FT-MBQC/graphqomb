@@ -3,7 +3,7 @@
 A detector tagged ``type=flag`` (``DETECTOR[type=flag] ...``) is a flag
 detector: a sample in which it fires is meant to be rejected. GraphQOMB
 carries the tag through import (`graphqomb.stim_glue.importer`), the compiled
-pattern (`graphqomb.pauli_frame.PauliFrame.parity_check_tags`), and Stim
+pattern (`graphqomb.pauli_frame.CliffordFrame.parity_check_tags`), and Stim
 export (`graphqomb.stim_glue.compiler.stim_compile`), so the helpers here work
 on the original circuit and on the compiled circuit alike.
 

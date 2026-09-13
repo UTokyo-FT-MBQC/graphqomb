@@ -64,7 +64,7 @@ def test_pattern_depth_counts_tick_commands(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     assert pattern.depth == 2
@@ -86,7 +86,7 @@ def test_pattern_depth_is_zero_without_ticks(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     assert pattern.depth == 0
@@ -113,7 +113,7 @@ def test_active_volume_sums_space_list(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     assert pattern.active_volume == sum(pattern.space)
@@ -144,7 +144,7 @@ def test_active_volume_with_multiple_ticks(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     # space = [1, 3, 2, 3, 1] -> active_volume = 10
@@ -171,7 +171,7 @@ def test_volume_equals_max_space_times_depth(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     assert pattern.volume == pattern.max_space * pattern.depth
@@ -192,7 +192,7 @@ def test_volume_is_zero_without_ticks(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     assert pattern.depth == 0
@@ -219,7 +219,7 @@ def test_idle_times_returns_dict_for_measured_qubits(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     idle_times = pattern.idle_times
@@ -247,7 +247,7 @@ def test_idle_times_input_nodes_use_zero_baseline(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     idle_times = pattern.idle_times
@@ -281,7 +281,7 @@ def test_idle_times_output_nodes_included_when_prepared() -> None:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     idle_times = pattern.idle_times
@@ -315,7 +315,7 @@ def test_throughput_calculates_measurements_per_tick(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     assert math.isclose(pattern.throughput, 2 / 4)
@@ -336,7 +336,7 @@ def test_throughput_raises_for_zero_depth(
         input_node_indices=input_nodes,
         output_node_indices=output_nodes,
         commands=commands,
-        pauli_frame=pauli_frame,
+        clifford_frame=pauli_frame,
     )
 
     with pytest.raises(ValueError, match="Cannot calculate throughput"):

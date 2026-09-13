@@ -19,6 +19,7 @@ Module reference
     pattern
     ptn_format
     pauli_frame
+    clifford_algebra
     qompiler
     scheduler/core
     scheduler/greedy
