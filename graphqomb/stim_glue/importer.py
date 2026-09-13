@@ -330,7 +330,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     id, and stim_to_final_qubit selects the live one among them.
 
     ``DETECTOR`` instruction tags are preserved: each imported detector's tag
-    is carried into pattern.pauli_frame.parity_check_tags (aligned with
+    is carried into pattern.clifford_frame.parity_check_tags (aligned with
     parity_check_group) and re-emitted by
     `graphqomb.stim_glue.compiler.stim_compile`, so post-selection flag
     detectors (``DETECTOR[type=flag]``) survive the import/export round trip.

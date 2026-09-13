@@ -64,7 +64,7 @@ DETECTOR rec[-1] rec[-2]
 
 
 def _uncoordinated_node_count(result: StimImportResult) -> int:
-    graph = result.pattern.pauli_frame.graphstate
+    graph = result.pattern.clifford_frame.graphstate
     return graph.number_of_nodes() - len(graph.coordinates)
 
 
@@ -202,8 +202,8 @@ def test_foliation_replaces_surface_check_ancillas_instead_of_duplicating_them()
     contracted = stim_circuit_to_pattern(rewrite.foliation_circuit)
     compiled = stim.Circuit(stim_compile(contracted.pattern))
 
-    assert direct.pattern.pauli_frame.graphstate.number_of_nodes() == 201
-    assert contracted.pattern.pauli_frame.graphstate.number_of_nodes() == 87
+    assert direct.pattern.clifford_frame.graphstate.number_of_nodes() == 201
+    assert contracted.pattern.clifford_frame.graphstate.number_of_nodes() == 87
     assert len(contracted.mpp_extractions) == 3
     assert rewrite.eliminated_qubits == (2, 9, 11, 13, 14, 16, 18, 25)
     assert compiled.detector_error_model(decompose_errors=False).num_errors == 0

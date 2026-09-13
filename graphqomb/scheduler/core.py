@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Set as AbstractSet
 
+    from graphqomb.clifford_algebra import C1Element
     from graphqomb.graphstate import BaseGraphState
 
 
@@ -149,9 +150,10 @@ class Scheduler:
         graph: BaseGraphState,
         xflow: Mapping[int, AbstractSet[int]],
         zflow: Mapping[int, AbstractSet[int]] | None = None,
+        cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
     ) -> None:
         self.graph = graph
-        self.dag = dag_from_flow(graph, xflow, zflow)
+        self.dag = dag_from_flow(graph, xflow, zflow, cflow)
         self.prepare_time = dict.fromkeys(graph.nodes - graph.input_node_indices.keys())
         self.measure_time = dict.fromkeys(graph.nodes - unmeasured_output_nodes(graph))
         # Initialize entangle_time for all edges
@@ -341,7 +343,7 @@ class Scheduler:
                 msg = f"{schedule_name.capitalize()} schedule contains negative executable times: {negative_times}"
                 raise ValueError(msg)
 
-    def _validate_dag_constraints(self) -> None:
+    def _validate_dag_constraints(self, dag: Mapping[int, AbstractSet[int]]) -> None:
         """Validate that measurement order respects DAG dependencies.
 
         Raises
@@ -350,7 +352,7 @@ class Scheduler:
             If measurement times violate DAG ordering constraints
             (a node must be measured before all its successors in the DAG).
         """
-        for u, successors in self.dag.items():
+        for u, successors in dag.items():
             u_time = self.measure_time.get(u)
             if u_time is None:
                 continue
@@ -485,7 +487,7 @@ class Scheduler:
                 msg = f"Nodes {sorted(conflicting_nodes)} cannot be both prepared and measured at time {time}"
                 raise ValueError(msg)
 
-    def validate_schedule(self) -> None:
+    def validate_schedule(self, *, dag: Mapping[int, AbstractSet[int]] | None = None) -> None:
         r"""Validate that the schedule is consistent with the graph state and DAG.
 
         Checks:
@@ -499,11 +501,18 @@ class Scheduler:
 
           - Entanglement happens AFTER both nodes are prepared
           - Entanglement happens BEFORE either node is measured
+
+        Parameters
+        ----------
+        dag : `collections.abc.Mapping` | `None`, optional
+            Dependency graph to validate against instead of the construction
+            DAG. Lowering passes the graph built from its normalized xflow,
+            zflow, and cflow. This does not mutate the scheduler or its times.
         """
         self._validate_node_sets()
         self._validate_all_nodes_scheduled()
         self._validate_executable_times_are_nonnegative()
-        self._validate_dag_constraints()
+        self._validate_dag_constraints(self.dag if dag is None else dag)
         self._validate_time_ordering()
 
         # Validate entanglement times only if at least one edge has a scheduled time

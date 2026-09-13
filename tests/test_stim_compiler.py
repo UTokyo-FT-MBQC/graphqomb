@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 import typing_extensions
 
+from graphqomb import clifford_algebra
 from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign
 from graphqomb.graphstate import GraphState
@@ -433,7 +434,7 @@ def test_stim_compile_with_heralded_noise_updates_detectors() -> None:
 
     actual_meas_order, total_measurements = _parse_stim_measurements(stim_str)
 
-    check_groups = pattern.pauli_frame.detector_groups()
+    check_groups = pattern.clifford_frame.detector_groups()
     expected_detectors = {
         _normalize_detector(
             f"DETECTOR {' '.join(f'rec[{actual_meas_order[check] - total_measurements}]' for check in checks)}"
@@ -519,7 +520,7 @@ def test_stim_compile_uses_logical_observables_from_qompile() -> None:
     xflow = {in_node: {meas_node}, meas_node: {out_node}}
     pattern = qompile(graph, xflow, logical_observables={0: {meas_node}})
 
-    assert pattern.pauli_frame.logical_observables == {0: {meas_node}}
+    assert pattern.clifford_frame.logical_observables == {0: {meas_node}}
     assert "OBSERVABLE_INCLUDE(0)" in stim_compile(pattern)
 
 
@@ -957,3 +958,26 @@ def test_stim_compile_escapes_input_initialization_tags(tag: str) -> None:
     # Non-input node preparations also emit RX, so keep the tagged ones only.
     reset_tags = [instruction.tag for instruction in circuit if instruction.name == "RX" and instruction.tag]
     assert reset_tags == [tag]
+
+
+def test_stim_compile_rejects_clifford_feedforward() -> None:
+    """Patterns whose frame carries cflow cannot be exported to stim."""
+    graph = GraphState()
+    in_node = graph.add_node()
+    meas_node = graph.add_node()
+    out_node = graph.add_node()
+    graph.register_input(in_node, 0)
+    graph.register_output(out_node, 0)
+    graph.add_edge(in_node, meas_node)
+    graph.add_edge(meas_node, out_node)
+    graph.assign_meas_basis(in_node, PlannerMeasBasis(Plane.XY, 0.0))
+    graph.assign_meas_basis(meas_node, PlannerMeasBasis(Plane.XY, 0.0))
+
+    pattern = qompile(
+        graph,
+        xflow={in_node: {meas_node}, meas_node: {out_node}},
+        cflow={in_node: {meas_node: clifford_algebra.S}},
+    )
+
+    with pytest.raises(ValueError, match="Pauli-frame feedforward only"):
+        stim_compile(pattern)
