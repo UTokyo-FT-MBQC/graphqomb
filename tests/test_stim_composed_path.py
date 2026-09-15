@@ -63,6 +63,53 @@ DETECTOR rec[-1] rec[-2]
 """
 
 
+def test_circuit_foliation_retains_terminal_data_readout() -> None:
+    source = stim.Circuit("""
+        R 0 1 4
+        CX 0 4 1 4
+        MR 4
+        CX 0 4 1 4
+        MR 4
+        DETECTOR rec[-1] rec[-2]
+        M 0 1
+        DETECTOR rec[-1] rec[-2] rec[-3]
+        OBSERVABLE_INCLUDE(0) rec[-1]
+    """)
+
+    rewritten = rewrite_to_mpp(source)
+
+    assert rewritten.eliminated_qubits == (4,)
+    assert rewritten.foliation_circuit == stim.Circuit("""
+        R 0 1
+        MPP Z0*Z1
+        TICK
+        MPP Z0*Z1
+        DETECTOR rec[-1] rec[-2]
+        M 0 1
+        DETECTOR rec[-1] rec[-2] rec[-3]
+        OBSERVABLE_INCLUDE(0) rec[-1]
+    """)
+    assert source.flow_generators() == rewritten.circuit.flow_generators()
+    imported = stim_circuit_to_pattern(rewritten.foliation_circuit)
+    compiled = stim.Circuit(stim_compile(imported.pattern))
+    _assert_same_reference_signs(source, compiled)
+    assert compiled.detector_error_model().num_errors == 0
+
+    # A later noise model must still have a data-readout event to act on.
+    # Flip only q1's readout: the last detector and observable must both flip.
+    noisy = stim.Circuit()
+    for instruction in rewritten.foliation_circuit:
+        if isinstance(instruction, stim.CircuitInstruction) and instruction.name == "M":
+            noisy.append("M", [0])
+            noisy.append("M", [1], [1.0])
+        else:
+            noisy.append(instruction)
+    np.testing.assert_array_equal(
+        noisy.compile_detector_sampler(seed=123).sample(1, append_observables=True),
+        [[False, True, True]],
+    )
+
+
 def _uncoordinated_node_count(result: StimImportResult) -> int:
     graph = result.pattern.clifford_frame.graphstate
     return graph.number_of_nodes() - len(graph.coordinates)

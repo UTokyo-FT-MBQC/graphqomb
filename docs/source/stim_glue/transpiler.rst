@@ -25,7 +25,7 @@ measurement in MBQC (gate names use algebraic matrix order):
      - ``H``
    * - ``HS``
      - ``H S = J(pi/2)``
-     - Y+
+     - Y-
      - ``C_XNYZ``
    * - ``HZ``
      - ``H Z = J(pi)``
@@ -33,8 +33,14 @@ measurement in MBQC (gate names use algebraic matrix order):
      - ``SQRT_Y``
    * - ``HS_DAG``
      - ``H S† = J(-pi/2)``
-     - Y-
+     - Y+
      - ``C_XYZ``
+
+The gate convention is ``J(theta) = H diag(1, exp(i theta))``; its MBQC
+measurement angle is ``alpha = -theta`` in the basis
+``(|0> +/- exp(i alpha)|1>)/sqrt(2)``. Thus ``J(pi/2) = HS`` uses Y-,
+and ``S = J(0) J(pi/2)`` in matrix order (time order: ``J(pi/2)``, then
+``J(0)``). Outcome-dependent Pauli corrections complete the teleportation.
 
 .. code-block:: python
 

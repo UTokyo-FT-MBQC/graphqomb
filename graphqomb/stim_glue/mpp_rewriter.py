@@ -133,9 +133,10 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
 
     If a direct source measurement's pulled product contains the same Pauli
     on its source qubit as the most recent reset prepared, that factor is
-    removed as a known ``+1`` stabilizer. A negative identity is deliberately
-    left unsubstituted so the result remains a real signed measurement instead
-    of the importer's unsupported ``MPAD 1``.
+    removed as a known ``+1`` stabilizer only if a nonempty product remains.
+    Otherwise the factor is retained so a real measurement is performed,
+    even when its noiseless result is known. Reset substitution never
+    replaces a physical readout with a constant ``MPAD`` record.
 
     ``REPEAT`` blocks are flattened before processing. Noise and noisy
     measurement arguments remain unsupported.
@@ -343,9 +344,9 @@ class _PendingCliffordRewriter:
             return product
         candidate = product.copy()
         candidate[source_qubit] = 0
-        if not candidate.pauli_indices() and candidate.sign == -1:
-            # Keep a real signed measurement instead of producing MPAD 1,
-            # which Stim can represent but the GraphQOMB importer cannot.
+        if not candidate.pauli_indices():
+            # A known result does not make a physical readout a padding bit.
+            # Preserve the last factor for either measurement sign.
             return product
         return candidate
 

@@ -22,7 +22,7 @@ unchanged frame behind that measurement. A reset, measurement-record-controlled
 gate, or circuit exit materializes the pending frame. At a measure-reset whose
 source-ancilla reset factor was removed, the rewriter compares the local
 reset/body/measurement channel with the reduced MPP/reset channel. Equal
-canonical Stim flows certify that the Foliation MPP ancilla has replaced the
+canonical Stim flows certify that the circuit-foliation MPP ancilla has replaced the
 source extraction ancilla, so the now-redundant pending body is discarded.
 Otherwise the exact body is materialized unchanged. There is no gate-level
 fallback, and measurement post-states are preserved exactly.
@@ -52,7 +52,7 @@ that does not match the reset basis is retained. For example,
 For a measure-reset check gadget, the reset provides a stronger local
 boundary. If ``reset + body + measure-reset`` and ``reset + reduced MPP +
 reset`` have identical canonical Stim flows, the body is discarded: the
-Foliation graph constructed from the MPP already supplies the check ancilla's
+circuit-foliation graph constructed from the MPP already supplies the check ancilla's
 initialization, interaction, and measurement. ``result.circuit`` retains any
 independent reset-only source outputs so it stays exactly equivalent as a
 standalone Stim channel. ``result.foliation_circuit`` additionally removes
@@ -62,9 +62,34 @@ so the Stim extra requires ``stim>=1.16``.
 
 Factors are considered in measurement-record order. An earlier product that
 anticommutes with a stored reset stabilizer invalidates it before later
-products are simplified. A negative identity is kept as a real signed
-measurement rather than emitted as ``MPAD 1``, which the GraphQOMB importer
-does not support.
+products are simplified. Substitution is skipped if it would remove the last
+Pauli factor, for either sign. A known noiseless result still has a physical
+readout: ``R 0; M 0`` remains a reset and measurement, not ``MPAD 0``.
+In particular, terminal data measurements survive circuit foliation. Source
+``MPAD`` records are copied; explicitly supplied identity products can still
+be represented as padding. This does not add support for noisy input circuits.
+
+Removal order and cost
+----------------------
+
+The flow check runs at an eligible measure-reset boundary, before any qubit
+is removed. It compares two circuits containing the currently tracked
+preparations, pending Clifford body, and local readout/reset. On equality,
+the entire pending body (including its CNOTs) is discarded immediately.
+At circuit exit, the rewriter scans the resulting circuit and removes only
+certified ancillas that now occur in resets or coordinates alone. Ancillas
+with remaining quantum uses are retained. Plain measurement alone does not
+permit discarding the pending body.
+
+Each attempted certificate with a nonempty pending body calls
+``flow_generators()`` twice. This is stabilizer algebra, without enumerating
+measurement outcomes. The cost depends on circuit width, pending-body size,
+and the number of eligible reset boundaries. Currently the comparison includes
+all tracked preparations and uses the original qubit ids; it does not compact
+to just one ancilla's neighbors or cache repeated certificates. Large or sparse
+qubit ids can therefore increase cost. ``REPEAT`` is flattened, so each round
+is processed separately. The final idle-qubit removal is a circuit scan and
+does not call ``flow_generators()`` again.
 
 Barriers and annotations
 ------------------------
@@ -106,7 +131,7 @@ when mixed with explicit MPP products.
    )
    assert str(result.checks[0].product) == "+ZZ___"
 
-   # Use this circuit for the StabilizerCode/Foliation importer path.
+   # Use this circuit for the StabilizerCode circuit-foliation importer path.
    import_circuit = result.foliation_circuit
 
 API reference

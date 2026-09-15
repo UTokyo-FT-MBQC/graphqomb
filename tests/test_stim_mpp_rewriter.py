@@ -262,7 +262,7 @@ def test_measure_reset_keeps_noncontractible_data_clifford() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 2\nMPAD 0\nH 0\nR 2")
+    assert result.circuit == stim.Circuit("R 2\nM 2\nH 0\nR 2")
     _assert_exact_channel(source, result.circuit)
 
 
@@ -307,7 +307,7 @@ def test_repeated_measure_reset_targets_measure_sequentially() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("X 1\nR 0\nMPP Z1\nR 0\nMPAD 0\nR 0")
+    assert result.circuit == stim.Circuit("X 1\nR 0\nMPP Z1\nR 0\nMR 0")
     _assert_same_reference_signs(result.circuit, source)
 
 
@@ -322,13 +322,13 @@ def test_negative_identity_stays_a_real_signed_measurement() -> None:
     _assert_exact_channel(source, result.circuit)
 
 
-def test_positive_identity_becomes_mpad() -> None:
+def test_known_zero_stays_a_real_measurement() -> None:
     source = stim.Circuit("R 4\nM 4")
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 4\nMPAD 0")
-    assert result.checks[0].product == stim.PauliString("+_____")
+    assert result.circuit == stim.Circuit("R 4\nM 4")
+    assert result.checks[0].product == stim.PauliString("+____Z")
     _assert_exact_channel(source, result.circuit)
 
 
@@ -337,9 +337,9 @@ def test_mixed_products_preserve_record_order() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 2 3\nMPP Z0\nMPAD 0\nCX 0 2")
+    assert result.circuit == stim.Circuit("R 2 3\nMPP Z0 Z3\nCX 0 2")
     assert [check.measurement_index for check in result.checks] == [0, 1]
-    assert [str(check.product) for check in result.checks] == ["+Z___", "+____"]
+    assert [str(check.product) for check in result.checks] == ["+Z___", "+___Z"]
     _assert_exact_channel(source, result.circuit)
 
 
@@ -355,7 +355,7 @@ def test_reusing_unreset_measurement_post_state_is_exact() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 4\nMPP Z0\nMPAD 0\nCX 0 4 0 4")
+    assert result.circuit == stim.Circuit("R 4\nMPP Z0\nM 4\nCX 0 4 0 4")
     _assert_exact_channel(source, result.circuit)
 
 
@@ -364,7 +364,7 @@ def test_reset_after_entangling_is_a_deterministic_flush_barrier() -> None:
 
     result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 4\nCX 0 4\nR 4\nMPAD 0")
+    assert result.circuit == stim.Circuit("R 4\nCX 0 4\nR 4\nM 4")
     _assert_exact_channel(source, result.circuit)
 
 

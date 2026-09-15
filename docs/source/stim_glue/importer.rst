@@ -15,13 +15,27 @@ measurement instructions are ``M``/``MZ``, ``MX``, ``MY``, ``MXX``, ``MYY``,
 
 Every unitary block is normalized by :mod:`graphqomb.stim_glue.transpiler` to the four
 Clifford ``J(angle)`` gates (``H = J(0)``, ``HS = J(pi/2)``, ``HZ = J(pi)``,
-``HS_DAG = J(-pi/2)``, corresponding to X+/Y+/X-/Y- measurements) plus ``CZ``
+``HS_DAG = J(-pi/2)``, corresponding to X+/Y-/X-/Y+ measurements) plus ``CZ``
 before graph conversion. This accepts all fixed one- and two-qubit Clifford
 gates exposed by Stim as well as ``SPP`` and ``SPP_DAG``. Each basis gate
 becomes one GraphQOMB ``J`` primitive.
 
+Here, **circuit foliation** means constructing an MBQC pattern from the
+operations of a Clifford circuit, including gates, resets, measurements, and
+feedback. We distinguish this circuit construction from code foliation for
+memory operations such as CSS-code memories. Existing API names such as
+``foliation_circuit`` and ``YFoliation`` are unchanged.
+
 Initial reset instructions
 --------------------------
+
+Without an explicit reset, an input uses GraphQOMB's default ``X+`` state
+(``|+>``). The importer does **not** insert ``R``/``RZ`` to reproduce Stim's
+default ``|0>`` input. For Stim sampler semantics, explicitly prepare the
+initial inputs with ``R``/``RZ`` before their first quantum use (or their
+intended ``RX``/``RY`` reset). For example, ``M 0`` imports to an X-prepared
+wire with a random Z result, whereas ``R 0; M 0`` returns zero noiselessly.
+
 
 Leading reset instructions determine the positive Pauli eigenstate used for an
 input: ``R``/``RZ`` initializes ``Z+``, ``RX`` initializes ``X+``, and ``RY``
@@ -70,6 +84,13 @@ different ids across blocks. ``StimImportResult.wire_to_stim`` maps every such
 id back to the original circuit id; it is the identity for qubits that are
 never reset mid-circuit.
 
+Within one optimization block, single-qubit Cliffords preceding a terminal
+measurement are absorbed into its signed Pauli basis when its post-state is
+not reused. For example, ``H 0; M 0`` becomes ``MX 0``, and
+``S 0; MX 0`` becomes ``MY !0``. These readouts need no extra gate node.
+``TICK`` barriers and measurements whose qubits are reused limit this folding;
+the latter must preserve the post-measurement state.
+
 Single-qubit measurements assign an ``AxisMeasBasis`` directly to the measured
 data-lane endpoint without replacing that node or its coordinate. They do not
 create an ``MPP`` extraction or an ancillary parity measurement node. Inverted
@@ -99,9 +120,12 @@ common output layer; this adds no graph node or edge and does not change the
 circuit semantics.
 
 Two-qubit measurements are parity measurements and are lowered to equivalent
-unsigned ``MPP`` products. Inverted targets in ``MXX``, ``MYY``, ``MZZ``, and
-``MPP`` are rejected because GraphQOMB does not currently retain the
-corresponding parity offset.
+unsigned ``MPP`` products. Inverted targets in ``MXX``, ``MYY``, and ``MZZ``
+are rejected by the direct importer; the rewriter can normalize them to signed
+``MPP`` products. Signed ``MPP`` is supported: its product sign changes the
+ancilla measurement basis. The Type-I Y construction also contributes its
+own phase correction. Extraction ``supports`` and check matrices describe
+unsigned support; the pattern retains the measurement sign.
 
 Classical Pauli feedback
 ------------------------
@@ -112,9 +136,9 @@ controlling measurement node's X-correction flow, ``CZ rec[-k] q`` adds it to
 the Z-correction flow, and ``CY rec[-k] q`` adds it to both. The equivalent
 reverse-target spellings ``XCZ q rec[-k]`` and ``YCZ q rec[-k]`` are also
 supported, as is the symmetric ``CZ q rec[-k]`` form. Batched target pairs in
-one Stim instruction are supported when every pair is a feedback pair. Mixing
-quantum and feedback pairs in one instruction remains unsupported; use
-separate instructions.
+one Stim instruction are supported, including instructions mixing quantum and
+feedback pairs. The importer splits those pairs in source order; this also
+handles Stim's automatic fusion of adjacent instructions.
 
 A feedback instruction is a graph-fragment boundary, so its correction targets
 the data-lane node at that exact circuit position. Repeating the same
@@ -141,7 +165,7 @@ block, local stabilizer interactions are ordered ``Z -> Y -> X`` on each
 shared data qubit. If an odd number of shared-data-qubit pairs reverse the
 order of the same two stabilizers, the graph-state builder adds the required CZ
 edge between their ancillas. This rule is applied automatically for both Type
-I and Type II foliation.
+I and Type II circuit foliation.
 
 Only data-wire nodes contribute to the graph-generated X-correction flow; MPP
 ancilla nodes do not produce those corrections. After composing all graph
