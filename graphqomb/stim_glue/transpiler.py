@@ -34,8 +34,8 @@ STIM_GATE_J_ANGLES: dict[str, float] = {
 """Map of each single-qubit basis gate, by its Stim spelling, to the angle of the
 one ``J(angle) = H Rz(angle)`` primitive implementing it.
 
-These are the four Clifford XY-plane measurements: X+ (``H``), Y+ (``HS``),
-X- (``HZ``), and Y- (``HS_DAG``).
+The corresponding XY-plane measurement angles are the negatives of the gate
+angles: X+ (``H``), Y- (``HS``), X- (``HZ``), and Y+ (``HS_DAG``).
 """
 _PauliAxis = Literal["X", "Y", "Z"]
 _LOCAL_BASIS_GENERATORS = ("H", HS_STIM_GATE, HZ_STIM_GATE, HS_DAG_STIM_GATE)
@@ -76,8 +76,8 @@ def transpile(
 
     The single-qubit basis gates are the four Clifford ``J(angle)`` gates,
     i.e. the XY-plane Pauli measurements: ``H = J(0)`` (X+),
-    ``HS = J(pi/2)`` (Y+, Stim's ``C_XNYZ``), ``HZ = J(pi)`` (X-, Stim's
-    ``SQRT_Y``), and ``HS_DAG = J(-pi/2)`` (Y-, Stim's ``C_XYZ``).
+    ``HS = J(pi/2)`` (Y-, Stim's ``C_XNYZ``), ``HZ = J(pi)`` (X-, Stim's
+    ``SQRT_Y``), and ``HS_DAG = J(-pi/2)`` (Y+, Stim's ``C_XYZ``).
 
     Parameters
     ----------

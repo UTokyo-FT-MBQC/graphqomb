@@ -1574,7 +1574,15 @@ def _mpp_fragment(
     supports = tuple(support for support, _sign in signed_products)
     # `stim_mpp_extraction_from_records` keeps the product order, so product i
     # becomes stabilizer row i and therefore ancilla node `ancilla_nodes[i]`.
-    negative_rows = frozenset(row for row, (_support, sign) in enumerate(signed_products) if sign is Sign.MINUS)
+    # Type I couples each Y factor through both X and Z legs. Its raw
+    # ancilla parity measures (-1)**(n_y * (n_y + 1) // 2) times the
+    # Hermitian Pauli product, so compensate before applying the source sign.
+    negative_rows = frozenset(
+        row
+        for row, (support, sign) in enumerate(signed_products)
+        if (sign is Sign.MINUS)
+        ^ (context.y_foliation is YFoliation.TYPE_I and sum(pauli == "Y" for _, pauli in support) % 4 in {1, 2})
+    )
     _validate_commuting_mpp_supports(supports)
     record_indices = tuple(record_index for analyzed in block for record_index in analyzed.record_indices)
     extraction = stim_mpp_extraction_from_records(
@@ -1629,8 +1637,8 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
         data_as_io=True,
         qubit_indices=qubit_indices,
     )
-    # A negative product sign flips only the measurement sign; the axis must stay
-    # the one build_graph_state chose (Y for odd-Y-support rows under Type I).
+    # Compensating the foliation phase and source sign changes only the sign;
+    # keep the axis build_graph_state chose (Y for odd-Y rows under Type I).
     for row in sorted(negative_rows):
         ancilla_node = result.ancilla_nodes[row]
         result.graph.assign_meas_basis(ancilla_node, result.graph.meas_bases[ancilla_node].flip())
