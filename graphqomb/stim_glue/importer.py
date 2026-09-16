@@ -283,7 +283,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
     Pauli measurement blocks. Inputs without an explicit reset start in the
-    positive Z eigenstate (|0>), matching Stim's default initialization.
+    positive Z eigenstate (``|0>``), matching Stim's default initialization.
     Stim ``R``, ``RX``, and ``RY`` instructions are
     imported as positive Z-, X-, and Y-eigenstate input initialization,
     respectively, when they occur before any other quantum operation on the
