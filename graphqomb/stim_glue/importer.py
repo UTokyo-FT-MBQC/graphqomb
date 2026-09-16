@@ -282,7 +282,9 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     default greedy strategy.
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
-    Pauli measurement blocks. Stim ``R``, ``RX``, and ``RY`` instructions are
+    Pauli measurement blocks. Inputs without an explicit reset start in the
+    positive Z eigenstate (|0>), matching Stim's default initialization.
+    Stim ``R``, ``RX``, and ``RY`` instructions are
     imported as positive Z-, X-, and Y-eigenstate input initialization,
     respectively, when they occur before any other quantum operation on the
     target qubit. Adjacent Clifford gates are folded into those initial Pauli
@@ -1397,7 +1399,9 @@ def _identity_fragment(context: _ImportContext) -> _Fragment:
             continue
         coord = context.coordinate_by_stim_id.get(stim_id)
         node = graph.add_node(coordinate=_coordinate_at_z(coord, 0) if coord is not None else None)
-        graph.register_input(node, qubit_index, init=context.input_initializations.get(stim_id))
+        graph.register_input(
+            node, qubit_index, init=context.input_initializations.get(stim_id, Initialization(axis=Axis.Z))
+        )
         graph.register_output(node, qubit_index)
     return _Fragment(
         graph=graph,

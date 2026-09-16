@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Stim Default Initialization**: Inputs without an explicit reset now start in `|0>` when importing Stim circuits, matching Stim semantics. Explicit `RX` and `RY` preparations remain supported; callers requiring the previous `|+>` input must specify `RX`.
 - **Pair-measurement Foliation Layers**: `foliation_circuit` now normalizes `MXX`, `MYY`, and `MZZ` to MPP so repeated and anticommuting products, including mixtures with explicit MPPs, are separated before import.
 - **MPP Y-product Signs**: The Stim importer now compensates the Type-I foliation phase for products with one or two Y factors modulo four, preserving the fixed detector and observable signs as well as their determinism.
 - Validate supplied schedules against the combined normalized xflow/zflow/cflow DAG;

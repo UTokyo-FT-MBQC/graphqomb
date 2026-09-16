@@ -29,13 +29,11 @@ memory operations such as CSS-code memories. Existing API names such as
 Initial reset instructions
 --------------------------
 
-Without an explicit reset, an input uses GraphQOMB's default ``X+`` state
-(``|+>``). The importer does **not** insert ``R``/``RZ`` to reproduce Stim's
-default ``|0>`` input. For Stim sampler semantics, explicitly prepare the
-initial inputs with ``R``/``RZ`` before their first quantum use (or their
-intended ``RX``/``RY`` reset). For example, ``M 0`` imports to an X-prepared
-wire with a random Z result, whereas ``R 0; M 0`` returns zero noiselessly.
-
+Without an explicit reset, an input uses the ``Z+`` state (``|0>``), matching
+Stim's default initialization. Both ``M 0`` and ``R 0; M 0`` therefore return
+zero noiselessly. To prepare ``|+>``, specify ``RX`` before the qubit's first
+quantum use. This default applies to Stim circuit import; GraphQOMB's general
+input initialization default remains ``X+``.
 
 Leading reset instructions determine the positive Pauli eigenstate used for an
 input: ``R``/``RZ`` initializes ``Z+``, ``RX`` initializes ``X+``, and ``RY``
