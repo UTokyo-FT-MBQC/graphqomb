@@ -60,6 +60,72 @@ def test_z_check_exposes_data_mpp_and_moves_body_behind_it() -> None:
 
 
 @pytest.mark.parametrize(
+    ("source_text", "expected"),
+    [
+        ("H 0\nM 0", "MPP X0"),
+        ("S 0\nMX 0", "MPP !Y0"),
+        ("H 0\nCX 0 1\nM 0 1", "MPP X0 X0*Z1"),
+        ("H 0\nM 0\nS 0\nM 0", "MPP X0\nTICK\nMPP X0"),
+        ("H 0\nCX 0 1", ""),
+    ],
+)
+def test_foliation_omits_final_clifford_and_preserves_measurement_channel(source_text: str, expected: str) -> None:
+    source = stim.Circuit(source_text)
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == stim.Circuit(expected)
+    _assert_exact_channel(source, result.circuit)
+    # Discard quantum outputs on both sides. Canonical flows then compare the
+    # complete measurement instrument with only its classical outputs retained,
+    # including random-record correlations and signs for arbitrary input states.
+    discarded_source = source.copy()
+    discarded_foliation = result.foliation_circuit.copy()
+    discarded_source.append("R", range(source.num_qubits))
+    discarded_foliation.append("R", range(source.num_qubits))
+    _assert_exact_channel(discarded_source, discarded_foliation)
+
+
+def test_foliation_final_frame_removal_preserves_readout_annotations() -> None:
+    source = stim.Circuit("""
+        QUBIT_COORDS(0, 0) 0
+        QUBIT_COORDS(1, 0) 1
+        H 0
+        CX 0 1
+        M[readout] !0 1
+        DETECTOR[parity] rec[-1] rec[-2]
+        OBSERVABLE_INCLUDE(0) rec[-1] rec[-2]
+        TICK
+        H 1
+    """)
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == stim.Circuit("""
+        QUBIT_COORDS(0, 0) 0
+        QUBIT_COORDS(1, 0) 1
+        MPP[readout] !X0 X0*Z1
+        DETECTOR[parity] rec[-1] rec[-2]
+        OBSERVABLE_INCLUDE(0) rec[-1] rec[-2]
+        TICK
+    """)
+    _assert_same_reference_signs(source, result.foliation_circuit)
+    assert result.foliation_circuit.detector_error_model().num_errors == 0
+    _assert_exact_channel(source, result.circuit)
+
+
+def test_foliation_preserves_frame_before_partial_reset() -> None:
+    # Resetting the control cannot undo the X already copied to the target.
+    source = stim.Circuit("X 0\nCX 0 1\nR 0\nM 1")
+
+    result = rewrite_to_mpp(source)
+
+    assert result.foliation_circuit == source
+    np.testing.assert_array_equal(result.foliation_circuit.reference_sample(), [True])
+    _assert_exact_channel(source, result.foliation_circuit)
+
+
+@pytest.mark.parametrize(
     ("source_text", "product"),
     [
         pytest.param("RX 4\nCZ 4 0 4 1\nMX 4", "+ZZ___", id="x-reset"),
@@ -210,8 +276,6 @@ def test_anticommuting_mpp_products_start_a_new_internal_layer() -> None:
         MPP X0
         TICK
         MPP !Y0
-        H 0
-        SQRT_X 0
         """
     )
     _assert_exact_channel(source, result.circuit)
@@ -520,6 +584,7 @@ def test_pull_path_does_not_call_stim_flow_analysis(monkeypatch: pytest.MonkeyPa
     result = rewrite_to_mpp("R 4\nCX 0 4\nM 4")
 
     assert result.checks[0].product == stim.PauliString("+Z____")
+    assert result.foliation_circuit == stim.Circuit("R 4\nMPP Z0")
 
 
 def test_random_clifford_reset_measure_circuits_preserve_canonical_flows() -> None:

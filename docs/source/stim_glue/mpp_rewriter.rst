@@ -8,9 +8,11 @@ Install the optional Stim integration before importing this module:
    uv add "graphqomb[stim]"
 
 The rewriter exposes the Pauli products measured by Clifford syndrome
-extraction without deleting or approximating the extraction circuit. For a
-Clifford body ``U`` and Pauli measurement ``P``, it uses the exact instrument
-identity
+extraction. ``result.circuit`` preserves the complete measurement and quantum
+channel; ``result.foliation_circuit`` preserves the measurement-record
+distribution and omits the final pending Clifford for import into MBQC.
+For a Clifford body ``U`` and Pauli measurement ``P``, it uses the exact
+instrument identity
 
 .. math::
 
@@ -19,13 +21,43 @@ identity
 Clifford instructions accumulate in a pending frame. At a source Pauli
 measurement, the rewriter emits the pulled product ``U† P U`` and leaves the
 unchanged frame behind that measurement. A reset, measurement-record-controlled
-gate, or circuit exit materializes the pending frame. At a measure-reset whose
+gate, or circuit exit materializes the pending frame in ``result.circuit``.
+At a measure-reset whose
 source-ancilla reset factor was removed, the rewriter compares the local
 reset/body/measurement channel with the reduced MPP/reset channel. Equal
 canonical Stim flows certify that the circuit-foliation MPP ancilla has replaced the
 source extraction ancilla, so the now-redundant pending body is discarded.
 Otherwise the exact body is materialized unchanged. There is no gate-level
-fallback, and measurement post-states are preserved exactly.
+fallback, and measurement post-states are preserved exactly in ``result.circuit``.
+
+Terminal Clifford removal for circuit foliation
+-----------------------------------------------
+
+``result.foliation_circuit`` is intended for pipelines that consume measurement
+records and discard terminal quantum states. It omits the pending Clifford at
+circuit exit, after all measurements have been pulled. For each complete record
+``m``, the unnormalized conditional state ``rho_m`` satisfies
+
+.. math::
+
+   p(m) = \operatorname{Tr}(U\rho_m U^\dagger)
+        = \operatorname{Tr}(\rho_m).
+
+Thus the joint record distribution, including detector and observable parities,
+is unchanged. No flow analysis or equivalence check is performed for this
+omission, even for a multi-qubit Clifford. For example, ``H 0; M 0`` becomes
+``MPP X0; H 0`` in ``result.circuit`` and ``MPP X0`` in
+``result.foliation_circuit``. This also omits a final pending body when some
+qubits are unmeasured, or the circuit contains no measurements: quantum outputs
+are outside the foliation result's contract. Use ``result.circuit`` when those
+outputs are needed.
+
+Reset and feedback boundaries inside the circuit still materialize the pending
+frame unless the existing measure-reset contraction succeeds. A reset discards
+only its target subsystem. It does not erase a preceding Clifford's action on
+other qubits: ``X 0; CX 0 1; R 0; M 1`` still measures ``1`` on qubit 1.
+Resetting every qubit on which the pending body acts would allow that body to
+be omitted without a flow check, but this optimization is not applied here.
 
 Reset stabilizer substitution
 -----------------------------
@@ -42,8 +74,8 @@ gadgets therefore expose a data-only ``MPP``:
    CX 0 4 1 4       ->       MPP Z0*Z1
    M 4                       CX 0 4 1 4
 
-The trailing Clifford body is intentional. Applying it after the pulled
-measurement makes the transformed circuit exactly equivalent to the source,
+In ``result.circuit``, the trailing Clifford body is intentional. Applying it
+after the pulled measurement makes the transformed circuit exactly equivalent to the source,
 including the measurement record and post-measurement quantum state. A factor
 that does not match the reset basis is retained. For example,
 ``RX 2; CZ 0 2; S 2; MX 2`` becomes
@@ -56,8 +88,9 @@ circuit-foliation graph constructed from the MPP already supplies the check anci
 initialization, interaction, and measurement. ``result.circuit`` retains any
 independent reset-only source outputs so it stays exactly equivalent as a
 standalone Stim channel. ``result.foliation_circuit`` additionally removes
-those idle source ancillas for import, and ``result.eliminated_qubits`` reports
-their Stim ids. This certificate is exactly as sound as Stim's flow analysis,
+those idle source ancillas and omits the final pending Clifford for import.
+``result.eliminated_qubits`` reports the removed reset-only ancillas' Stim ids.
+This certificate is exactly as sound as Stim's flow analysis,
 so the Stim extra requires ``stim>=1.16``.
 
 Factors are considered in measurement-record order. An earlier product that
@@ -76,10 +109,12 @@ The flow check runs at an eligible measure-reset boundary, before any qubit
 is removed. It compares two circuits containing the currently tracked
 preparations, pending Clifford body, and local readout/reset. On equality,
 the entire pending body (including its CNOTs) is discarded immediately.
-At circuit exit, the rewriter scans the resulting circuit and removes only
-certified ancillas that now occur in resets or coordinates alone. Ancillas
+At circuit exit, ``foliation_circuit`` is built before the final pending body
+is appended to ``result.circuit``. The rewriter removes certified ancillas that
+now occur in resets or coordinates alone from the foliation result. Ancillas
 with remaining quantum uses are retained. Plain measurement alone does not
-permit discarding the pending body.
+permit discarding the pending body when preserving quantum outputs; the
+foliation result discards that final body because it preserves only records.
 
 Each attempted certificate with a nonempty pending body calls
 ``flow_generators()`` twice. This is stabilizer algebra, without enumerating

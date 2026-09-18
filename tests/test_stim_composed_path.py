@@ -110,6 +110,30 @@ def test_circuit_foliation_retains_terminal_data_readout() -> None:
     )
 
 
+def test_foliation_omits_terminal_clifford_from_mbqc_graph() -> None:
+    source = stim.Circuit("""
+        H 0
+        CX 0 1
+        M 0 1
+        DETECTOR rec[-1] rec[-2]
+        OBSERVABLE_INCLUDE(0) rec[-1] rec[-2]
+    """)
+    rewrite = rewrite_to_mpp(source)
+
+    exact = stim_circuit_to_pattern(rewrite.circuit)
+    foliated = stim_circuit_to_pattern(rewrite.foliation_circuit)
+    compiled = stim.Circuit(stim_compile(foliated.pattern))
+
+    assert foliated.pattern.clifford_frame.graphstate.number_of_nodes() == 8
+    assert foliated.pattern.clifford_frame.graphstate.number_of_nodes() < (
+        exact.pattern.clifford_frame.graphstate.number_of_nodes()
+    )
+    assert compiled.num_detectors == source.num_detectors == 1
+    assert compiled.num_observables == source.num_observables == 1
+    assert compiled.detector_error_model().num_errors == 0
+    _assert_same_reference_signs(source, compiled)
+
+
 def _uncoordinated_node_count(result: StimImportResult) -> int:
     graph = result.pattern.clifford_frame.graphstate
     return graph.number_of_nodes() - len(graph.coordinates)

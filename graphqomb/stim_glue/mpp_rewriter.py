@@ -18,6 +18,10 @@ and is removed. Standard reset/Clifford/measure-reset check gadgets
 consequently expose a data-only ``MPP`` and contract their redundant source
 extraction body at the reset boundary.
 
+The import-oriented ``foliation_circuit`` omits the final pending frame:
+it preserves the joint measurement-record distribution, but does not preserve
+terminal quantum states. No equivalence check is needed for this omission.
+
 This module provides:
 
 - `rewrite_to_mpp`: Rewrite a noiseless Clifford/Pauli-measurement circuit.
@@ -101,11 +105,12 @@ class MppRewriteResult:
         not listed.
     foliation_circuit : ``stim.Circuit``
         Import-oriented circuit with reset-only source ancillas removed after
-        their extraction bodies were replaced by reduced MPPs. Its measurement
-        records and channel on retained qubits equal ``circuit``; omitted
-        qubits were independent reset outputs.
+        their extraction bodies were replaced by reduced MPPs, and the final
+        pending Clifford omitted. Measurement order and the joint record
+        distribution equal ``circuit``, but terminal quantum states need not.
+        Use ``circuit`` instead when quantum outputs must be preserved.
     eliminated_qubits : `tuple`\[`int`, ...\]
-        Source qubits omitted from ``foliation_circuit``.
+        Reset-only source ancillas removed from ``foliation_circuit``.
     """
 
     circuit: stim.Circuit
@@ -129,7 +134,10 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     measurement-record-controlled gate, or circuit exit. At a measure-reset,
     an exactly equivalent reduced MPP/reset channel may absorb ``U`` instead.
     Measurement order, record indices, detector/observable annotations, and
-    post-measurement states are preserved exactly.
+    post-measurement states are preserved exactly in ``result.circuit``.
+    ``result.foliation_circuit`` omits the final pending ``U`` without an
+    equivalence check: a unitary after all measurements cannot change their
+    joint record distribution. Its terminal quantum states are not preserved.
 
     If a direct source measurement's pulled product contains the same Pauli
     on its source qubit as the most recent reset prepared, that factor is
@@ -200,19 +208,21 @@ class _PendingCliffordRewriter:
             self._process_unitary(instruction)
 
     def finish(self) -> MppRewriteResult:
-        """Materialize the final frame and return the rewrite result.
+        """Keep the final frame only in the exact quantum-channel result.
 
         Returns
         -------
         `MppRewriteResult`
             Completed exact rewrite.
         """
-        self._flush_pending()
         foliation_circuit, eliminated_qubits = _without_idle_contracted_qubits(
             self._output,
             self._contracted_source_qubits,
         )
         foliation_circuit = _separate_conflicting_mpp_products(foliation_circuit)
+        # All records are already emitted. The trailing unitary matters only
+        # for quantum outputs, which the foliation circuit does not preserve.
+        self._flush_pending()
         return MppRewriteResult(
             circuit=self._output,
             checks=tuple(self._checks),
