@@ -1,5 +1,5 @@
-Stim MPP rewriter (experimental)
-================================
+Stim MPP rewriter
+=================
 
 Install the optional Stim integration before importing this module:
 
