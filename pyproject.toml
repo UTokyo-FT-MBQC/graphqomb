@@ -72,7 +72,7 @@ pyzx = [
     "pyzx>=0.10",
 ]
 stim = [
-    "stim>=1.15",
+    "stim>=1.16",
 ]
 
 [project.urls]

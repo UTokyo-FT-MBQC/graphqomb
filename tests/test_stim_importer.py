@@ -30,6 +30,51 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "M 0",
+        "X 0\nM 0",
+        "MPP Z0*Z1",
+        "RX 2\nMX 2\nTICK\nM 7",
+        "RY 2\nMY 2\nTICK\nM 7",
+        "REPEAT 2 {\nM 0\nTICK\n}",
+        "M 0\nTICK\nX 0\nM 0",
+    ],
+)
+def test_stim_import_defaults_to_zero_without_reset(text: str) -> None:
+    source = stim.Circuit(text)
+    for index in range(source.num_measurements):
+        source.append("DETECTOR", [stim.target_rec(index - source.num_measurements)])
+    source.append("OBSERVABLE_INCLUDE", [stim.target_rec(-1)], 0)
+
+    pattern = stim_circuit_to_pattern(source).pattern
+    compiled = stim.Circuit(stim_compile(pattern))
+
+    assert source.detector_error_model().num_errors == 0
+    assert compiled.detector_error_model().num_errors == 0
+    for actual, expected in zip(
+        compiled.reference_detector_and_observable_signs(),
+        source.reference_detector_and_observable_signs(),
+        strict=True,
+    ):
+        assert np.array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("text", ["I 0", "H 0\nCX 0 1", "H 0\nH 0", "RX 0\nI 1", "RY 0\nI 1"])
+def test_stim_import_default_state_matches_stim(text: str) -> None:
+    source = stim.Circuit(text)
+    reference = stim.TableauSimulator()
+    reference.do(source)
+    expected = reference.state_vector(endian="big")
+    for seed in range(4):
+        pattern = stim_circuit_to_pattern(source).pattern
+        simulator = PatternSimulator(pattern, SimulatorBackend.StateVector)
+        simulator.simulate(rng=np.random.default_rng(seed))
+
+        assert np.isclose(abs(np.vdot(expected, simulator.state.state())), 1.0, atol=1e-9)
+
+
 def test_stim_text_to_pattern_imports_unitary_clifford_block() -> None:
     result = stim_text_to_pattern(
         """
@@ -595,17 +640,64 @@ def test_stim_text_to_pattern_preserves_signed_mpp_measurement_result() -> None:
 
 
 def test_stim_text_to_pattern_preserves_signed_mpp_y_measurement_axis() -> None:
-    result = stim_text_to_pattern("RY 0\nTICK\nMPP !Y0\nDETECTOR rec[-1]")
+    source = stim.Circuit("RY 0\nTICK\nMPP !Y0\nDETECTOR rec[-1]")
+    result = stim_circuit_to_pattern(source)
     graphstate = result.pattern.clifford_frame.graphstate
-    negative_y_measurements = [
+    positive_y_measurements = [
         node
         for node, meas_basis in graphstate.meas_bases.items()
-        if isinstance(meas_basis, AxisMeasBasis) and meas_basis.axis is Axis.Y and meas_basis.sign is Sign.MINUS
+        if isinstance(meas_basis, AxisMeasBasis) and meas_basis.axis is Axis.Y and meas_basis.sign is Sign.PLUS
     ]
-    compiled = stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
+    compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
 
-    assert len(negative_y_measurements) == 1
-    assert sum(line.startswith("MY !") for line in compiled) == 1
+    # The Type-I Y leg contributes a minus sign, cancelling the source minus.
+    assert len(positive_y_measurements) == 1
+    assert np.array_equal(
+        compiled.reference_detector_and_observable_signs()[0], source.reference_detector_and_observable_signs()[0]
+    )
+
+
+@pytest.mark.parametrize("y_foliation", list(YFoliation))
+@pytest.mark.parametrize("num_y", range(6))
+@pytest.mark.parametrize("inverted", [False, True])
+def test_mpp_foliation_preserves_hermitian_product_sign(y_foliation: YFoliation, num_y: int, inverted: bool) -> None:
+    source = stim.Circuit("RX 0\nR 1")
+    if num_y:
+        source.append("RY", list(range(2, num_y + 2)))
+    product = ("!" if inverted else "") + "X0*Z1" + "".join(f"*Y{q}" for q in range(2, num_y + 2))
+    source += stim.Circuit(f"MPP {product}\nDETECTOR rec[-1]\nOBSERVABLE_INCLUDE(0) rec[-1]")
+
+    compiled = stim.Circuit(stim_compile(stim_circuit_to_pattern(source, y_foliation=y_foliation).pattern))
+
+    assert compiled.detector_error_model().num_errors == 0
+    for expected, actual in zip(
+        source.reference_detector_and_observable_signs(),
+        compiled.reference_detector_and_observable_signs(),
+        strict=True,
+    ):
+        assert np.array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("y_foliation", list(YFoliation))
+@pytest.mark.parametrize("num_y", [1, 2])
+@pytest.mark.parametrize("inverted", [False, True])
+def test_mpp_y_phase_correction_preserves_measurement_post_state(
+    y_foliation: YFoliation, num_y: int, inverted: bool
+) -> None:
+    qubits = list(range(num_y))
+    source = stim.Circuit()
+    source.append("R", qubits)
+    product = ("!" if inverted else "") + "*".join(f"Y{q}" for q in qubits)
+    source += stim.Circuit(f"MPP {product}\nTICK")
+    source.append("MY", qubits)
+    source.append("DETECTOR", [stim.target_rec(-i) for i in range(1, num_y + 2)])
+
+    compiled = stim.Circuit(stim_compile(stim_circuit_to_pattern(source, y_foliation=y_foliation).pattern))
+
+    assert compiled.detector_error_model().num_errors == 0
+    assert np.array_equal(
+        source.reference_detector_and_observable_signs()[0], compiled.reference_detector_and_observable_signs()[0]
+    )
 
 
 @pytest.mark.parametrize("y_foliation", [YFoliation.TYPE_I, YFoliation.TYPE_II])
@@ -1033,7 +1125,7 @@ def test_stim_text_to_pattern_tracks_all_record_types_with_global_indices() -> N
 @pytest.mark.parametrize(
     "text",
     [
-        "MPP X0\nDETECTOR rec[-1]",
+        "RX 0\nMPP X0\nDETECTOR rec[-1]",
         "MPP X0\nTICK\nMPP X0\nDETECTOR rec[-1] rec[-2]",
     ],
 )
@@ -1143,7 +1235,7 @@ def test_stim_text_to_pattern_splits_mixed_tick_block_across_qubits() -> None:
     assert Axis.Z in measured_axes
     simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
     simulator.simulate(rng=np.random.default_rng(3))
-    assert np.isclose(abs(np.vdot([1.0, 0.0], simulator.state.state())), 1.0, atol=1e-9)
+    assert np.isclose(abs(np.vdot(np.asarray([1.0, 1.0]) / np.sqrt(2), simulator.state.state())), 1.0, atol=1e-9)
 
 
 @pytest.mark.parametrize("measurement", ["MPP X0", "MXX 0 1"])
@@ -1155,14 +1247,14 @@ def test_stim_text_to_pattern_accepts_clifford_with_pauli_product_in_one_tick(me
 
 
 def test_stim_text_to_pattern_orders_clifford_before_same_tick_pauli_product() -> None:
-    pattern = stim_text_to_pattern("H 0\nMPP Z0\nDETECTOR rec[-1]").pattern
+    pattern = stim_text_to_pattern("RX 0\nTICK\nH 0\nMPP Z0\nDETECTOR rec[-1]").pattern
     compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
 
     compiled.detector_error_model()
 
 
 def test_stim_text_to_pattern_orders_clifford_before_same_tick_measurement_with_detector() -> None:
-    pattern = stim_text_to_pattern("H 0\nM 0\nDETECTOR rec[-1]").pattern
+    pattern = stim_text_to_pattern("RX 0\nTICK\nH 0\nM 0\nDETECTOR rec[-1]").pattern
     compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
 
     compiled.detector_error_model()
@@ -1470,7 +1562,7 @@ def test_stim_text_to_pattern_allows_pauli_product_after_single_measurement() ->
 
 def test_stim_text_to_pattern_entangles_reused_wire_after_measurement() -> None:
     for seed in range(8):
-        result = stim_text_to_pattern("M 0\nTICK\nCZ 0 1")
+        result = stim_text_to_pattern("RX 0 1\nM 0\nTICK\nCZ 0 1")
         simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
         simulator.simulate(rng=np.random.default_rng(seed))
 
@@ -1552,7 +1644,7 @@ def test_stim_text_to_pattern_accepts_clifford_with_measure_reset_in_one_tick() 
 def test_stim_text_to_pattern_measure_reset_entangled_partner_keeps_outcome() -> None:
     """MR on one half of a CZ pair: partner keeps the collapsed state, reused wire restarts at |0>."""
     for seed in range(8):
-        result = stim_text_to_pattern("CZ 0 1\nTICK\nMR 0\nTICK\nH 0\nDETECTOR rec[-1]")
+        result = stim_text_to_pattern("RX 0 1\nCZ 0 1\nTICK\nMR 0\nTICK\nH 0\nDETECTOR rec[-1]")
         simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
         simulator.simulate(rng=np.random.default_rng(seed))
 
@@ -1672,7 +1764,7 @@ def test_stim_text_to_pattern_feedback_resets_reused_wire_deterministically() ->
 def test_stim_text_to_pattern_defuses_feedback_fused_with_unitary_gates() -> None:
     """Adjacent ``CZ rec[-1] 0`` and ``CZ 0 1`` arrive stim-fused as one instruction."""
     for seed in range(8):
-        result = stim_text_to_pattern("M 0\nTICK\nCZ rec[-1] 0\nCZ 0 1")
+        result = stim_text_to_pattern("RX 0 1\nM 0\nTICK\nCZ rec[-1] 0\nCZ 0 1")
         simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
         simulator.simulate(rng=np.random.default_rng(seed))
 
@@ -1748,7 +1840,7 @@ def test_stim_text_to_pattern_allows_disjoint_qubit_after_single_measurement() -
     assert set(result.pattern.output_node_indices.values()) == {0, 1}
     assert any(result.pattern.output_node_indices[node] == 0 for node in measured_nodes)
     assert set(simulator.output_results) == {0}
-    assert np.isclose(abs(np.vdot([1, 0], simulator.state.state())), 1.0, atol=1e-9)
+    assert np.isclose(abs(np.vdot(np.asarray([1.0, 1.0]) / np.sqrt(2), simulator.state.state())), 1.0, atol=1e-9)
 
 
 @pytest.mark.parametrize(
