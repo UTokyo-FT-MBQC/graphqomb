@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 import typing_extensions
 
+from graphqomb import clifford_algebra
 from graphqomb.common import Axis, Plane, determine_pauli_axis
 from graphqomb.graphstate import BaseGraphState, odd_neighbors, unmeasured_output_nodes
 
@@ -260,6 +261,84 @@ def _reject_cflow(cflow: Mapping[int, Mapping[int, C1Element]] | None, operation
         raise NotImplementedError(msg)
 
 
+def _normalized_correction_dag(
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+    cflow: Mapping[int, Mapping[int, C1Element]],
+) -> dict[int, set[int]]:
+    r"""Use the same-source Pauli cancellation convention of CliffordFrame.
+
+    Returns
+    -------
+    `dict`\[`int`, `set`\[`int`\]\]
+        Dependency DAG after normalization, without changing the supplied maps.
+    """
+    normalized_x = {source: set(targets) for source, targets in xflow.items()}
+    normalized_z = {source: set(targets) for source, targets in zflow.items()}
+    normalized_c: dict[int, dict[int, C1Element]] = {}
+    for source, targets in cflow.items():
+        for target, gate in targets.items():
+            coset, x_bit, z_bit = clifford_algebra.decompose(gate)
+            if x_bit:
+                normalized_x.setdefault(source, set()).symmetric_difference_update({target})
+            if z_bit:
+                normalized_z.setdefault(source, set()).symmetric_difference_update({target})
+            if coset != clifford_algebra.IDENTITY:
+                normalized_c.setdefault(source, {})[target] = coset
+    return dag_from_flow(graph, normalized_x, normalized_z, normalized_c)
+
+
+def _signal_shifting_context(
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+    cflow: Mapping[int, Mapping[int, C1Element]] | None,
+) -> tuple[dict[int, set[int]], set[int]]:
+    r"""Build the execution DAG and the conservative Clifford boundary.
+
+    A shift advances the target's outgoing Pauli events to its parents. Freezing
+    every cflow target and its ancestors prevents those events from crossing a
+    Clifford correction, even when the shifted node has no incident cflow edge.
+    Pauli-valued cflow entries are also protected because this pass returns only
+    xflow/zflow and cannot rewrite the supplied cflow's control records.
+
+    Use normalized corrections for the execution DAG, as CliffordFrame does.
+    For protection, restore the supplied cflow edges: shifting just the X/Z
+    half of a cancelled correction would break its cancellation with cflow.
+
+    Returns
+    -------
+    `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `set`\[`int`\]\]
+        Normalized dependency DAG and the protected backward closure.
+    """
+    if not cflow:
+        return dag_from_flow(graph, xflow, zflow), set()
+    dag = _normalized_correction_dag(graph, xflow, zflow, cflow)
+
+    protected = {
+        target
+        for source, targets in cflow.items()
+        for target, gate in targets.items()
+        if source != target and gate != clifford_algebra.IDENTITY
+    }
+    if not protected:
+        return dag, protected
+    protection_dag = {source: set(targets) for source, targets in dag.items()}
+    for source, targets in cflow.items():
+        protection_dag.setdefault(source, set()).update(
+            target for target, gate in targets.items() if source != target and gate != clifford_algebra.IDENTITY
+        )
+    inverse_dag = inverse_dag_from_dag(protection_dag)
+    pending = list(protected)
+    while pending:
+        for parent in inverse_dag.get(pending.pop(), set()):
+            if parent not in protected:
+                protected.add(parent)
+                pending.append(parent)
+    return dag, protected
+
+
 def signal_shifting(
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
@@ -277,18 +356,29 @@ def signal_shifting(
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
     cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
-        Clifford correction flow. Must be empty; shifting it is unsupported.
+        Clifford correction flow, preserved unchanged. Its effective targets
+        and their causal past are excluded from signal shifting.
 
     Returns
     -------
     `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `dict`\[`int`, `set`\[`int`\]\]\]
-        Updated correction maps for X and Z after signal shifting.
+        Updated correction maps for X and Z after signal shifting. Pass the
+        original cflow alongside these maps when compiling the result.
+
+    Notes
+    -----
+    Only Pauli regions outside the backward dependency closure of cflow targets
+    are rewritten. This keeps Clifford control records and noncommuting event
+    order unchanged; it does not distribute Clifford gates over XOR controls.
+    Self-target and identity cflow entries do not create a boundary. Pauli gates
+    supplied through cflow do create one; use xflow/zflow to make them eligible
+    for shifting. Measurement records in rewritten regions are relabelled, as
+    in ordinary signal shifting, so this pass does not update parity seeds.
     """
-    _reject_cflow(cflow, "Signal shifting")
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
 
-    dag = dag_from_flow(graph, xflow, zflow)
+    dag, protected = _signal_shifting_context(graph, xflow, zflow, cflow)
     topo_order = list(TopologicalSorter(dag).static_order())
     topo_order.reverse()  # from parents to children
 
@@ -299,6 +389,10 @@ def signal_shifting(
     new_zflow = {k: set(vs) for k, vs in zflow.items()}
 
     for target_node in topo_order:
+        if target_node in protected:
+            continue
+        # The original protected set is closed under predecessors. A shift
+        # outside it cannot introduce a correction into it, so compute it once.
         new_xflow, new_zflow = propagate_correction_map(target_node, graph, new_xflow, new_zflow)
 
     return new_xflow, new_zflow
@@ -324,7 +418,9 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
     cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
-        Clifford correction flow. Must be empty; propagating it is unsupported.
+        Clifford correction flow, preserved unchanged. If the target is in
+        the causal past of an effective cflow target (or is one), return copies
+        of the unmodified X and Z maps.
 
     Returns
     -------
@@ -343,14 +439,24 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
     -----
     This function converts the correction maps into more parallel-friendly forms.
     It is equivalent to the signal shifting technique in the measurement calculus.
+    With cflow, the same conservative boundary as `signal_shifting` preserves
+    control records and correction order. Pass cflow on every individual call;
+    it must also accompany the returned maps when compiling the result.
     """
-    _reject_cflow(cflow, "Correction propagation")
     if target_node in graph.output_node_indices:
         msg = "Cannot propagate flow for output nodes."
         raise ValueError(msg)
 
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
+
+    new_xflow = {k: set(vs) for k, vs in xflow.items()}
+    new_zflow = {k: set(vs) for k, vs in zflow.items()}
+    if cflow:
+        dag, protected = _signal_shifting_context(graph, xflow, zflow, cflow)
+        check_dag(dag)
+        if target_node in protected:
+            return new_xflow, new_zflow
 
     inv_xflow: dict[int, set[int]] = {}
     inv_zflow: dict[int, set[int]] = {}
@@ -361,21 +467,18 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
         for v in vs:
             inv_zflow.setdefault(v, set()).add(k)
 
-    new_xflow = {k: set(vs) for k, vs in xflow.items()}
-    new_zflow = {k: set(vs) for k, vs in zflow.items()}
-
     meas_basis = graph.meas_bases[target_node]
 
     if meas_basis.plane == Plane.XY:
-        target_parents = inv_zflow.get(target_node, set())
+        target_parents = inv_zflow.get(target_node, set()) - {target_node}
         for parent in target_parents:
             new_zflow[parent] -= {target_node}
     elif meas_basis.plane == Plane.YZ:
-        target_parents = inv_xflow.get(target_node, set())
+        target_parents = inv_xflow.get(target_node, set()) - {target_node}
         for parent in target_parents:
             new_xflow[parent] -= {target_node}
     elif meas_basis.plane == Plane.XZ:
-        target_parents = inv_xflow.get(target_node, set()) & inv_zflow.get(target_node, set())
+        target_parents = (inv_xflow.get(target_node, set()) & inv_zflow.get(target_node, set())) - {target_node}
         for parent in target_parents:
             new_xflow[parent] -= {target_node}
             new_zflow[parent] -= {target_node}
@@ -384,12 +487,12 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
         msg = f"Unsupported measurement plane: {meas_basis.plane}"
         raise ValueError(msg)
 
-    for child_x in xflow.get(target_node, set()):
+    for child_x in xflow.get(target_node, set()) - {target_node}:
         for parent in target_parents:
-            new_xflow[parent] ^= {child_x}
-    for child_z in zflow.get(target_node, set()):
+            new_xflow.setdefault(parent, set()).symmetric_difference_update({child_x})
+    for child_z in zflow.get(target_node, set()) - {target_node}:
         for parent in target_parents:
-            new_zflow[parent] ^= {child_z}
+            new_zflow.setdefault(parent, set()).symmetric_difference_update({child_z})
 
     return new_xflow, new_zflow
 
