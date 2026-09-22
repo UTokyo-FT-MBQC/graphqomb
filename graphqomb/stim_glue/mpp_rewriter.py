@@ -21,6 +21,8 @@ extraction body at the reset boundary.
 The import-oriented ``foliation_circuit`` omits the final pending frame:
 it preserves the joint measurement-record distribution, but does not preserve
 terminal quantum states. No equivalence check is needed for this omission.
+It additionally contracts certified disposable extraction gadgets. Mixed
+readouts may be permuted, with an explicit record map and updated references.
 
 This module provides:
 
@@ -32,11 +34,12 @@ This module provides:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, cast
 
 import stim
 
+from graphqomb.stim_glue._gadget_contract import contract_disposable_gadgets
 from graphqomb.stim_glue._parse import (
     ANNOTATION_GATES,
     MEASURE_RESET_AXES,
@@ -80,7 +83,8 @@ class CheckMapping:
     Attributes
     ----------
     measurement_index : `int`
-        Global measurement-record index, identical in both circuits.
+        Global record index in the circuit described by this mapping:
+        ``circuit`` for ``checks``, or ``foliation_circuit`` for ``foliation_checks``.
     product : ``stim.PauliString``
         Signed product emitted for this record.
     source_qubit : `int` | `None`
@@ -106,17 +110,26 @@ class MppRewriteResult:
     foliation_circuit : ``stim.Circuit``
         Import-oriented circuit with reset-only source ancillas removed after
         their extraction bodies were replaced by reduced MPPs, and the final
-        pending Clifford omitted. Measurement order and the joint record
-        distribution equal ``circuit``, but terminal quantum states need not.
+        pending Clifford omitted. The joint record distribution equals
+        ``circuit`` up to ``foliation_record_to_source``, but terminal quantum states need not.
         Use ``circuit`` instead when quantum outputs must be preserved.
     eliminated_qubits : `tuple`\[`int`, ...\]
         Reset-only source ancillas removed from ``foliation_circuit``.
+    foliation_record_to_source : `tuple`\[`int`, ...\]
+        Original record index for each emitted foliation record. Certified
+        gadget contraction can move syndrome records before mixed data
+        readouts. Detector, observable, and feedback references are remapped.
+    foliation_checks : `tuple`\[`CheckMapping`, ...\]
+        Products in foliation record order; ``checks`` continues to describe
+        the exact quantum-channel circuit in original record order.
     """
 
     circuit: stim.Circuit
     checks: tuple[CheckMapping, ...]
     foliation_circuit: stim.Circuit
     eliminated_qubits: tuple[int, ...] = ()
+    foliation_record_to_source: tuple[int, ...] = ()
+    foliation_checks: tuple[CheckMapping, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,10 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     ``result.foliation_circuit`` omits the final pending ``U`` without an
     equivalence check: a unitary after all measurements cannot change their
     joint record distribution. Its terminal quantum states are not preserved.
+    It also contracts structurally recognized disposable check gadgets, including separate
+    measurement/reset instructions. Mixed readouts can be permuted; the
+    explicit ``foliation_record_to_source`` map and remapped annotations
+    preserve their meaning. This additional contraction uses a controlled-Pauli identity, without flow checks.
 
     If a direct source measurement's pulled product contains the same Pauli
     on its source qubit as the most recent reset prepared, that factor is
@@ -159,13 +176,27 @@ def rewrite_to_mpp(circuit: stim.Circuit | str) -> MppRewriteResult:
     `MppRewriteResult`
         Exactly equivalent rewritten circuit and measurement mappings.
 
-    Raises
-    ------
-    RuntimeError
-        If an internal bug changes the number of measurement records.
     """
     source = circuit if isinstance(circuit, stim.Circuit) else stim.Circuit(circuit)
     flattened = source.flattened()
+    result = _rewrite_exact(flattened)
+    contracted = contract_disposable_gadgets(flattened)
+    if contracted.discarded_qubits:
+        optimized = _rewrite_exact(contracted.circuit)
+        foliation, eliminated = _without_idle_contracted_qubits(
+            optimized.foliation_circuit, set(contracted.discarded_qubits)
+        )
+        result = replace(
+            result,
+            foliation_circuit=foliation,
+            eliminated_qubits=tuple(sorted(set(eliminated) | set(optimized.eliminated_qubits))),
+            foliation_record_to_source=contracted.record_to_source,
+            foliation_checks=optimized.checks,
+        )
+    return result
+
+
+def _rewrite_exact(flattened: stim.Circuit) -> MppRewriteResult:
     rewriter = _PendingCliffordRewriter(flattened.num_qubits)
     for instruction in iter_instructions(flattened):
         rewriter.process(instruction)
@@ -228,6 +259,8 @@ class _PendingCliffordRewriter:
             checks=tuple(self._checks),
             foliation_circuit=foliation_circuit,
             eliminated_qubits=eliminated_qubits,
+            foliation_record_to_source=tuple(range(self._measurement_index)),
+            foliation_checks=tuple(self._checks),
         )
 
     def _process_reset(self, instruction: stim.CircuitInstruction) -> None:

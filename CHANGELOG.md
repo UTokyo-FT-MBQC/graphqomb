@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Constructive disposable-gadget contraction**: Recognize X-prepared/X-measured CX/CZ extraction gadgets using controlled-Pauli algebra and explicit inter-control phase cancellation, without adding runtime stabilizer-flow equivalence checks. Keep external regression checks for signed channels and mixed-readout record permutations.
+
+- **Surface-code Foliation Connectivity**: Structurally recognized disposable extraction gadgets now contract in `foliation_circuit` when measurement and reset are separate. Mixed syndrome/data readouts are reordered with detector, observable, and feedback references remapped, avoiding residual extraction circuits and degree-inflating mixed MPPs. The exact quantum-channel `circuit` remains unchanged; `foliation_record_to_source` and `foliation_checks` expose the foliation record order and products.
 - **Stim Default Initialization**: Inputs without an explicit reset now start in `|0>` when importing Stim circuits, matching Stim semantics. Explicit `RX` and `RY` preparations remain supported; callers requiring the previous `|+>` input must specify `RX`.
 - **Pair-measurement Foliation Layers**: `foliation_circuit` now normalizes `MXX`, `MYY`, and `MZZ` to MPP so repeated and anticommuting products, including mixtures with explicit MPPs, are separated before import.
 - **MPP Y-product Signs**: The Stim importer now compensates the Type-I foliation phase for products with one or two Y factors modulo four, preserving the fixed detector and observable signs as well as their determinism.
@@ -26,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (Breaking)
 
+- Raw measurement columns in `foliation_circuit` may be permuted to place syndrome checks before mixed data readouts. Use `foliation_record_to_source` to compare them with source columns; detector, observable, and feedback references are already remapped.
 - Rename `Pattern.pauli_frame` and the `Pattern(pauli_frame=...)` constructor
   argument to `clifford_frame`, matching the `CliffordFrame` type.
 

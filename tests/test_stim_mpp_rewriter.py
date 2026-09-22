@@ -572,8 +572,7 @@ def test_empty_circuit_rewrites_to_empty_circuit() -> None:
 
 
 def test_pull_path_does_not_call_stim_flow_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Only the measure-reset contraction certificate consults Stim flow
-    # analysis; the plain pull path must stay purely constructive.
+    # Both the pull path and the disposable-gadget prepass are constructive.
     def fail(*_args: object, **_kwargs: object) -> object:
         msg = "the pull path must not consult Stim flow analysis"
         raise AssertionError(msg)
@@ -581,7 +580,7 @@ def test_pull_path_does_not_call_stim_flow_analysis(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(stim.Circuit, "flow_generators", fail)
     monkeypatch.setattr(stim.Circuit, "has_flow", fail)
 
-    result = rewrite_to_mpp("R 4\nCX 0 4\nM 4")
+    result = rewrite_to_mpp(stim.Circuit("R 4\nCX 0 4\nM 4"))
 
     assert result.checks[0].product == stim.PauliString("+Z____")
     assert result.foliation_circuit == stim.Circuit("R 4\nMPP Z0")
