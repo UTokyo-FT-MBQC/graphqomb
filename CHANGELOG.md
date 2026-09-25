@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Signal Shifting with Clifford Boundaries**: `signal_shifting` and
+  `propagate_correction_map` now accept `cflow`, preserving its targets and
+  their causal past while optimizing later and independent Pauli regions.
+  The functions retain their X/Z-map return values; compile them with the
+  original cflow. The boundary preserves control records and noncommuting
+  correction order without distributing Clifford gates over XOR controls.
+  Statevector tests cover all branches of a magic-state T teleportation
+  before and after shifting. Clifford-dependent parity backpropagation and
+  Pauli simplification with cflow remain unsupported.
+
 - **Clifford feedforward (Phase 1)**: `qompile(..., cflow=...)` accepts classically-controlled single-qubit Clifford corrections, tracked by the renamed `CliffordFrame` (`PauliFrame` stays as an alias) and simulated exactly; `.ptn` v5 serializes them, while Stim export and detector certification remain Pauli-frame-only (#285).
   Pauli and Clifford corrections follow measurement order, with consistent frame adaptation for measurements and output correction.
 
