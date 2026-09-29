@@ -230,10 +230,12 @@ def contract_extraction_gadgets(circuit: stim.Circuit) -> GadgetContraction:  # 
             emitted.append(mapped)
             order = list(range(instruction.num_measurements))
         if pending or instruction.num_measurements or stim.gate_data(name).is_unitary:
-            # A measurement or a feedback boundary ends this extraction interval.
+            # Keep overwritten preparation sites unless the pending body used
+            # that qubit; a reset alone does not consume its earlier preparation.
             touched = {
                 int(t.qubit_value)
                 for op in [*iter_instructions(pending), instruction]
+                if op.name not in _RESET_BASES
                 for t in op.targets_copy()
                 if t.qubit_value is not None
             }

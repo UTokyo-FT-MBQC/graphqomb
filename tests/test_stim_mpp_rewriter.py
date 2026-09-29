@@ -106,6 +106,23 @@ def test_explicit_reset_overrides_measurement_axis() -> None:
     _check_channel(text)
 
 
+@pytest.mark.parametrize("reset", ["R", "RX", "RY"])
+def test_contraction_removes_overwritten_preparations_across_unrelated_gates(reset: str) -> None:
+    text = f"{reset} 2 3\nH 3\nRX 2\nCZ 2 0\nMX 2"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit(f"{reset} 3\nH 3\nMPP Z0")
+    assert result.eliminated_qubits == (2,)
+    _check_channel(text)
+
+
+def test_contraction_keeps_preparation_used_before_reset() -> None:
+    text = "R 2 3\nCX 2 3\nRX 2\nCZ 2 0\nMX 2\nM 3"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit("R 2 3\nCX 2 3\nMPP Z0\nM 3")
+    assert result.eliminated_qubits == ()
+    _check_channel(text)
+
+
 def test_only_replaced_lifetime_loses_its_preparation() -> None:
     text = "RX 2\nCZ 2 0\nMX 2\nRY[later] 2\nH 2\nMY 2"
     result = rewrite_to_mpp(text)
