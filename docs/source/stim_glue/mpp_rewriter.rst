@@ -7,171 +7,125 @@ Install the optional Stim integration before importing this module:
 
    uv add "graphqomb[stim]"
 
-The rewriter exposes the Pauli products measured by Clifford syndrome
-extraction. ``result.circuit`` preserves the complete measurement and quantum
-channel; ``result.foliation_circuit`` preserves the measurement-record
-distribution and omits the final pending Clifford for import into MBQC.
-For a Clifford body ``U`` and Pauli measurement ``P``, it uses the exact
-instrument identity
+``rewrite_to_mpp`` normalizes photonic measurement lifetimes and replaces
+recognized syndrome-extraction intervals with data-only Pauli-product
+measurements. Other intervals keep their gates and readouts for the ordinary
+circuit importer. A measured wire ends in either case; ending it never depends
+on recognizing a gadget or comparing stabilizer flows.
 
-.. math::
+Measurement contract
+--------------------
 
-   \Pi_m(P) U = U \Pi_m(U^\dagger P U).
+Single-qubit ``M/MX/MY`` and ``MR/MRX/MRY`` consume their target. Reuse starts
+a new wire in the positive eigenstate of the measured axis, independently of
+the outcome. An explicit following reset supplies its own axis. Terminal
+readouts create no preparation. Inverted targets change the recorded bit only;
+repeated targets are processed sequentially. Classical record references and
+coordinate annotations do not restart a measured wire. Explicit feedback acts
+on its target's current lifetime.
 
-Clifford instructions accumulate in a pending frame. At a source Pauli
-measurement, the rewriter emits the pulled product ``U† P U`` and leaves the
-unchanged frame behind that measurement. A reset, measurement-record-controlled
-gate, or circuit exit materializes the pending frame in ``result.circuit``.
-At a measure-reset whose
-source-ancilla reset factor was removed, the rewriter compares the local
-reset/body/measurement channel with the reduced MPP/reset channel. Equal
-canonical Stim flows certify that the circuit-foliation MPP ancilla has replaced the
-source extraction ancilla, so the now-redundant pending body is discarded.
-Otherwise the exact body is materialized unchanged. There is no gate-level
-fallback, and measurement post-states are preserved exactly in ``result.circuit``.
+This intentionally changes the interpretation of plain Stim measurements:
+``X 0; M 0 0`` records ``1, 0`` under the new contract, rather than Stim's
+``1, 1``. There is no legacy post-state-preservation mode. ``MPP`` and pair
+measurements retain their parity-measurement semantics and do not consume
+individual data wires. The importer uses the same lifetime normalization.
 
-Terminal Clifford removal for circuit foliation
------------------------------------------------
+The result preserves the joint measurement-record distribution of the input
+under this contract, up to ``foliation_record_to_source``. It does not promise
+equivalence of terminal quantum outputs. Source noise, noisy measurement
+arguments, and sweep-bit controls remain unsupported. ``REPEAT`` is flattened.
 
-``result.foliation_circuit`` is intended for pipelines that consume measurement
-records and discard terminal quantum states. It omits the pending Clifford at
-circuit exit, after all measurements have been pulled. For each complete record
-``m``, the unnormalized conditional state ``rho_m`` satisfies
-
-.. math::
-
-   p(m) = \operatorname{Tr}(U\rho_m U^\dagger)
-        = \operatorname{Tr}(\rho_m).
-
-Thus the joint record distribution, including detector and observable parities,
-is unchanged. No flow analysis or equivalence check is performed for this
-omission, even for a multi-qubit Clifford. For example, ``H 0; M 0`` becomes
-``MPP X0; H 0`` in ``result.circuit`` and ``MPP X0`` in
-``result.foliation_circuit``. This also omits a final pending body when some
-qubits are unmeasured, or the circuit contains no measurements: quantum outputs
-are outside the foliation result's contract. Use ``result.circuit`` when those
-outputs are needed.
-
-Reset and feedback boundaries inside the circuit still materialize the pending
-frame unless the existing measure-reset contraction succeeds. A reset discards
-only its target subsystem. It does not erase a preceding Clifford's action on
-other qubits: ``X 0; CX 0 1; R 0; M 1`` still measures ``1`` on qubit 1.
-Resetting every qubit on which the pending body acts would allow that body to
-be omitted without a flow check, but this optimization is not applied here.
-
-Reset stabilizer substitution
+Local extraction optimization
 -----------------------------
 
-When a source direct measurement's pulled product contains the same Pauli on
-that source qubit as its most recent reset preparation, that factor has known
-eigenvalue ``+1`` and is removed. Only the directly measured source qubit is
-eligible; reset data-qubit factors remain in the product. Standard check
-gadgets therefore expose a data-only ``MPP``:
+An X-prepared, X-measured control interacting through CX/CZ implements a
+controlled Pauli product. For a Hermitian product P, its readout has Kraus
+operator
+
+.. math::
+
+   \langle m_X|C(P)|+\rangle = (I + (-1)^m P)/2.
+
+The rewriter replaces that extraction interval by the corresponding MPP and
+removes the preparation belonging to that lifetime. Z-prepared, Z-measured
+CNOT targets implement the equivalent Z-product extraction. Signed readouts
+become signed products. For example:
 
 .. code-block:: text
 
-   R 4                       R 4
-   CX 0 4 1 4       ->       MPP Z0*Z1
-   M 4                       CX 0 4 1 4
+   R 4                      MPP Z0*Z1
+   CX 0 4 1 4      ->
+   M 4
 
-In ``result.circuit``, the trailing Clifford body is intentional. Applying it
-after the pulled measurement makes the transformed circuit exactly equivalent to the source,
-including the measurement record and post-measurement quantum state. A factor
-that does not match the reset basis is retained. For example,
-``RX 2; CZ 0 2; S 2; MX 2`` becomes
-``RX 2; MPP !Z0*Y2; CZ 0 2; S 2``.
+For multiple controls, grouping controlled factors into measurement order can
+introduce CZ phases between controls when factors anticommute. The optimizer
+tracks their parity and applies the replacement only when they cancel. Factors
+on the same control/data pair must share an axis. Independent data Cliffords,
+other local basis wrappers, Y-readout gadgets, or non-cancelling phases keep
+their original gate implementation. These are limits of the optional local
+optimization, not restrictions on wire termination or circuit import.
 
-For a measure-reset check gadget, the reset provides a stronger local
-boundary. If ``reset + body + measure-reset`` and ``reset + reduced MPP +
-reset`` have identical canonical Stim flows, the body is discarded: the
-circuit-foliation graph constructed from the MPP already supplies the check ancilla's
-initialization, interaction, and measurement. ``result.circuit`` retains any
-independent reset-only source outputs so it stays exactly equivalent as a
-standalone Stim channel. ``result.foliation_circuit`` additionally removes
-those idle source ancillas and omits the final pending Clifford for import.
-``result.eliminated_qubits`` reports the removed reset-only ancillas' Stim ids.
-This certificate is exactly as sound as Stim's flow analysis,
-so the Stim extra requires ``stim>=1.16``.
+For example, ``RX 2; CZ 2 0; S 2; MX 2`` keeps its gates and its direct
+readout. There is no pulled MPP followed by a duplicate extraction body, and
+no runtime ``flow_generators`` or ``has_flow`` certificate. The tests compare
+record channels against an independent eager measure/reset reference instead.
 
-Factors are considered in measurement-record order. An earlier product that
-anticommutes with a stored reset stabilizer invalidates it before later
-products are simplified. Substitution is skipped if it would remove the last
-Pauli factor, for either sign. A known noiseless result still has a physical
-readout: ``R 0; M 0`` remains a reset and measurement, not ``MPAD 0``.
-In particular, terminal data measurements survive circuit foliation. Source
-``MPAD`` records are copied; explicitly supplied identity products can still
-be represented as padding. This does not add support for noisy input circuits.
+Preparations are tracked by their instruction site and lifetime. Removing one
+extraction's preparation cannot remove another use of the same Stim ID. A
+later reset-only output also remains. ``eliminated_qubits`` contains an ID
+only when no quantum instruction on any of its lifetimes remains; its
+``QUBIT_COORDS`` annotation is then removed as well. Known deterministic direct
+readouts remain physical measurements rather than constant ``MPAD`` records.
 
-Removal order and cost
-----------------------
-
-The flow check runs at an eligible measure-reset boundary, before any qubit
-is removed. It compares two circuits containing the currently tracked
-preparations, pending Clifford body, and local readout/reset. On equality,
-the entire pending body (including its CNOTs) is discarded immediately.
-At circuit exit, ``foliation_circuit`` is built before the final pending body
-is appended to ``result.circuit``. The rewriter removes certified ancillas that
-now occur in resets or coordinates alone from the foliation result. Ancillas
-with remaining quantum uses are retained. Plain measurement alone does not
-permit discarding the pending body when preserving quantum outputs; the
-foliation result discards that final body because it preserves only records.
-
-Each attempted certificate with a nonempty pending body calls
-``flow_generators()`` twice. This is stabilizer algebra, without enumerating
-measurement outcomes. The cost depends on circuit width, pending-body size,
-and the number of eligible reset boundaries. Currently the comparison includes
-all tracked preparations and uses the original qubit ids; it does not compact
-to just one ancilla's neighbors or cache repeated certificates. Large or sparse
-qubit ids can therefore increase cost. ``REPEAT`` is flattened, so each round
-is processed separately. The final idle-qubit removal is a circuit scan and
-does not call ``flow_generators()`` again.
-
-Barriers and annotations
+Records and graph layers
 ------------------------
 
-``MR``, ``MRX``, and ``MRY`` are split only when needed: the pulled
-measurement is emitted, an exactly contractible source-ancilla extraction body
-is discarded (otherwise it follows unchanged), and then the reset is applied.
-Classical record feedback is copied verbatim after materializing the frame.
-Sweep-bit controls, circuit-level noise, and noisy measurement
-arguments are rejected. ``DETECTOR``, ``OBSERVABLE_INCLUDE``, tags, and qubit
-coordinates are copied while retaining their measurement-record indices.
-``REPEAT`` blocks are flattened first.
+In a mixed readout, extracted syndrome products precede the remaining direct
+data readouts. The original measurements on different source qubits commute.
+The rewriter records the permutation and updates every detector, observable,
+and feedback reference. ``MPAD`` records occupy their original source-record
+positions in this map even though they have no ``CheckMapping`` entry.
 
-Commuting pulled products emitted inside one source ``TICK`` interval are
-collected by the importer into one MPP graph fragment, even when tags keep them
-as separate Stim instructions. A source ``TICK`` is a hard boundary: products
-on opposite sides are built as separate graph layers and are never coalesced.
-Removing a contracted measure-reset ancilla also preserves its round boundary:
-if there is no source ``TICK`` before the next MPP, ``foliation_circuit`` inserts
-one. More generally, a repeated identical Pauli support, or a product that
-anticommutes with one already in the layer, starts a new internal layer even
-within one source interval. Distinct commuting supports continue to share a
-layer, so repeated identical checks are never fused together and every
-imported MPP block commutes internally.
-Pair measurements (``MXX``, ``MYY``, and ``MZZ``) are normalized to ``MPP``
-in ``foliation_circuit`` and follow the same layer-separation rules, including
-when mixed with explicit MPP products.
+``result.foliation_record_to_source[j]`` is the original record index for
+emitted record j. Each ``CheckMapping`` contains the emitted record index,
+the signed observable at its emitted circuit position, and the original
+direct-readout qubit ID (or ``None`` for a source product measurement).
+
+Source ``TICK`` boundaries remain. Removing a preparation preserves a round
+boundary after earlier measurements. Repeated unsigned supports and
+anticommuting products start distinct MPP layers; distinct commuting products
+can share a layer. Pair measurements are normalized to MPPs before this check.
+
+Maximum graph degree four is a regression condition for the repository's
+15-to-1 Clifford-proxy fixture only. It is not a requirement on logical Y,
+surface-code generators in general, or arbitrary Clifford circuits. The
+fixture includes a mixed data/syndrome readout; full-factory validation also
+checks detector and observable correspondence.
+
+Result and migration
+--------------------
+
+``result.circuit`` is the single rewritten circuit. ``result.foliation_circuit``
+is a compatibility name referring to that same object. Similarly, ``checks``
+and ``foliation_checks`` refer to the same tuple in emitted record order.
+Neither name selects a different quantum-output contract. Callers comparing
+sample columns must apply ``foliation_record_to_source``; consumers of the
+rewritten detector, observable, and feedback annotations already have updated
+references.
 
 .. code-block:: python
 
-   from graphqomb.stim_glue.mpp_rewriter import rewrite_to_mpp
+   from graphqomb.stim_glue import rewrite_to_mpp, stim_circuit_to_pattern
 
-   result = rewrite_to_mpp(
-       """
-       R 4
-       CX 0 4 1 4
-       M 4
-       """
-   )
-   assert str(result.checks[0].product) == "+ZZ___"
-
-   # Use this circuit for the StabilizerCode circuit-foliation importer path.
-   import_circuit = result.foliation_circuit
+   result = rewrite_to_mpp("R 4\nCX 0 4 1 4\nMR 4\nCX 0 4 1 4\nM 4")
+   imported = stim_circuit_to_pattern(result.circuit)
+   assert result.circuit is result.foliation_circuit
+   assert result.eliminated_qubits == (4,)
 
 API reference
 -------------
 
 .. automodule:: graphqomb.stim_glue.mpp_rewriter
    :members:
+   :undoc-members:
    :show-inheritance:

@@ -25,9 +25,9 @@ from graphqomb.graphstate import GraphState, compose_into, odd_neighbors
 from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
 from graphqomb.qompiler import qompile
 from graphqomb.scheduler import Scheduler
+from graphqomb.stim_glue._measurement_lifetimes import normalize_measurement_lifetimes
 from graphqomb.stim_glue._parse import (
     DIRECT_MEASUREMENT_AXES,
-    MEASURE_RESET_AXES,
     PAIR_MEASUREMENT_AXES,
     RESET_AXES,
     PauliSupport,
@@ -78,11 +78,11 @@ class StimImportResult:
     lifetime of each Stim qubit; the earlier indices of a reset qubit are its
     discarded history, whose wires may remain pattern outputs.
 
-    A mid-circuit reset also issues a fresh *Stim* qubit id for the reset
+    Every re-preparation also issues a fresh *Stim* qubit id for the new
     lifetime, and that id is what mpp_extractions reports in supports,
     stim_to_column, and column_to_stim. wire_to_stim maps every
     such id back to the original circuit's Stim qubit id; it is the identity
-    on qubits that are never reset mid-circuit.
+    on qubits with only one lifetime.
 
     Attributes
     ----------
@@ -116,7 +116,6 @@ class _Fragment:
     record_nodes: dict[int, int]
     feedback_targets: tuple[_FeedbackTarget, ...] = ()
     mpp_extractions: tuple[StimMppExtraction, ...] = ()
-    zflow: dict[int, set[int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -173,12 +172,6 @@ class _DirectMeasurement:
     record_index: int
     axis: Axis
     sign: Sign
-    # True for measure-reset gates: the wire re-prepares the positive
-    # eigenstate of `axis` unconditionally instead of keeping the outcome.
-    resets: bool = False
-    # Stim instruction tag; carried to the re-prepared continuation only for
-    # measure-reset gates, whose reset half exists in the original circuit.
-    tag: str = ""
 
 
 @dataclass(frozen=True)
@@ -298,26 +291,25 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
 
     Unitary gates may share a TICK block with Pauli measurements. Single-qubit
     Cliffords ahead of a measurement are folded into the measurement basis
-    when the measured qubit is never used again; any remaining mixed block is
+    after splitting measurement lifetimes; any remaining mixed block is
     split into internal unitary, measurement, and feedback layers that
     preserve the original instruction order, each advancing the z coordinate
     by one layer.
 
-    A Stim qubit may be used again after a direct single-qubit measurement.
-    The importer issues a fresh internal qubit index for the post-measurement
-    wire: a new node is placed at the qubit's XY coordinates on the next z
-    layer, initialized in the positive eigenstate of the measurement axis, and
-    the measurement outcome conditions the continuation through the pattern's
-    correction flows. Measure-reset gates (``MR``, ``MRX``, ``MRY``) work the
-    same way except that the reset re-prepares the positive eigenstate
-    unconditionally, so the continuation carries no outcome correction. Reuse
-    after an inverted plain measurement target (``M !q``) is not supported
-    because negative-eigenstate initialization cannot be represented; an
-    inverted measure-reset target may be reused since the reset discards the
-    outcome. Reuse is decided on the normalized circuit: single-qubit
-    Cliffords after a measurement that cancel to the identity during per-block
-    optimization do not count as later use, so the measured wire ends and the
-    pattern has one output fewer than the raw instruction stream suggests.
+    Direct single-qubit measurements consume their wire. M/MX/MY and
+    MR/MRX/MRY share this destructive-readout contract: a later quantum use
+    starts a fresh wire in the positive eigenstate of the measured axis,
+    independently of the result. An explicit R/RX/RY instead supplies its own
+    axis. Terminal readouts create no continuation. An inverted target changes
+    only the reported bit, so inverted readouts may also be reused. Explicit
+    record-controlled feedback remains effective on the new wire.
+
+    This intentionally differs from Stim's nondestructive plain measurements.
+    Lifetimes are resolved before gate optimization: even a continuation whose
+    gates cancel starts a fresh independently prepared wire. Single-qubit
+    Cliffords before the consumed endpoint can always fold into its signed
+    measurement basis within a TICK block. MPP and pair measurements retain
+    their parity-measurement semantics and do not end their data wires.
 
     A qubit may also be re-initialized with an explicit mid-circuit ``R``,
     ``RX``, or ``RY``. The importer splits each reset-started lifetime onto a
@@ -373,9 +365,8 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         raise ValueError(msg)
 
     idealized = _idealize_circuit(circuit.flattened())
-    reset_split = _split_reused_reset_wires(
-        _merge_safe_tick_blocks(idealized.circuit) if merge_safe_ticks else idealized.circuit
-    )
+    lifetimes = normalize_measurement_lifetimes(idealized.circuit)
+    reset_split = _split_reused_reset_wires(_merge_safe_tick_blocks(lifetimes) if merge_safe_ticks else lifetimes)
     normalized_circuit, stim_ids = _normalize_import_circuit(reset_split.circuit)
     analysis = _CircuitAnalyzer().analyze(normalized_circuit)
     annotations = collect_record_annotations(normalized_circuit)
@@ -459,10 +450,8 @@ def _final_qubit_by_stim_id(
     RuntimeError
         If a split wire id is not above its original Stim qubit id.
     """
-    # `_split_reused_reset_wires` issues wire ids above every original id and
-    # in circuit order, so the largest wire id of a Stim qubit is its last
-    # reset lifetime; `final_stim_to_qubit` already resolves the
-    # measurement-reuse continuations within one wire.
+    # Split ids increase in circuit order, so the largest id names the last
+    # lifetime, including preparations inserted after destructive readouts.
     if any(wire_id <= original_id for wire_id, original_id in split_to_original.items()):
         msg = "Split wire ids must be issued above their original Stim qubit ids; this is a bug."
         raise RuntimeError(msg)
@@ -675,51 +664,28 @@ class _TickBlock:
     """One TICK block accumulated during import normalization."""
 
     circuit: stim.Circuit = field(default_factory=stim.Circuit)
-    last_index: int = -1
     has_unitary: bool = False
     has_single_measurement: bool = False
-    has_measure_reset: bool = False
     has_mpp: bool = False
     has_feedback: bool = False
-    measured_stim_ids: set[int] = field(default_factory=set)
 
     @property
     def has_measurement(self) -> bool:
         """Whether the block contains a single-qubit measurement or an MPP."""
         return self.has_single_measurement or self.has_mpp
 
-    def add(self, instruction: stim.CircuitInstruction, index: int, instruction_qubits: set[int]) -> None:
+    def add(self, instruction: stim.CircuitInstruction) -> None:
         """Append one instruction and update the block's feature flags."""
         self.circuit.append(instruction)
-        self.last_index = index
         self.has_unitary |= _is_unitary_instruction(instruction)
-        self.has_measure_reset |= instruction.name in MEASURE_RESET_AXES
         self.has_mpp |= instruction.name == "MPP"
         self.has_feedback |= _is_feedback_instruction(instruction)
         if instruction.name in DIRECT_MEASUREMENT_AXES:
             self.has_single_measurement = True
-            self.measured_stim_ids.update(instruction_qubits)
-
-
-def _last_quantum_use_indices(instructions: Sequence[stim.CircuitInstruction]) -> dict[int, int]:
-    r"""Return the last instruction index at which each Stim qubit is quantum-used.
-
-    Returns
-    -------
-    `dict`\[`int`, `int`\]
-        Last quantum-operation instruction index keyed by Stim qubit id.
-    """
-    last_quantum_use: dict[int, int] = {}
-    for index, instruction in enumerate(instructions):
-        if _is_quantum_operation(instruction):
-            for stim_id in _tracked_qubits(instruction):
-                last_quantum_use[stim_id] = index
-    return last_quantum_use
 
 
 def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, frozenset[int]]:
     instructions = list(iter_instructions(circuit))
-    last_quantum_use = _last_quantum_use_indices(instructions)
     result = stim.Circuit()
     block = _TickBlock()
     stim_ids: set[int] = set()
@@ -727,7 +693,7 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
 
     def flush_block() -> None:
         nonlocal block
-        parts = _normalize_block(block, last_quantum_use=last_quantum_use, block_number=block_number)
+        parts = _normalize_block(block, block_number=block_number)
         for part_index, part in enumerate(parts):
             if part_index:
                 result.append("TICK", [])
@@ -736,7 +702,7 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
 
     # `_split_reused_reset_wires` runs first, so every reset here is the
     # initial reset of its own wire id.
-    for index, instruction in enumerate(instructions):
+    for instruction in instructions:
         instruction_qubits = _tracked_qubits(instruction)
         stim_ids.update(instruction_qubits)
         if instruction.name == "TICK":
@@ -744,7 +710,7 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
             result.append(instruction)
             block_number += 1
         else:
-            block.add(instruction, index, instruction_qubits)
+            block.add(instruction)
 
     flush_block()
     return result, frozenset(stim_ids)
@@ -753,7 +719,6 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
 def _normalize_block(
     block: _TickBlock,
     *,
-    last_quantum_use: Mapping[int, int],
     block_number: int,
 ) -> list[stim.Circuit]:
     r"""Normalize one TICK block into unitary-only, measurement-only, and feedback-only parts.
@@ -764,13 +729,13 @@ def _normalize_block(
         Block parts to be emitted in order, separated by internal TICKs.
     """
     if not block.has_unitary and not block.has_feedback:
-        if block.has_measurement or block.has_measure_reset:
+        if block.has_measurement:
             return _split_mixed_block(block.circuit)
         return [block.circuit]
-    if not (block.has_measurement or block.has_measure_reset or block.has_feedback):
+    if not (block.has_measurement or block.has_feedback):
         return [_transpile_tick_block(block.circuit, block_number=block_number)]
-    if block.has_mpp or block.has_measure_reset or block.has_feedback:
-        # MPP, measure-reset, and record-controlled instructions cannot pass
+    if block.has_mpp or block.has_feedback:
+        # MPP and record-controlled instructions cannot pass
         # through the J/CZ optimizer, so split first and transpile only the
         # purely unitary parts.
         return [
@@ -782,31 +747,15 @@ def _normalize_block(
             else part
             for part in _split_mixed_block(block.circuit)
         ]
-    # A measurement on a qubit that is quantum-used again later must keep its
-    # post-measurement state, so its basis is never folded away.
-    preserved_qubits = {
-        stim_id for stim_id in block.measured_stim_ids if last_quantum_use.get(stim_id, -1) > block.last_index
-    }
-    optimized = _transpile_tick_block(
-        block.circuit,
-        block_number=block_number,
-        preserved_measurement_qubits=preserved_qubits,
-    )
+    # Every measured wire is terminal after lifetime splitting, so its
+    # incoming single-qubit Clifford can be folded into the readout basis.
+    optimized = _transpile_tick_block(block.circuit, block_number=block_number)
     return _split_mixed_block(optimized)
 
 
-def _transpile_tick_block(
-    block: stim.Circuit,
-    *,
-    block_number: int,
-    preserved_measurement_qubits: AbstractSet[int] = frozenset(),
-) -> stim.Circuit:
+def _transpile_tick_block(block: stim.Circuit, *, block_number: int) -> stim.Circuit:
     try:
-        return transpile(
-            block,
-            optimize=True,
-            preserved_measurement_qubits=preserved_measurement_qubits,
-        )
+        return transpile(block, optimize=True)
     except UnsupportedInstructionError as ex:
         msg = f"Stim unitary TICK block {block_number} failed to transpile: {ex}"
         raise UnsupportedInstructionError(msg) from ex
@@ -1109,7 +1058,6 @@ def _direct_measurements_from_instruction(
     measurements: list[_DirectMeasurement] = []
     seen_qubits: set[int] = set()
     axis = DIRECT_MEASUREMENT_AXES[instruction.name]
-    resets = instruction.name in MEASURE_RESET_AXES
     for target, record_index in zip(targets, analyzed.record_indices, strict=True):
         stim_id = plain_qubit_target(target, instruction.name)
         if stim_id in seen_qubits:
@@ -1117,7 +1065,7 @@ def _direct_measurements_from_instruction(
             raise ValueError(msg)
         seen_qubits.add(stim_id)
         sign = Sign.MINUS if target.is_inverted_result_target else Sign.PLUS
-        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign, resets=resets, tag=instruction.tag))
+        measurements.append(_DirectMeasurement(stim_id, record_index, axis, sign))
     return measurements
 
 
@@ -1154,7 +1102,7 @@ def _append_ideal_pauli_measurements(
         circuit.append("MPP", product_targets)
 
 
-def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
+def _fragments_from_blocks(
     blocks: Sequence[Sequence[_AnalyzedInstruction]],
     *,
     context: _ImportContext,
@@ -1164,9 +1112,8 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
     stim_to_qubit = dict(context.stim_to_qubit)
     qubit_to_stim = {qubit: stim_id for stim_id, qubit in stim_to_qubit.items()}
     live_stim_ids = set(stim_to_qubit) - context.split_wire_ids
-    future_use = _stim_ids_used_after_block(blocks)
 
-    for block_index, block in enumerate(blocks):
+    for block in blocks:
         new_wire_ids = sorted(
             {
                 stim_id
@@ -1183,12 +1130,6 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
 
         direct_items = tuple(analyzed for analyzed in block if analyzed.instruction.name in DIRECT_MEASUREMENT_AXES)
         directly_measured_stim_ids = {stim_id for analyzed in direct_items for stim_id in analyzed.qubit_ids}
-        reused_measurements = tuple(
-            measurement
-            for analyzed in direct_items
-            for measurement in _direct_measurements_from_instruction(analyzed)
-            if measurement.stim_id in future_use[block_index]
-        )
         unitary_instructions = tuple(
             analyzed.instruction for analyzed in block if _is_unitary_instruction(analyzed.instruction)
         )
@@ -1219,17 +1160,6 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                     )
                 )
                 z_base += 2
-                if reused_measurements:
-                    z_base += 1
-                    fragments.append(
-                        _reuse_fragment(
-                            reused_measurements,
-                            z=z_base,
-                            stim_to_qubit=stim_to_qubit,
-                            qubit_to_stim=qubit_to_stim,
-                            context=context,
-                        )
-                    )
             elif feedback_corrections:
                 fragments.append(
                     _feedback_fragment(
@@ -1239,7 +1169,7 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                 )
             elif directly_measured_stim_ids:
                 continuing_stim_ids = live_stim_ids - directly_measured_stim_ids
-                if continuing_stim_ids or reused_measurements:
+                if continuing_stim_ids:
                     z_base += 1
                     graph = GraphState()
                     _add_relocated_io_nodes(
@@ -1249,115 +1179,15 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
                         stim_to_qubit=stim_to_qubit,
                         context=context,
                     )
-                    fragments.append(
-                        _reuse_fragment(
-                            reused_measurements,
-                            z=z_base,
-                            graph=graph,
-                            stim_to_qubit=stim_to_qubit,
-                            qubit_to_stim=qubit_to_stim,
-                            context=context,
-                        )
-                    )
+                    fragments.append(_Fragment(graph=graph, xflow={}, record_nodes={}))
 
-        reused_stim_ids = {measurement.stim_id for measurement in reused_measurements}
-        live_stim_ids.difference_update(directly_measured_stim_ids - reused_stim_ids)
+        live_stim_ids.difference_update(directly_measured_stim_ids)
 
     return _FragmentBuildResult(
         fragments=fragments,
         stim_to_qubit=stim_to_qubit,
         qubit_to_stim=qubit_to_stim,
     )
-
-
-def _stim_ids_used_after_block(blocks: Sequence[Sequence[_AnalyzedInstruction]]) -> list[set[int]]:
-    future: list[set[int]] = []
-    seen: set[int] = set()
-    for block in reversed(blocks):
-        future.append(set(seen))
-        for analyzed in block:
-            seen.update(analyzed.qubit_ids)
-    future.reverse()
-    return future
-
-
-def _reuse_fragment(  # ruff:ignore[too-many-arguments]
-    reused_measurements: Sequence[_DirectMeasurement],
-    *,
-    z: float,
-    stim_to_qubit: dict[int, int],
-    qubit_to_stim: dict[int, int],
-    context: _ImportContext,
-    graph: GraphState | None = None,
-) -> _Fragment:
-    """Measure reused qubits in place and restart their wires on fresh qubit indices.
-
-    Each reused measurement binds an internal measured node onto the qubit's
-    current wire end and opens a continuation wire on a freshly issued qubit
-    index. The continuation node reuses the qubit's XY coordinates at z
-    and is initialized in the positive eigenstate of the measurement axis.
-    After a plain measurement the correction flows condition the continuation
-    on the outcome; after a measure-reset gate the re-prepared eigenstate is
-    outcome-independent, so no flow entry is added.
-
-    Returns
-    -------
-    `_Fragment`
-        Fragment holding the measured nodes, continuation wires, and flows.
-
-    Raises
-    ------
-    ValueError
-        If a reused plain measurement has an inverted target. (An inverted
-        measure-reset target is fine: the reset discards the outcome.)
-    """
-    if graph is None:
-        graph = GraphState()
-    xflow: dict[int, set[int]] = {}
-    zflow: dict[int, set[int]] = {}
-    record_nodes: dict[int, int] = {}
-
-    for measurement in reused_measurements:
-        if measurement.sign is Sign.MINUS and not measurement.resets:
-            msg = (
-                f"Stim qubit {measurement.stim_id} is reused after an inverted single-qubit measurement; "
-                "inverted measurement targets are only supported when they end the qubit's lifetime."
-            )
-            raise ValueError(msg)
-        old_qubit = stim_to_qubit[measurement.stim_id]
-        new_qubit = len(qubit_to_stim)
-        measured_node = graph.add_node()
-        graph.register_input(measured_node, old_qubit)
-        graph.assign_meas_basis(measured_node, AxisMeasBasis(measurement.axis, measurement.sign))
-        coord = context.coordinate_by_stim_id.get(measurement.stim_id)
-        continuation_node = graph.add_node(coordinate=_coordinate_at_z(coord, z) if coord is not None else None)
-        # Only a measure-reset's re-preparation exists as a reset in the
-        # original circuit; a plain measurement's continuation is synthesized,
-        # so its measurement tag is not an initialization tag.
-        graph.register_input(
-            continuation_node,
-            new_qubit,
-            init=Initialization(axis=measurement.axis, tag=measurement.tag if measurement.resets else ""),
-        )
-        graph.register_output(continuation_node, new_qubit)
-        if measurement.resets:
-            # A measure-reset gate re-prepares the positive eigenstate no
-            # matter the outcome, so the continuation needs no correction.
-            pass
-        elif measurement.axis == Axis.Z:
-            # The conditional X re-preparing |m> acts before later entangling
-            # CZs, so it needs the derived odd-neighbor Z propagation that a
-            # regular xflow entry receives.
-            xflow[measured_node] = {continuation_node}
-        else:
-            # X and Y eigenstates are re-prepared by a conditional Z, which
-            # commutes with later CZs and stays a bare zflow entry.
-            zflow[measured_node] = {continuation_node}
-        record_nodes[measurement.record_index] = measured_node
-        stim_to_qubit[measurement.stim_id] = new_qubit
-        qubit_to_stim[new_qubit] = measurement.stim_id
-
-    return _Fragment(graph=graph, xflow=xflow, record_nodes=record_nodes, zflow=zflow)
 
 
 def _feedback_fragment(
@@ -1715,7 +1545,6 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
     first = fragments[0]
     graph = first.graph
     xflow = {node: set(targets) for node, targets in first.xflow.items()}
-    zflow = {node: set(targets) for node, targets in first.zflow.items()}
     record_nodes = dict(first.record_nodes)
     feedback_targets = list(first.feedback_targets)
     mpp_extractions = list(first.mpp_extractions)
@@ -1723,7 +1552,6 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
     for fragment in fragments[1:]:
         node_map2 = compose_into(graph, fragment.graph)
         _merge_flow_into(xflow, _remap_flow(fragment.xflow, node_map2))
-        _merge_flow_into(zflow, _remap_flow(fragment.zflow, node_map2))
         record_nodes.update(_remap_record_nodes(fragment.record_nodes, node_map2))
         feedback_targets.extend(_capture_feedback_targets(fragment.feedback_targets, node_map2, graph))
         mpp_extractions.extend(fragment.mpp_extractions)
@@ -1734,7 +1562,6 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
         record_nodes=record_nodes,
         feedback_targets=tuple(feedback_targets),
         mpp_extractions=tuple(mpp_extractions),
-        zflow=zflow,
     )
 
 
@@ -1759,9 +1586,6 @@ def _apply_single_measurements(
     record_nodes = dict(fragment.record_nodes)
 
     for measurement in direct_measurements:
-        if measurement.record_index in record_nodes:
-            # Reused measurements were bound to internal nodes during fragment construction.
-            continue
         node = output_node_by_qubit[final_stim_to_qubit[measurement.stim_id]]
         fragment.graph.assign_meas_basis(node, AxisMeasBasis(measurement.axis, measurement.sign))
         record_nodes[measurement.record_index] = node
@@ -1772,7 +1596,6 @@ def _apply_single_measurements(
         record_nodes=record_nodes,
         feedback_targets=fragment.feedback_targets,
         mpp_extractions=fragment.mpp_extractions,
-        zflow=fragment.zflow,
     )
 
 
@@ -1783,9 +1606,6 @@ def _flows_with_feedback(
 ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
     xflow = {node: set(targets) for node, targets in fragment.xflow.items()}
     zflow = {node: odd_neighbors(targets, fragment.graph) for node, targets in fragment.xflow.items()}
-    for node, targets in fragment.zflow.items():
-        # Explicit entries carry the post-measurement continuation corrections.
-        zflow.setdefault(node, set()).symmetric_difference_update(targets)
 
     for feedback in fragment.feedback_targets:
         source_nodes = _record_indices_to_nodes(
