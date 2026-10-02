@@ -10,7 +10,9 @@ Install the optional Stim integration before importing this module:
 The rewriter exposes the Pauli products measured by Clifford syndrome
 extraction. ``result.circuit`` preserves the complete measurement and quantum
 channel; ``result.foliation_circuit`` preserves the measurement-record
-distribution and omits the final pending Clifford for import into MBQC.
+distribution up to the explicit ``foliation_record_to_source`` permutation,
+contracts structurally recognized disposable check gadgets, and omits the final pending
+Clifford for import into MBQC. Detector and observable meanings are preserved.
 For a Clifford body ``U`` and Pauli measurement ``P``, it uses the exact
 instrument identity
 
@@ -52,12 +54,54 @@ qubits are unmeasured, or the circuit contains no measurements: quantum outputs
 are outside the foliation result's contract. Use ``result.circuit`` when those
 outputs are needed.
 
-Reset and feedback boundaries inside the circuit still materialize the pending
-frame unless the existing measure-reset contraction succeeds. A reset discards
+In the exact quantum-channel result, reset and feedback boundaries still
+materialize the pending frame unless measure-reset contraction succeeds. A reset discards
 only its target subsystem. It does not erase a preceding Clifford's action on
 other qubits: ``X 0; CX 0 1; R 0; M 1`` still measures ``1`` on qubit 1.
 Resetting every qubit on which the pending body acts would allow that body to
 be omitted without a flow check, but this optimization is not applied here.
+
+Disposable check gadgets for circuit foliation
+----------------------------------------------
+
+The foliation path also recognizes a plain syndrome measurement followed by a
+separate reset, or by no further quantum use of that source ancilla. This
+additional pass uses a constructive controlled-Pauli rule, with no
+``flow_generators`` or ``has_flow`` calls. It recognizes X-prepared,
+X-measured controls of CX/CZ gates, with no independent data Clifford.
+
+To group the controlled factors in measurement order, exchanging two
+anticommuting factors with distinct controls introduces CZ between the controls.
+The pass tracks these phase terms modulo two and requires them to cancel.
+Factors sharing a control and a data qubit must have the same axis, so each
+grouped body is a Hermitian controlled Pauli. For each resulting product P,
+the readout Kraus operator is exactly
+
+.. math::
+
+   \langle m_X|C(P)|+\rangle = (I + (-1)^m P)/2.
+
+Thus the grouped bodies implement the emitted sequential Pauli measurements
+for arbitrary data inputs, including inputs entangled with other systems.
+This is a sufficient structural rule, not a general equivalence decision
+procedure. Other shapes retain their original body. Feedback and intervening
+uses of a measured ancilla prevent contraction. The exact ``result.circuit``
+is unchanged by this pass.
+
+This avoids importing both the original syndrome-extraction circuit and its
+replacement MPP gadget. For surface-code extraction this duplication could
+produce resource-state vertices with degree greater than four.
+
+When one direct-measurement instruction interleaves syndrome ancillas and data
+readouts, recognized syndrome MPPs are emitted first, followed by a ``TICK`` and
+the data readouts. The original measurements on distinct source qubits commute;
+their record order changes, so all detector, observable, and feedback references
+are remapped. ``result.foliation_record_to_source[j]`` gives the original record
+index of foliation record ``j`` (including padding records).
+``result.foliation_checks`` describes the products in this new order, while
+``result.checks`` still describes the exact result in original source order.
+Callers comparing raw sample columns must apply this permutation. Callers
+using detector or observable annotations need no additional remapping.
 
 Reset stabilizer substitution
 -----------------------------
@@ -126,16 +170,33 @@ qubit ids can therefore increase cost. ``REPEAT`` is flattened, so each round
 is processed separately. The final idle-qubit removal is a circuit scan and
 does not call ``flow_generators()`` again.
 
+The new disposable-gadget prepass adds no stabilizer-flow verification. Let N
+be the flattened instruction/target count (including record references), G the
+number of controlled factors, A the number of emitted check products, Q the
+largest qubit id plus one, and D the largest number of distinct candidate
+controls touching a data qubit in one buffered body. Its scans and phase
+updates cost O(N + G D), apart from sorting/serialization. Dense Stim Pauli
+products add O(A Q) bits of initialization/scanning (packed internally), so
+this implementation is not strictly linear in N when width grows. For bounded
+surface-code incidence D is constant; arbitrary dense incidence can make the
+phase bookkeeping quadratic. The record permutation and flattened source
+require O(N) storage. The public API also builds the exact result, and, when
+contraction succeeds, performs a second exact rewrite of the contracted source;
+that transformation cost is additional, not correctness verification.
+The older measure-reset flow certificates described above remain separate
+and were not introduced by the disposable-gadget fix.
+
 Barriers and annotations
 ------------------------
 
 ``MR``, ``MRX``, and ``MRY`` are split only when needed: the pulled
 measurement is emitted, an exactly contractible source-ancilla extraction body
 is discarded (otherwise it follows unchanged), and then the reset is applied.
-Classical record feedback is copied verbatim after materializing the frame.
+In the exact result, classical record feedback is copied after materializing the frame.
 Sweep-bit controls, circuit-level noise, and noisy measurement
 arguments are rejected. ``DETECTOR``, ``OBSERVABLE_INCLUDE``, tags, and qubit
-coordinates are copied while retaining their measurement-record indices.
+coordinates are retained. The foliation path remaps record references when
+structural mixed-readout contraction permutes measurements.
 ``REPEAT`` blocks are flattened first.
 
 Commuting pulled products emitted inside one source ``TICK`` interval are
