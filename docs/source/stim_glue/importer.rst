@@ -73,33 +73,46 @@ live wire is a purification of Stim's trace-out reset, so a caller that reads
 every pattern output must trace out the outputs that are not named by
 ``stim_to_final_qubit``.
 
-Internally each reset lifetime also receives its own Stim qubit id, and the
+Internally each preparation lifetime, including implicit re-preparation after
+a direct measurement, receives its own Stim qubit id, and the
 ``StimMppExtraction`` metadata of an MPP block (``supports``,
 ``stim_to_column``, and ``column_to_stim``) reports the lifetime that each
 product measured. A qubit measured before and after a reset therefore occupies
 a different column in each block, and the same physical qubit may carry
 different ids across blocks. ``StimImportResult.wire_to_stim`` maps every such
-id back to the original circuit id; it is the identity for qubits that are
-never reset mid-circuit.
+id back to the original circuit id; it is the identity for qubits with only one lifetime.
 
-Within one optimization block, single-qubit Cliffords preceding a terminal
-measurement are absorbed into its signed Pauli basis when its post-state is
-not reused. For example, ``H 0; M 0`` becomes ``MX 0``, and
-``S 0; MX 0`` becomes ``MY !0``. These readouts need no extra gate node.
-``TICK`` barriers and measurements whose qubits are reused limit this folding;
-the latter must preserve the post-measurement state.
+Destructive single-qubit measurements
+-------------------------------------
 
-Single-qubit measurements assign an ``AxisMeasBasis`` directly to the measured
-data-lane endpoint without replacing that node or its coordinate. They do not
-create an ``MPP`` extraction or an ancillary parity measurement node. Inverted
-single-qubit measurement targets select the minus sign of that node's basis. A
-direct single-qubit measurement ends that wire: a later quantum operation on
-the same qubit continues on a fresh internal qubit index initialized in the
-positive eigenstate of the measurement axis and conditioned on the outcome
-through the correction flows. Reuse after an inverted plain target (``M !q``)
-is rejected because negative-eigenstate initialization cannot be represented,
-while an inverted measure-reset target may be reused because the reset
-discards the outcome.
+``M/MX/MY`` and ``MR/MRX/MRY`` all consume their current wire. If that Stim
+qubit is used again, the next lifetime starts in the positive eigenstate of
+the measured axis, independently of the measurement result. A following
+explicit ``R/RX/RY`` provides its own initialization axis. With no further
+quantum use, the readout ends the wire and no continuation is prepared.
+Coordinates, ``TICK``, and classical record references do not restart a wire.
+An inverted target changes only the reported bit, not the re-prepared state.
+Repeated targets are processed sequentially, including within one instruction.
+
+This is intentionally different from Stim's nondestructive plain measurement
+semantics. For example, ``X 0; M 0 0`` records ``1, 0`` under this importer,
+whereas direct Stim execution records ``1, 1``. There is no compatibility
+mode for outcome-conditioned reconstruction of a measured wire. Explicit
+record-controlled feedback still acts at its stated circuit position.
+
+Lifetime splitting precedes gate optimization. A continuation remains a new
+prepared wire even if all its gates cancel. Single-qubit Cliffords before a
+readout can fold into its signed basis within the source ``TICK`` block:
+``H 0; M 0`` becomes ``MX 0`` and ``S 0; MX 0`` becomes ``MY !0``. The
+continuation's preparation axis is determined before this basis folding.
+
+Each direct measurement assigns an ``AxisMeasBasis`` to the consumed lane
+endpoint. It creates no parity-extraction ancilla. Measured endpoints may
+remain in the output registry as classical readouts, but are absent from
+``unmeasured_output_nodes`` and from the simulated quantum output state.
+Fresh wire IDs, coordinates, and source mappings use the same lifetime
+machinery as explicit resets. ``MPP``, ``MXX``, ``MYY``, and ``MZZ`` retain
+their parity-measurement semantics and do not consume their data wires.
 
 The first two components of ``QUBIT_COORDS`` are used as the fixed spatial
 ``(x, y)`` position of each data lane. The importer supplies the temporal ``z``

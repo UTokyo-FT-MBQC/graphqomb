@@ -1,4 +1,4 @@
-"""Tests for the exact pending-Clifford MPP rewriter."""
+"""Record-channel and local-extraction tests for photonic MPP rewriting."""
 
 from __future__ import annotations
 
@@ -9,613 +9,279 @@ import pytest
 import stim
 
 from graphqomb.stim_glue.mpp_rewriter import UnsupportedSyndromeCircuitError, rewrite_to_mpp
+from tests.stim_reference import assert_record_channel
 
 
-def _assert_exact_channel(source: stim.Circuit, rewritten: stim.Circuit) -> None:
-    """Require the canonical signed stabilizer-flow bases to match exactly."""
-    assert rewritten.num_measurements == source.num_measurements
-    assert rewritten.flow_generators() == source.flow_generators()
-
-
-def _assert_same_reference_signs(left: stim.Circuit, right: stim.Circuit) -> None:
-    left_detectors, left_observables = left.reference_detector_and_observable_signs()
-    right_detectors, right_observables = right.reference_detector_and_observable_signs()
-    assert np.array_equal(left_detectors, right_detectors)
-    assert np.array_equal(left_observables, right_observables)
-
-
-def test_x_check_exposes_data_mpp_and_moves_body_behind_it() -> None:
-    source = stim.Circuit(
-        """
-        R 4
-        H 4
-        CX 4 0 4 1 4 2 4 3
-        H 4
-        M 4
-        """
-    )
-
+def _check_channel(text: str | stim.Circuit) -> None:
+    source = stim.Circuit(text) if isinstance(text, str) else text
     result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit(
-        """
-        R 4
-        MPP X0*X1*X2*X3
-        H 4
-        CX 4 0 4 1 4 2 4 3
-        H 4
-        """
-    )
-    assert result.checks[0].product == stim.PauliString("+XXXX_")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_z_check_exposes_data_mpp_and_moves_body_behind_it() -> None:
-    source = stim.Circuit("R 4\nCX 0 4 1 4\nM 4")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 4\nMPP Z0*Z1\nCX 0 4 1 4")
-    _assert_exact_channel(source, result.circuit)
+    assert result.circuit is result.foliation_circuit
+    assert result.checks is result.foliation_checks
+    assert_record_channel(source, result.circuit, result.foliation_record_to_source)
 
 
 @pytest.mark.parametrize(
-    ("source_text", "expected"),
+    ("text", "product"),
     [
-        ("H 0\nM 0", "MPP X0"),
-        ("S 0\nMX 0", "MPP !Y0"),
-        ("H 0\nCX 0 1\nM 0 1", "MPP X0 X0*Z1"),
-        ("H 0\nM 0\nS 0\nM 0", "MPP X0\nTICK\nMPP X0"),
-        ("H 0\nCX 0 1", ""),
+        ("RX 4\nCX 4 0 4 1\nMX 4", "+XX___"),
+        ("RX 4\nCZ 4 0 4 1\nMX !4", "-ZZ___"),
+        ("R 4\nCX 0 4 1 4\nM 4", "+ZZ___"),
     ],
 )
-def test_foliation_omits_final_clifford_and_preserves_measurement_channel(source_text: str, expected: str) -> None:
-    source = stim.Circuit(source_text)
+def test_extraction_replaces_body_and_its_preparation(text: str, product: str) -> None:
+    result = rewrite_to_mpp(text)
+    assert len(result.circuit) == 1
+    assert result.circuit[0].name == "MPP"
+    assert result.checks[0].product == stim.PauliString(product)
+    assert result.checks[0].source_qubit == 4
+    assert result.eliminated_qubits == (4,)
+    _check_channel(text)
 
+
+def test_data_preparations_are_not_removed() -> None:
+    source = "R 0 1 2 4\nCX 0 4 1 4\nM 4"
     result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == stim.Circuit(expected)
-    _assert_exact_channel(source, result.circuit)
-    # Discard quantum outputs on both sides. Canonical flows then compare the
-    # complete measurement instrument with only its classical outputs retained,
-    # including random-record correlations and signs for arbitrary input states.
-    discarded_source = source.copy()
-    discarded_foliation = result.foliation_circuit.copy()
-    discarded_source.append("R", range(source.num_qubits))
-    discarded_foliation.append("R", range(source.num_qubits))
-    _assert_exact_channel(discarded_source, discarded_foliation)
-
-
-def test_foliation_final_frame_removal_preserves_readout_annotations() -> None:
-    source = stim.Circuit("""
-        QUBIT_COORDS(0, 0) 0
-        QUBIT_COORDS(1, 0) 1
-        H 0
-        CX 0 1
-        M[readout] !0 1
-        DETECTOR[parity] rec[-1] rec[-2]
-        OBSERVABLE_INCLUDE(0) rec[-1] rec[-2]
-        TICK
-        H 1
-    """)
-
-    result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == stim.Circuit("""
-        QUBIT_COORDS(0, 0) 0
-        QUBIT_COORDS(1, 0) 1
-        MPP[readout] !X0 X0*Z1
-        DETECTOR[parity] rec[-1] rec[-2]
-        OBSERVABLE_INCLUDE(0) rec[-1] rec[-2]
-        TICK
-    """)
-    _assert_same_reference_signs(source, result.foliation_circuit)
-    assert result.foliation_circuit.detector_error_model().num_errors == 0
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_foliation_preserves_frame_before_partial_reset() -> None:
-    # Resetting the control cannot undo the X already copied to the target.
-    source = stim.Circuit("X 0\nCX 0 1\nR 0\nM 1")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == source
-    np.testing.assert_array_equal(result.foliation_circuit.reference_sample(), [True])
-    _assert_exact_channel(source, result.foliation_circuit)
+    assert result.circuit == stim.Circuit("R 0 1 2\nMPP Z0*Z1")
+    _check_channel(source)
 
 
 @pytest.mark.parametrize(
-    ("source_text", "product"),
+    "text",
     [
-        pytest.param("RX 4\nCZ 4 0 4 1\nMX 4", "+ZZ___", id="x-reset"),
-        pytest.param("RY 4\nCX 4 0\nMY 4", "+X____", id="y-reset"),
-        pytest.param("R 4\nH 4\nCX 4 0 4 1\nH 4\nM !4", "-XX___", id="inverted"),
+        "RX 2\nCZ 0 2\nS 2\nMX 2",  # Non-projector action on surviving data.
+        "RX 2\nCZ 2 0\nH 1\nMX 2\nM 1",  # Independent data Clifford.
+        "R 2\nH 2\nCX 2 0\nH 2\nM 2",  # Unrecognized local basis wrapper.
+        "RY 2\nCX 2 0\nMY 2",  # No special Y-gadget requirement.
+        "X 0\nCX 0 1\nR 0\nM 1",  # Reset does not erase a partner's state.
+        "H 0\nCX 0 1",  # No demand to remove an unmeasured output circuit.
+        "H 0\nMPP X0*X1\nS 0\nM 0",
+        "SPP X0*Z1\nM 0 1",
     ],
 )
-def test_matching_source_reset_factor_is_removed(source_text: str, product: str) -> None:
-    source = stim.Circuit(source_text)
-
-    result = rewrite_to_mpp(source)
-
-    assert str(result.checks[0].product) == product
-    assert 4 not in result.checks[0].product.pauli_indices()
-    _assert_exact_channel(source, result.circuit)
+def test_unrecognized_intervals_keep_gates_without_duplicating_measurements(text: str) -> None:
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit(text)
+    _check_channel(text)
 
 
-def test_data_reset_factors_are_not_removed() -> None:
-    source = stim.Circuit("R 0 1 2 4\nCX 0 4 1 4\nM 4")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.checks[0].product == stim.PauliString("+ZZ___")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_mismatched_reset_factor_keeps_full_product_and_body() -> None:
-    # This is the minimal counterexample to dropping a restricted residual
-    # frame. Keeping the exact body behind the MPP preserves the record-
-    # dependent Clifford action on data qubit 0.
-    source = stim.Circuit("RX 2\nCZ 0 2\nS 2\nMX 2")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("RX 2\nMPP !Z0*Y2\nCZ 0 2\nS 2")
-    assert result.checks[0].product == stim.PauliString("-Z_Y")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_measure_reset_contracts_replaced_ancilla_body() -> None:
-    source = stim.Circuit(
-        """
-        R 4
-        CX 0 4 1 4
-        MR 4
-        CX 0 4 1 4
-        MR 4
-        DETECTOR rec[-1] rec[-2]
-        """
-    )
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit(
-        """
-        R 4
-        MPP Z0*Z1
-        R 4
-        MPP Z0*Z1
-        R 4
-        DETECTOR rec[-1] rec[-2]
-        """
-    )
-    assert result.foliation_circuit == stim.Circuit(
-        """
-        MPP Z0*Z1
-        TICK
-        MPP Z0*Z1
-        DETECTOR rec[-1] rec[-2]
-        """
-    )
-    assert result.eliminated_qubits == (4,)
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_retained_reset_target_does_not_hide_contracted_round_boundary() -> None:
-    source = stim.Circuit(
-        """
-        R 4
-        CX 0 4 1 4
-        MR 4
-        R 5
-        CX 0 4 1 4
-        MR 4
-        """
-    )
-
-    result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == stim.Circuit(
-        """
-        MPP Z0*Z1
-        R 5
-        TICK
-        MPP Z0*Z1
-        """
-    )
-    assert result.eliminated_qubits == (4,)
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_source_tick_supplies_contracted_round_boundary() -> None:
-    source = stim.Circuit(
-        """
-        R 4
-        CX 0 4 1 4
-        MR 4
-        TICK
-        CX 0 4 1 4
-        MR 4
-        """
-    )
-
-    result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == stim.Circuit(
-        """
-        MPP Z0*Z1
-        TICK
-        MPP Z0*Z1
-        """
-    )
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_duplicate_mpp_support_starts_a_new_internal_layer() -> None:
-    source = stim.Circuit("MPP Z0*Z1 X2*X3 !Z1*Z0 X3*X2")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == source
-    assert result.foliation_circuit == stim.Circuit(
-        """
-        MPP Z0*Z1 X2*X3
-        TICK
-        MPP !Z1*Z0 X3*X2
-        """
-    )
-
-
-def test_anticommuting_mpp_products_start_a_new_internal_layer() -> None:
-    source = stim.Circuit("H 0\nM 0\nSQRT_X 0\nM 0")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == stim.Circuit(
-        """
-        MPP X0
-        TICK
-        MPP !Y0
-        """
-    )
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_commuting_overlapping_mpp_products_share_a_layer() -> None:
-    source = stim.Circuit("MPP Z0*Z1 Z1*Z2 X0*X1*X2*X3")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.foliation_circuit == source
-
-
-@pytest.mark.parametrize("basis", ["X", "Y", "Z"])
-def test_pair_measurements_split_repeated_supports_and_preserve_signs(basis: str) -> None:
-    source = stim.Circuit(f"M{basis}{basis}[pair] !0 1 1 !0\nDETECTOR rec[-1] rec[-2]")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == source
-    assert result.foliation_circuit == stim.Circuit(
-        f"MPP[pair] !{basis}0*{basis}1\nTICK\nMPP[pair] {basis}1*!{basis}0\nDETECTOR rec[-1] rec[-2]"
-    )
-    _assert_exact_channel(source, result.foliation_circuit)
+@pytest.mark.parametrize("readout", ["M", "MX", "MY", "MR", "MRX", "MRY"])
+def test_terminal_readout_does_not_prepare_an_output(readout: str) -> None:
+    text = f"H 0\n{readout}[readout] !0"
+    result = rewrite_to_mpp(text)
+    assert result.circuit.num_measurements == 1
+    assert result.circuit[-1].name in {"M", "MX", "MY"}
+    assert result.circuit[-1].tag == "readout"
+    assert not any(i.name in {"R", "RX", "RY"} for i in result.circuit)
+    _check_channel(text)
 
 
 @pytest.mark.parametrize(
-    ("source_text", "expected"),
+    ("readout", "reset", "measurement"),
     [
+        ("M", "R", "M"),
+        ("MX", "RX", "MX"),
+        ("MY", "RY", "MY"),
+        ("MR", "R", "M"),
+        ("MRX", "RX", "MX"),
+        ("MRY", "RY", "MY"),
+    ],
+)
+def test_repeated_targets_measure_independent_positive_state(readout: str, reset: str, measurement: str) -> None:
+    text = f"{readout} !0 0"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit(f"{measurement} !0\n{reset} 0\n{measurement} 0")
+    assert not result.circuit.compile_sampler(seed=0).sample(16)[:, 1].any()
+    _check_channel(text)
+
+
+def test_plain_measurement_reuse_is_not_nondestructive_stim() -> None:
+    result = rewrite_to_mpp("X 0\nM 0 0")
+    np.testing.assert_array_equal(result.circuit.compile_sampler(seed=0).sample(1), [[True, False]])
+    _check_channel("X 0\nM 0 0")
+
+
+def test_explicit_reset_overrides_measurement_axis() -> None:
+    text = "MY 0\nR[next] 0\nM 0"
+    assert rewrite_to_mpp(text).circuit == stim.Circuit(text)
+    _check_channel(text)
+
+
+@pytest.mark.parametrize("reset", ["R", "RX", "RY"])
+def test_contraction_removes_overwritten_preparations_across_unrelated_gates(reset: str) -> None:
+    text = f"{reset} 2 3\nH 3\nRX 2\nCZ 2 0\nMX 2"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit(f"{reset} 3\nH 3\nMPP Z0")
+    assert result.eliminated_qubits == (2,)
+    _check_channel(text)
+
+
+def test_contraction_keeps_preparation_used_before_reset() -> None:
+    text = "R 2 3\nCX 2 3\nRX 2\nCZ 2 0\nMX 2\nM 3"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit("R 2 3\nCX 2 3\nMPP Z0\nM 3")
+    assert result.eliminated_qubits == ()
+    _check_channel(text)
+
+
+def test_only_replaced_lifetime_loses_its_preparation() -> None:
+    text = "RX 2\nCZ 2 0\nMX 2\nRY[later] 2\nH 2\nMY 2"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit("MPP Z0\nRY[later] 2\nH 2\nMY 2")
+    assert result.eliminated_qubits == ()
+    _check_channel(text)
+
+
+def test_later_reset_only_output_is_retained() -> None:
+    text = "R 2\nCX 0 2\nM 2\nRX[output] 2"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit("MPP Z0\nRX[output] 2")
+    assert not result.eliminated_qubits
+    _check_channel(text)
+
+
+def test_earlier_noncontracted_lifetime_is_retained() -> None:
+    text = "RY 2\nH 2\nMY 2\nRX 2\nCZ 2 0\nMX 2"
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit("RY 2\nH 2\nMY 2\nTICK\nMPP Z0")
+    assert not result.eliminated_qubits
+    _check_channel(text)
+
+
+def test_measure_reset_tag_follows_actual_continuation_only() -> None:
+    result = rewrite_to_mpp("MR[round] 0\nH 0")
+    assert result.circuit == stim.Circuit("M[round] 0\nR[round] 0\nH 0")
+
+
+def test_reset_and_measurement_tags_survive_extraction() -> None:
+    result = rewrite_to_mpp("RX[prep] 2\nCZ 2 0\nMX[syndrome] 2\nR[next] 2\nM[end] 2")
+    assert result.circuit == stim.Circuit("MPP[syndrome] Z0\nR[next] 2\nM[end] 2")
+
+
+def test_readout_permutation_remaps_records_signs_padding_and_feedback() -> None:
+    text = """
+        MPAD 1 0
+        RX 0 1 2 3
+        RX 4 5
+        CX 4 0 4 1 4 2 4 3
+        CZ 5 0 5 1 5 2 5 3
+        MX[readout] !0 1 2 3 4 !5
+        DETECTOR[check] rec[-6] rec[-1]
+        CX rec[-6] 6
+        M 6
+        OBSERVABLE_INCLUDE(0) rec[-1] rec[-7]
+    """
+    result = rewrite_to_mpp(text)
+    assert result.foliation_record_to_source == (0, 1, 6, 7, 2, 3, 4, 5, 8)
+    assert [c.source_qubit for c in result.checks] == [4, 5, 0, 1, 2, 3, 6]
+    assert [c.measurement_index for c in result.checks] == list(range(2, 9))
+    assert [i.tag for i in result.circuit if i.name == "DETECTOR"] == ["check"]
+    _check_channel(text)
+
+
+def test_interleaved_anticommuting_factors_keep_their_phase() -> None:
+    source = stim.Circuit("RX 2 3\nCX 2 0\nCZ 3 0 3 1\nCX 2 1\nMX 2 3")
+    result = rewrite_to_mpp(source)
+    assert result.circuit == source
+    assert not result.eliminated_qubits
+    _check_channel(source)
+    rng = random.Random(29)  # ruff:ignore[suspicious-non-cryptographic-random-usage]
+    contracted = 0
+    for _ in range(40):
+        gates = [("CX", [2, 0]), ("CX", [2, 1]), ("CZ", [3, 0]), ("CZ", [3, 1])]
+        rng.shuffle(gates)
+        source = stim.Circuit("RX 2 3")
+        for name, targets in gates:
+            source.append(name, targets)
+        source.append("MX", rng.sample([2, 3], 2))
+        contracted += bool(rewrite_to_mpp(source).eliminated_qubits)
+        _check_channel(source)
+    assert 0 < contracted < 40
+
+
+@pytest.mark.parametrize("text", ["R 4\nM 4", "R 4\nM !4"])
+def test_known_result_remains_a_physical_readout(text: str) -> None:
+    result = rewrite_to_mpp(text)
+    assert result.circuit == stim.Circuit(text)
+    assert "MPAD" not in str(result.circuit)
+    _check_channel(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("MPP Z0*Z1 X2*X3 !Z1*Z0", "MPP Z0*Z1 X2*X3\nTICK\nMPP !Z1*Z0"),
         ("MXX 0 1\nMZZ 1 2", "MPP X0*X1\nTICK\nMPP Z1*Z2"),
-        ("MPP X0*X1\nMYY 1 2", "MPP X0*X1\nTICK\nMPP Y1*Y2"),
-        ("MZZ 1 2\nMPP X0*X1", "MPP Z1*Z2\nTICK\nMPP X0*X1"),
-        ("MXX 0 1\nMPP X1*X0", "MPP X0*X1\nTICK\nMPP X1*X0"),
-        ("MXX 0 1\nMYY 0 1", "MPP X0*X1 Y0*Y1"),
+        ("MZZ 0 1\nMYY 0 1", "MPP Z0*Z1 Y0*Y1"),
+        ("MYY[pair] !0 1 1 !0", "MPP[pair] !Y0*Y1\nTICK\nMPP[pair] Y1*!Y0"),
+        ("MPP Z0*Z1 Z1*Z2 X0*X1*X2", "MPP Z0*Z1 Z1*Z2 X0*X1*X2"),
     ],
 )
-def test_pair_and_mpp_measurements_share_conflict_detection(source_text: str, expected: str) -> None:
-    source = stim.Circuit(source_text)
+def test_product_layers_preserve_order_and_commutation(text: str, expected: str) -> None:
+    assert rewrite_to_mpp(text).circuit == stim.Circuit(expected)
+    _check_channel(text)
 
-    result = rewrite_to_mpp(source)
 
-    assert result.foliation_circuit == stim.Circuit(expected)
-    _assert_exact_channel(source, result.foliation_circuit)
+def test_mpp_repeated_factors_reduce_in_mapping() -> None:
+    result = rewrite_to_mpp("MPP X0*X1*X0 X2*X2")
+    assert [str(c.product) for c in result.checks] == ["+_X_", "+___"]
+    _check_channel("MPP X0*X1*X0 X2*X2")
 
 
-def test_measure_reset_keeps_noncontractible_data_clifford() -> None:
-    source = stim.Circuit("R 2\nH 0\nMR 2")
+@pytest.mark.parametrize("text", ["MPP X0*Y0", "DEPOLARIZE1(0.01) 0", "M(0.01) 0", "M 0\nCX sweep[0] 1"])
+def test_unsupported_input_is_rejected(text: str) -> None:
+    with pytest.raises(UnsupportedSyndromeCircuitError):
+        rewrite_to_mpp(text)
 
-    result = rewrite_to_mpp(source)
 
-    assert result.circuit == stim.Circuit("R 2\nM 2\nH 0\nR 2")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_measure_reset_tag_is_copied_to_measurement_and_reset() -> None:
-    result = rewrite_to_mpp("R 2\nCX 0 2\nMR[round=1] 2")
-
-    measurement = result.circuit[1]
-    reset = result.circuit[-1]
-    assert isinstance(measurement, stim.CircuitInstruction)
-    assert isinstance(reset, stim.CircuitInstruction)
-    assert measurement.tag == "round=1"
-    assert reset.tag == "round=1"
-
-
-def test_multiple_targets_update_reset_stabilizers_in_record_order() -> None:
-    # The early Y measurement on qubit 2 anticommutes with the reset Z on
-    # qubit 3 after pull-back. The later qubit-3 measurement must therefore
-    # retain its Z3 factor instead of substituting a stabilizer that no longer
-    # exists.
-    source = stim.Circuit(
-        """
-        R 3
-        SQRT_XX 3 2
-        YCZ 1 0
-        CZ 0 1
-        MY 1 0 2 2 2 3
-        """
-    )
-
-    result = rewrite_to_mpp(source)
-
-    assert result.checks[-1].product == stim.PauliString("-__XZ")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_repeated_measure_reset_targets_measure_sequentially() -> None:
-    # Stim measures and resets each MR target in order, so the second record
-    # of a repeated qubit is its post-reset state, not a copy of the first.
-    # Stim's own flow analysis mis-models this instruction (flow_generators
-    # disagrees with has_flow), so the assertion uses reference samples.
-    source = stim.Circuit("X 1\nR 0\nCX 1 0\nMR 0 0")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("X 1\nR 0\nMPP Z1\nR 0\nMR 0")
-    _assert_same_reference_signs(result.circuit, source)
-
-
-def test_negative_identity_stays_a_real_signed_measurement() -> None:
-    source = stim.Circuit("R 4\nM !4")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 4\nM !4")
-    assert result.checks[0].product == stim.PauliString("-____Z")
-    assert "MPAD 1" not in str(result.circuit)
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_known_zero_stays_a_real_measurement() -> None:
-    source = stim.Circuit("R 4\nM 4")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 4\nM 4")
-    assert result.checks[0].product == stim.PauliString("+____Z")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_mixed_products_preserve_record_order() -> None:
-    source = stim.Circuit("R 2 3\nCX 0 2\nM 2 3")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 2 3\nMPP Z0 Z3\nCX 0 2")
-    assert [check.measurement_index for check in result.checks] == [0, 1]
-    assert [str(check.product) for check in result.checks] == ["+Z___", "+___Z"]
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_mpad_advances_check_mapping_index() -> None:
-    result = rewrite_to_mpp("MPAD 0 1\nR 4\nCX 0 4\nM 4")
-
-    assert [check.measurement_index for check in result.checks] == [2]
-    assert result.circuit.num_measurements == 3
-
-
-def test_reusing_unreset_measurement_post_state_is_exact() -> None:
-    source = stim.Circuit("R 4\nCX 0 4\nM 4\nCX 0 4\nM 4")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 4\nMPP Z0\nM 4\nCX 0 4 0 4")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_reset_after_entangling_is_a_deterministic_flush_barrier() -> None:
-    source = stim.Circuit("R 4\nCX 0 4\nR 4\nM 4")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 4\nCX 0 4\nR 4\nM 4")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_frame_flushes_before_a_reset_that_follows_measurements() -> None:
-    # The pending frame must precede the reset so the freshly prepared
-    # state survives; a frame emitted after the reset would corrupt it.
-    source = stim.Circuit("H 0\nM 1\nR 0\nH 0\nM 0")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("M 1\nH 0\nR 0\nMPP X0\nH 0")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_feedback_is_a_deterministic_flush_barrier() -> None:
-    source = stim.Circuit("R 0 1\nX 0\nM 0\nCX rec[-1] 1\nM 1")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 0 1\nMPP !Z0\nX 0\nCX rec[-1] 1\nM 1")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_sweep_control_is_rejected() -> None:
-    with pytest.raises(UnsupportedSyndromeCircuitError, match="Classical feedback"):
-        rewrite_to_mpp("R 0\nM 0\nCX sweep[0] 1\nM 1")
-
-
-@pytest.mark.parametrize("gate", ["SPP", "SPP_DAG"])
-def test_variable_length_spp_is_moved_behind_measurement(gate: str) -> None:
-    source = stim.Circuit(f"R 2\n{gate} X0*Z1\nCX 0 2\nM 2")
-
-    result = rewrite_to_mpp(source)
-
-    assert gate in str(result.circuit)
-    assert result.circuit[1].name == "MPP"
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_mpp_instruction_passes_through_verbatim() -> None:
-    source = stim.Circuit("MPP X0*X1 Z2*Z3")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == source
-    assert all(check.source_qubit is None for check in result.checks)
-
-
-def test_mpp_repeated_qubit_factors_reduce_in_mapping() -> None:
-    source = stim.Circuit("MPP X0*X1*X0 X2*X2")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == source
-    assert [str(check.product) for check in result.checks] == ["+_X_", "+___"]
-
-
-def test_mpp_high_qubit_indices_parse_exactly() -> None:
-    source = stim.Circuit("MPP Z1*Z2 X0*X3 !Z0*Z1*Z3 Y0*X1*Z2")
-
-    result = rewrite_to_mpp(source)
-
-    assert [str(check.product) for check in result.checks] == ["+_ZZ_", "+X__X", "-ZZ_Z", "+YXZ_"]
-
-
-def test_nonhermitian_repeated_mpp_product_is_rejected() -> None:
-    with pytest.raises(UnsupportedSyndromeCircuitError, match="Non-Hermitian"):
-        rewrite_to_mpp("MPP X0*Y0")
-
-
-def test_pair_measurement_is_pulled_and_body_is_retained() -> None:
-    source = stim.Circuit("R 2\nCX 0 2\nMZZ 1 2")
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit == stim.Circuit("R 2\nMPP Z0*Z1*Z2\nCX 0 2")
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_annotations_and_coordinates_are_preserved() -> None:
-    source = stim.Circuit(
-        """
-        QUBIT_COORDS(0, 0) 0
-        QUBIT_COORDS(1, 0) 1
-        R 0 1
-        CX 0 1
-        M 1
-        DETECTOR(0, 0) rec[-1]
-        OBSERVABLE_INCLUDE(0) rec[-1]
-        """
-    )
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit.get_final_qubit_coordinates() == source.get_final_qubit_coordinates()
-    assert result.circuit.num_detectors == source.num_detectors
-    assert result.circuit.num_observables == source.num_observables
-    _assert_same_reference_signs(result.circuit, source)
-    _assert_exact_channel(source, result.circuit)
-
-
-@pytest.mark.parametrize(
-    "generator",
-    ["surface_code:rotated_memory_z", "repetition_code:memory"],
-)
-def test_generated_memories_rewrite_exactly(generator: str) -> None:
-    source = stim.Circuit.generated(generator, distance=3, rounds=3).flattened()
-
-    result = rewrite_to_mpp(source)
-
-    assert result.circuit.num_detectors == source.num_detectors
-    assert result.circuit.num_observables == source.num_observables
-    _assert_exact_channel(source, result.circuit)
-
-
-def test_surface_code_checks_are_data_only() -> None:
-    source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3)
-
-    result = rewrite_to_mpp(source)
-
-    syndrome_checks = [check for check in result.checks if len(check.product.pauli_indices()) > 1]
-    assert len(syndrome_checks) == 24
-    assert {len(check.product.pauli_indices()) for check in syndrome_checks} == {2, 4}
-
-
-def test_noise_instruction_is_rejected() -> None:
-    with pytest.raises(UnsupportedSyndromeCircuitError, match="DEPOLARIZE1"):
-        rewrite_to_mpp("DEPOLARIZE1(0.01) 0")
-
-
-def test_noisy_measurement_is_rejected() -> None:
-    with pytest.raises(UnsupportedSyndromeCircuitError, match="Noisy measurement"):
-        rewrite_to_mpp("M(0.01) 0")
-
-
-def test_empty_circuit_rewrites_to_empty_circuit() -> None:
+def test_empty_circuit() -> None:
     result = rewrite_to_mpp("")
-
     assert result.circuit == stim.Circuit()
     assert result.checks == ()
+    assert result.foliation_record_to_source == result.eliminated_qubits == ()
 
 
-def test_pull_path_does_not_call_stim_flow_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Only the measure-reset contraction certificate consults Stim flow
-    # analysis; the plain pull path must stay purely constructive.
+def test_no_runtime_flow_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(*_args: object, **_kwargs: object) -> object:
-        msg = "the pull path must not consult Stim flow analysis"
+        msg = "production rewriting must not ask a flow oracle"
         raise AssertionError(msg)
 
     monkeypatch.setattr(stim.Circuit, "flow_generators", fail)
     monkeypatch.setattr(stim.Circuit, "has_flow", fail)
-
-    result = rewrite_to_mpp("R 4\nCX 0 4\nM 4")
-
-    assert result.checks[0].product == stim.PauliString("+Z____")
-    assert result.foliation_circuit == stim.Circuit("R 4\nMPP Z0")
+    for text in ["R 4\nCX 0 4\nMR 4\nCX 0 4\nM 4", "RX 2\nCZ 2 0\nS 2\nMX 2"]:
+        result = rewrite_to_mpp(text)
+        assert result.circuit.num_measurements == stim.Circuit(text).num_measurements
 
 
-def test_random_clifford_reset_measure_circuits_preserve_canonical_flows() -> None:
+@pytest.mark.parametrize("generator", ["surface_code:rotated_memory_z", "repetition_code:memory"])
+def test_generated_memories_preserve_record_channel(generator: str) -> None:
+    _check_channel(stim.Circuit.generated(generator, distance=3, rounds=3))
+
+
+def test_random_clifford_measure_reset_circuits_preserve_record_channel() -> None:
     rng = random.Random(0xC1FF0AD)  # ruff:ignore[suspicious-non-cryptographic-random-usage]
-    one_qubit_gates = ["H", "S", "SQRT_X", "SQRT_Y", "X", "Y", "Z", "H_XY", "H_YZ", "C_XYZ"]
-    two_qubit_gates = ["CX", "CY", "CZ", "XCZ", "YCZ", "SWAP", "ISWAP", "SQRT_XX", "SQRT_YY"]
-
-    for _case in range(250):
-        num_qubits = rng.randrange(1, 5)
+    for _ in range(150):
         source = stim.Circuit()
-        for _instruction in range(rng.randrange(1, 14)):
-            choice = rng.random()
-            if choice < 0.2:
-                source.append(rng.choice(["R", "RX", "RY"]), [rng.randrange(num_qubits)])
-            elif choice < 0.65:
-                if num_qubits > 1 and rng.random() < 0.6:
-                    source.append(rng.choice(two_qubit_gates), rng.sample(range(num_qubits), 2))
-                else:
-                    source.append(rng.choice(one_qubit_gates), [rng.randrange(num_qubits)])
-            elif choice < 0.88:
-                targets = rng.choices(range(num_qubits), k=rng.randrange(1, num_qubits + 1))
-                source.append(rng.choice(["M", "MX", "MY"]), targets)
-            else:
-                # Distinct targets plus a TICK against instruction fusion:
-                # Stim's flow analysis mis-models a repeated measure-reset
-                # qubit, so the flow oracle only covers distinct targets; the
-                # dedicated sequential test covers repeats.
-                targets = rng.sample(range(num_qubits), k=rng.randrange(1, num_qubits + 1))
-                source.append(rng.choice(["MR", "MRX", "MRY"]), targets)
-                source.append("TICK", [])
+        for _ in range(rng.randrange(1, 14)):
+            name = rng.choice(
+                ["R", "RX", "RY", "H", "S", "SQRT_X", "CX", "CZ", "CY", "SWAP", "M", "MX", "MY", "MR", "MRX", "MRY"]
+            )
+            targets = rng.sample(range(4), 2 if name in {"CX", "CZ", "CY", "SWAP"} else 1)
+            source.append(name, targets)
+            if source.num_measurements and rng.random() < 0.15:
+                source.append("CX", [stim.target_rec(-1), rng.randrange(4)])
+        _check_channel(source)
 
-        rewritten = rewrite_to_mpp(source).circuit
 
-        assert rewritten.flow_generators() == source.flow_generators(), f"source:\n{source}\nrewritten:\n{rewritten}"
+def test_unrecognized_interval_preserves_annotation_and_tick_positions() -> None:
+    text = "H 0\nTICK\nCX 0 1\nQUBIT_COORDS(2, 3) 1\nTICK\nM 0 1"
+    assert rewrite_to_mpp(text).circuit == stim.Circuit(text)
+    _check_channel(text)
+
+
+def test_z_extraction_reorders_mixed_data_readout() -> None:
+    source = "R 0 1\nCX 0 1\nM 0 !1"
+    result = rewrite_to_mpp(source)
+    assert result.circuit == stim.Circuit("R 0\nMPP !Z0\nTICK\nM 0")
+    assert result.foliation_record_to_source == (1, 0)
+    assert result.eliminated_qubits == (1,)
+    _check_channel(source)

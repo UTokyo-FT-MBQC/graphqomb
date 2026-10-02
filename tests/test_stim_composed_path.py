@@ -9,6 +9,7 @@ its coordinate relative to a fully coordinated source.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +17,7 @@ import pytest
 import stim
 
 from graphqomb.stim_glue import rewrite_to_mpp, stim_circuit_to_pattern, stim_compile
+from tests.stim_reference import assert_record_channel
 
 if TYPE_CHECKING:
     from graphqomb.stim_glue import StimImportResult
@@ -89,7 +91,7 @@ def test_circuit_foliation_retains_terminal_data_readout() -> None:
         DETECTOR rec[-1] rec[-2] rec[-3]
         OBSERVABLE_INCLUDE(0) rec[-1]
     """)
-    assert source.flow_generators() == rewritten.circuit.flow_generators()
+    assert_record_channel(source, rewritten.circuit, rewritten.foliation_record_to_source)
     imported = stim_circuit_to_pattern(rewritten.foliation_circuit)
     compiled = stim.Circuit(stim_compile(imported.pattern))
     _assert_same_reference_signs(source, compiled)
@@ -110,7 +112,7 @@ def test_circuit_foliation_retains_terminal_data_readout() -> None:
     )
 
 
-def test_foliation_omits_terminal_clifford_from_mbqc_graph() -> None:
+def test_foliation_alias_uses_the_same_destructive_circuit() -> None:
     source = stim.Circuit("""
         H 0
         CX 0 1
@@ -120,14 +122,12 @@ def test_foliation_omits_terminal_clifford_from_mbqc_graph() -> None:
     """)
     rewrite = rewrite_to_mpp(source)
 
-    exact = stim_circuit_to_pattern(rewrite.circuit)
     foliated = stim_circuit_to_pattern(rewrite.foliation_circuit)
     compiled = stim.Circuit(stim_compile(foliated.pattern))
 
-    assert foliated.pattern.clifford_frame.graphstate.number_of_nodes() == 8
-    assert foliated.pattern.clifford_frame.graphstate.number_of_nodes() < (
-        exact.pattern.clifford_frame.graphstate.number_of_nodes()
-    )
+    assert rewrite.circuit is rewrite.foliation_circuit
+    assert rewrite.checks is rewrite.foliation_checks
+    assert rewrite.circuit == source
     assert compiled.num_detectors == source.num_detectors == 1
     assert compiled.num_observables == source.num_observables == 1
     assert compiled.detector_error_model().num_errors == 0
@@ -183,8 +183,8 @@ def test_rewrite_output_imports_like_the_source(source: stim.Circuit) -> None:
 
 def test_feedback_barrier_on_deterministic_one_record_imports() -> None:
     # The rewritten producer of a deterministic-1 record stays a real signed
-    # measurement (never MPAD 1, which the importer rejects). The pending
-    # Clifford is flushed before the feedback instruction, so it still fires.
+    # measurement (never MPAD 1, which the importer rejects). Explicit
+    # feedback keeps its circuit position and still fires.
     source = stim.Circuit(
         """
         QUBIT_COORDS(0, 0) 0
@@ -209,7 +209,7 @@ def test_feedback_barrier_on_deterministic_one_record_imports() -> None:
     assert _uncoordinated_node_count(composed) == 0
 
 
-def test_commuting_pulled_mpps_share_one_graph_layer_before_tick() -> None:
+def test_independent_extractions_share_one_graph_layer_before_tick() -> None:
     source = stim.Circuit(
         """
         R 4 5
@@ -225,17 +225,15 @@ def test_commuting_pulled_mpps_share_one_graph_layer_before_tick() -> None:
 
     assert rewritten == stim.Circuit(
         """
-        R 4 5
         MPP[first] Z0
         MPP[second] Z1
-        CX 0 4 1 5
         """
     )
     assert len(composed.mpp_extractions) == 1
     assert composed.mpp_extractions[0].supports == (((0, "Z"),), ((1, "Z"),))
 
 
-def test_source_tick_keeps_commuting_pulled_mpps_in_separate_graph_layers() -> None:
+def test_source_tick_keeps_independent_extractions_in_separate_graph_layers() -> None:
     source = stim.Circuit(
         """
         R 4 5
@@ -252,11 +250,9 @@ def test_source_tick_keeps_commuting_pulled_mpps_in_separate_graph_layers() -> N
 
     assert rewritten == stim.Circuit(
         """
-        R 4 5
         MPP[first] Z0
         TICK
         MPP[second] Z1
-        CX 0 4 1 5
         """
     )
     assert [extraction.supports for extraction in composed.mpp_extractions] == [
@@ -265,7 +261,7 @@ def test_source_tick_keeps_commuting_pulled_mpps_in_separate_graph_layers() -> N
     ]
 
 
-def test_foliation_replaces_surface_check_ancillas_instead_of_duplicating_them() -> None:
+def test_surface_code_keeps_correct_records_without_duplicating_extraction_bodies() -> None:
     source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3).flattened()
 
     direct = stim_circuit_to_pattern(source)
@@ -273,10 +269,10 @@ def test_foliation_replaces_surface_check_ancillas_instead_of_duplicating_them()
     contracted = stim_circuit_to_pattern(rewrite.foliation_circuit)
     compiled = stim.Circuit(stim_compile(contracted.pattern))
 
-    assert direct.pattern.clifford_frame.graphstate.number_of_nodes() == 201
-    assert contracted.pattern.clifford_frame.graphstate.number_of_nodes() == 87
-    assert len(contracted.mpp_extractions) == 3
-    assert rewrite.eliminated_qubits == (2, 9, 11, 13, 14, 16, 18, 25)
+    assert contracted.pattern.clifford_frame.graphstate.number_of_nodes() <= (
+        direct.pattern.clifford_frame.graphstate.number_of_nodes()
+    )
+    assert_record_channel(source, rewrite.circuit, rewrite.foliation_record_to_source)
     assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
     _assert_same_reference_signs(compiled, source)
 
@@ -365,3 +361,21 @@ def test_externally_pre_split_circuit_imports_like_the_original() -> None:
         assert compiled.num_detectors == original.num_detectors
         assert compiled.num_observables == original.num_observables
         assert compiled.detector_error_model(decompose_errors=False).num_errors == 0
+
+
+def test_15to1_first_mixed_readout_has_degree_at_most_four() -> None:
+    source = stim.Circuit.from_file(Path(__file__).parent / "fixtures/stim/15to1_first_mixed_readout.stim")
+    rewrite = rewrite_to_mpp(source)
+    imported = stim_circuit_to_pattern(rewrite.circuit)
+    frame = imported.pattern.clifford_frame
+    graph = frame.graphstate
+    compiled = stim.Circuit(stim_compile(imported.pattern))
+
+    assert source.num_measurements == rewrite.circuit.num_measurements == 464
+    assert compiled.num_detectors == source.num_detectors == 330
+    assert sorted(rewrite.foliation_record_to_source) == list(range(464))
+    assert rewrite.foliation_record_to_source != tuple(range(464))
+    assert max(len(graph.neighbors(node)) for node in graph.nodes) <= 4
+    assert all(frame.detector_determinism())
+    assert compiled.detector_error_model().num_errors == 0
+    _assert_same_reference_signs(source, compiled)

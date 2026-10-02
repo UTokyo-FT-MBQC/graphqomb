@@ -18,13 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Exact Pending-Clifford MPP Rewrite**: `rewrite_to_mpp` now applies the instrument identity `Π(P) U = U Π(U† P U)` directly: Clifford bodies move unchanged behind their pulled Pauli measurements and materialize at resets, feedback barriers, or circuit exit. At a measure-reset, equal canonical Stim flows certify that the reduced MPP has replaced the source extraction ancilla, whose pending body is then discarded; the new `foliation_circuit` drops the reset-only source ancillas listed in `eliminated_qubits`. Source `TICK`s, repeated identical supports, and anticommuting products bound the imported MPP graph layers. The Stim extra now requires `stim>=1.16`, whose flow analysis the contraction certificate relies on.
+- **Photonic MPP Rewrite**: `rewrite_to_mpp` replaces recognized controlled-Pauli extraction intervals with MPPs and retains other intervals for ordinary MBQC lowering. Preparation removal is per lifetime; independent data Cliffords and non-cancelling exchange phases are retained. Runtime flow certificates and the pending-Clifford disposal path have been removed. `foliation_record_to_source` maps emitted records back to source records, including reordered mixed readouts and remapped detector, observable, and feedback references.
 
 ### Removed
 
-- **Legacy MPP Rewrite Compatibility API**: Removed the unused `fallback` argument from `rewrite_to_mpp`, the always-empty `MppRewriteResult.fallback_segments` field, the never-raised `MppRewriteVerificationError`, and the fallback-era `CheckMapping.segment_index`. The exact pending-Clifford rewrite is now the only public path.
+- **Legacy MPP Rewrite Compatibility API**: Removed the unused `fallback` argument from `rewrite_to_mpp`, the always-empty `MppRewriteResult.fallback_segments` field, the never-raised `MppRewriteVerificationError`, and the fallback-era `CheckMapping.segment_index`.
 
 ### Changed (Breaking)
+
+- **Destructive Stim Readouts**: The importer and `rewrite_to_mpp` now treat `M/MX/MY` like the measurement half of `MR/MRX/MRY`: the old wire ends and reuse independently prepares the positive eigenstate, unless an explicit reset supplies another axis. Inverted readouts can be reused; terminal readouts create no continuation. This replaces nondestructive Stim post-state preservation; e.g. `X 0; M 0 0` now records `1, 0`. Explicit feedback and parity measurements retain their meanings.
+- **Unified MPP Rewrite Result**: `circuit` and `foliation_circuit` now refer to the same circuit, and `checks` and `foliation_checks` share emitted record order. The record distribution is preserved under the new readout contract; terminal quantum-output equivalence is no longer promised. `eliminated_qubits` lists only source IDs with no retained lifetime.
 
 - Rename `Pattern.pauli_frame` and the `Pattern(pauli_frame=...)` constructor
   argument to `clifford_frame`, matching the `CliffordFrame` type.
