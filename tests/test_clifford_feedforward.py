@@ -288,16 +288,15 @@ def test_check_flow_detects_cflow_cycle() -> None:
         check_flow(graph, xflow={}, zflow={}, cflow={0: {1: ca.S}, 1: {0: ca.S}})
 
 
-def test_feedforward_rewrites_reject_cflow() -> None:
+def test_feedforward_rewrites_respect_cflow_boundaries() -> None:
     graph = _t_gadget_graph()
     xflow = {0: {1}, 1: {2}}
+    zflow = {0: {2}}
     cflow = {0: {1: ca.S}}
-    with pytest.raises(NotImplementedError, match="not supported yet"):
-        signal_shifting(graph, xflow, cflow=cflow)
+    assert signal_shifting(graph, xflow, zflow, cflow=cflow) == (xflow, zflow)
+    assert propagate_correction_map(0, graph, xflow, zflow, cflow=cflow) == (xflow, zflow)
     with pytest.raises(NotImplementedError, match="not supported yet"):
         pauli_simplification(graph, xflow, cflow=cflow)
-    with pytest.raises(NotImplementedError, match="not supported yet"):
-        propagate_correction_map(0, graph, xflow, cflow=cflow)
 
 
 def test_is_runnable_sees_cflow_dependencies() -> None:
