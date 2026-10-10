@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from itertools import permutations
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -10,9 +11,12 @@ import stim
 
 from graphqomb.stim_glue import rewrite_syndrome_rounds, stim_circuit_to_pattern, stim_compile
 
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
-def _embed(matrix: np.ndarray, targets: list[int], width: int) -> np.ndarray:
-    result = np.zeros((2**width, 2**width), dtype=complex)
+
+def _embed(matrix: NDArray[np.complex128], targets: list[int], width: int) -> NDArray[np.complex128]:
+    result = np.zeros((2**width, 2**width), dtype=np.complex128)
     mask = sum(1 << q for q in targets)
     for column in range(2**width):
         local_column = sum(((column >> q) & 1) << k for k, q in enumerate(targets))
@@ -26,13 +30,13 @@ def _instruments(  # ruff: ignore[complex-structure, too-many-branches, too-many
     circuit: stim.Circuit,
     width: int,
     data: list[int],
-) -> dict[tuple[int, ...], np.ndarray]:
+) -> dict[tuple[int, ...], NDArray[np.complex128]]:
     """Independent dense Kraus oracle with ancilla trace, arbitrary data input."""
-    initial = np.zeros((2**width, 2 ** len(data)), dtype=complex)
+    initial = np.zeros((2**width, 2 ** len(data)), dtype=np.complex128)
     for column in range(2 ** len(data)):
         initial[sum(((column >> k) & 1) << q for k, q in enumerate(data)), column] = 1
-    branches: dict[tuple[int, ...], list[np.ndarray]] = {(): [initial]}
-    identity = np.eye(2**width)
+    branches: dict[tuple[int, ...], list[NDArray[np.complex128]]] = {(): [initial]}
+    identity = np.eye(2**width, dtype=np.complex128)
     for inst in circuit.flattened():  # ruff: ignore[too-many-nested-blocks]
         assert isinstance(inst, stim.CircuitInstruction)
         name = inst.name
@@ -59,8 +63,8 @@ def _instruments(  # ruff: ignore[complex-structure, too-many-branches, too-many
                         p *= -1
                     observables.append(p)
             for index, p in enumerate(observables):
-                matrix = p.to_unitary_matrix(endian="little")
-                following: dict[tuple[int, ...], list[np.ndarray]] = {}
+                matrix = np.asarray(p.to_unitary_matrix(endian="little"), dtype=np.complex128)
+                following: dict[tuple[int, ...], list[NDArray[np.complex128]]] = {}
                 for record, kraus in branches.items():
                     for bit in (0, 1):
                         operation = (identity + (-1) ** bit * matrix) / 2
@@ -82,7 +86,11 @@ def _instruments(  # ruff: ignore[complex-structure, too-many-branches, too-many
                 unitary = stim.Tableau.from_named_gate(name[-1] if feedback else name).to_unitary_matrix(
                     endian="little"
                 )
-                matrix = _embed(np.asarray(unitary), [t.value for t in (group[1:] if feedback else group)], width)
+                matrix = _embed(
+                    np.asarray(unitary, dtype=np.complex128),
+                    [t.value for t in (group[1:] if feedback else group)],
+                    width,
+                )
                 branches = {
                     record: [matrix @ k if not feedback or record[group[0].value] else k for k in kraus]
                     for record, kraus in branches.items()
@@ -90,7 +98,7 @@ def _instruments(  # ruff: ignore[complex-structure, too-many-branches, too-many
     ancillas = sorted(set(range(width)) - set(data))
     result = {}
     for record, kraus in branches.items():
-        choi = np.zeros((4 ** len(data), 4 ** len(data)), dtype=complex)
+        choi = np.zeros((4 ** len(data), 4 ** len(data)), dtype=np.complex128)
         for a in range(2 ** len(ancillas)):
             rows = [
                 sum(((a >> k) & 1) << q for k, q in enumerate(ancillas))
