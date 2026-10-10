@@ -13,7 +13,7 @@ The main GraphQOMB workflow uses three explicit inputs:
 - **Labelled graph state**
   The resource graph together with measurement bases and input/output registration.
 - **Feedforward maps**
-  `xflow` and optional `zflow` record how measurement outcomes propagate as classical corrections; an optional `cflow` adds classically-controlled single-qubit Clifford corrections.
+  `xflow` and optional `zflow` record how measurement outcomes propagate as classical corrections; an optional ``cflow`` adds classically-controlled single-qubit Clifford corrections.
 - **Scheduler**
   A schedule that assigns preparation, entanglement, and measurement work to executable slices.
 
@@ -41,7 +41,7 @@ GraphQOMB assumes that feedforward dependencies are causally executable.
 
 - `xflow` is always required.
 - If `zflow` is omitted, :func:`graphqomb.qompiler.qompile` derives it from odd neighborhoods.
-- An optional `cflow` maps a measured node to conditional single-qubit Clifford corrections on its targets; at compile time each value is normalized into a Pauli part (folded into `xflow`/`zflow`) and a coset representative. Ordered correcting events then update the residual by right multiplication with the inverse gate.
+- An optional ``cflow`` maps a measured node to conditional single-qubit Clifford corrections on its targets; at compile time each value is normalized into a Pauli part (folded into `xflow`/`zflow`) and a coset representative. Ordered correcting events then update the residual by right multiplication with the inverse gate.
 - The lowering path validates the dependency structure by building a dependency DAG and rejecting cyclic feedforward.
 
 This makes the library suitable for static, branch-free MBQC patterns. Deterministic semantics still depend on the feedforward structure you provide: standard flow, gflow, or related stabilizer-derived constructions remain the usual way to guarantee deterministic execution.
