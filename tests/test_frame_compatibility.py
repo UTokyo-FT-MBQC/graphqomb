@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING
+import warnings
 
 import numpy as np
 import pytest
@@ -18,9 +18,6 @@ from graphqomb.ptn_format import dumps, loads
 from graphqomb.qompiler import qompile
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.stim_glue.compiler import stim_compile
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 @pytest.fixture
@@ -66,13 +63,37 @@ def test_legacy_attribute_preserves_clifford_corrections(graph: GraphState) -> N
     assert frame.z_pauli[2]
 
 
-@pytest.mark.parametrize("constructor", [Pattern])
-def test_pattern_requires_frame(constructor: Callable[..., Pattern]) -> None:
+@pytest.mark.parametrize("name", ["pauli_frame", "clifford_frame"])
+def test_legacy_frame_keywords_warn_at_call_site(graph: GraphState, name: str) -> None:
+    frame = PauliFrame(graph, {}, {})
+    with pytest.warns(DeprecationWarning, match=rf"Pattern\({name}=.*v0\.8\.0.*use frame=") as recorded:
+        pattern = (
+            Pattern({}, {}, (), pauli_frame=frame)
+            if name == "pauli_frame"
+            else Pattern({}, {}, (), clifford_frame=frame)
+        )
+
+    assert pattern.frame is frame
+    assert len(recorded) == 1
+    assert recorded[0].filename == __file__
+
+
+def test_canonical_frame_construction_and_replace_do_not_warn(graph: GraphState) -> None:
+    frame = PauliFrame(graph, {}, {})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        positional = Pattern({}, {}, (), frame)
+        keyword = Pattern({}, {}, (), frame=frame)
+        replaced = dataclasses.replace(keyword, commands=(TICK(),))
+
+    assert positional.frame is keyword.frame is replaced.frame is frame
+
+
+def test_pattern_requires_frame() -> None:
     with pytest.raises(TypeError, match="correction frame is required"):
-        constructor({}, {}, ())
+        Pattern({}, {}, ())
 
 
-@pytest.mark.parametrize("constructor", [Pattern])
 @pytest.mark.parametrize(
     "names",
     [
@@ -84,12 +105,18 @@ def test_pattern_requires_frame(constructor: Callable[..., Pattern]) -> None:
 )
 def test_pattern_rejects_conflicting_frame_names(
     graph: GraphState,
-    constructor: Callable[..., Pattern],
     names: tuple[str, ...],
 ) -> None:
     frame = PauliFrame(graph, {}, {})
     with pytest.raises(TypeError, match="Specify exactly one"):
-        constructor({}, {}, (), **dict.fromkeys(names, frame))
+        Pattern(
+            {},
+            {},
+            (),
+            frame=frame if "frame" in names else None,
+            pauli_frame=frame if "pauli_frame" in names else None,
+            clifford_frame=frame if "clifford_frame" in names else None,
+        )
 
 
 @pytest.mark.parametrize("attribute", ["commands", "frame", "clifford_frame", "pauli_frame"])

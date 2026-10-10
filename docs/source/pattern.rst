@@ -23,7 +23,8 @@ The stored dataclass field is ``frame``. Use
 a frozen dataclass.
 
 For compatibility, ``Pattern(..., pauli_frame=frame)`` and
-``Pattern(..., clifford_frame=frame)`` are accepted without deprecation warnings.
+``Pattern(..., clifford_frame=frame)`` are still accepted, but emit
+``DeprecationWarning`` and will be removed in v0.8.0. Migrate to ``frame=``.
 Both ``pattern.pauli_frame`` and ``pattern.clifford_frame`` are read-only
 aliases of ``pattern.frame`` and return the complete frame, including for
 Clifford patterns. These aliases are not dataclass fields; use ``frame`` for

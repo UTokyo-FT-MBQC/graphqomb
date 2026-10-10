@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import typing
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -54,43 +55,6 @@ class Pattern(Sequence[Command]):
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
 
-    @typing.overload
-    def __init__(
-        self,
-        input_node_indices: dict[int, int],
-        output_node_indices: dict[int, int],
-        commands: tuple[Command, ...],
-        frame: PauliFrame,
-        input_coordinates: dict[int, tuple[float, ...]] | None = None,
-        input_initializations: dict[int, Initialization] | None = None,
-    ) -> None: ...
-
-    @typing.overload
-    def __init__(
-        self,
-        input_node_indices: dict[int, int],
-        output_node_indices: dict[int, int],
-        commands: tuple[Command, ...],
-        frame: None = None,
-        input_coordinates: dict[int, tuple[float, ...]] | None = None,
-        input_initializations: dict[int, Initialization] | None = None,
-        *,
-        pauli_frame: PauliFrame,
-    ) -> None: ...
-
-    @typing.overload
-    def __init__(
-        self,
-        input_node_indices: dict[int, int],
-        output_node_indices: dict[int, int],
-        commands: tuple[Command, ...],
-        frame: None = None,
-        input_coordinates: dict[int, tuple[float, ...]] | None = None,
-        input_initializations: dict[int, Initialization] | None = None,
-        *,
-        clifford_frame: PauliFrame,
-    ) -> None: ...
-
     def __init__(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
         self,
         input_node_indices: dict[int, int],
@@ -110,6 +74,11 @@ class Pattern(Sequence[Command]):
         if not frames:
             msg = "A correction frame is required: specify frame, pauli_frame, or clifford_frame."
             raise TypeError(msg)
+        if pauli_frame is not None or clifford_frame is not None:
+            name = "pauli_frame" if pauli_frame is not None else "clifford_frame"
+            msg = f"Pattern({name}=...) is deprecated and will be removed in v0.8.0; use frame=... instead."
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        # Frozen dataclasses require object.__setattr__ during initialization.
         object.__setattr__(self, "input_node_indices", input_node_indices)
         object.__setattr__(self, "output_node_indices", output_node_indices)
         object.__setattr__(self, "commands", commands)
