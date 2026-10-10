@@ -37,7 +37,6 @@ from graphqomb.noise_model import (
     default_noise_placement,
     noise_op_to_stim,
 )
-from graphqomb.pauli_frame import CliffordFrame
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -332,7 +331,7 @@ def stim_compile(
     >>> #     ]
     >>> # )
     """
-    if isinstance(pattern.frame, CliffordFrame) and pattern.frame.cflow:
+    if pattern.frame.cflow:
         msg = (
             "Stim export supports Pauli-frame feedforward only: the pattern's frame carries "
             "Clifford feedforward (cflow), which stim classical feedback cannot express."

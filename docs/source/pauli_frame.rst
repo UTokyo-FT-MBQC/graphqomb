@@ -12,18 +12,22 @@ Choosing a frame
 :class:`PauliFrame` tracks X/Z bits and Pauli dependencies without allocating
 Clifford cosets or correction events. Its constructor retains the Pauli-only
 signature, including parity check groups, logical observables, and detector
-tags. To pass ``cflow=`` directly, construct :class:`CliffordFrame`, which
-inherits from :class:`PauliFrame`. An explicitly constructed Clifford frame
-retains its type even when ``cflow`` is empty.
+tags. Use :func:`make_frame` with ``cflow=`` to select the frame type, or
+construct :class:`CliffordFrame`, which inherits from :class:`PauliFrame`,
+to require a Clifford frame. An explicitly constructed Clifford frame retains
+its type even when ``cflow`` is empty.
 
-:func:`graphqomb.qompiler.qompile` and ``.ptn`` loading automatically choose a
-Pauli frame when normalization leaves no nontrivial cosets. Pauli gates in
+:func:`make_frame`, :func:`graphqomb.qompiler.qompile`, and ``.ptn`` loading
+automatically choose a Pauli frame when normalization leaves no nontrivial
+cosets. Pauli gates in
 ``cflow`` are folded into ``xflow`` and ``zflow`` using XOR, without modifying
 the caller's maps. Nontrivial cosets select a Clifford frame. The normalized
 flows determine scheduling and validation in both cases.
 
+Both frame types expose ``cflow``; for a Pauli frame it is a read-only
+property returning an empty dictionary without stored Clifford state.
 Use ``isinstance(frame, CliffordFrame)`` before accessing Clifford-only
-attributes: ``cflow``, ``inv_cflow``, ``coset``, and ``correction_events``.
+attributes: ``inv_cflow``, ``coset``, and ``correction_events``.
 ``pattern.frame`` is the primary Pattern API. Its compatibility aliases
 ``pattern.pauli_frame`` and ``pattern.clifford_frame`` always refer to the
 complete frame and never discard Clifford information.
@@ -79,16 +83,21 @@ General determinism criteria for branch-dependent measurement labels are
 future work. No Lambda-flow theorem or finder is implemented or claimed.
 Causality and the existing Pauli detector checks keep their separate meanings.
 
-Clifford Frame Class
---------------------
+Frame Factory
+-------------
 
-.. autoclass:: graphqomb.pauli_frame.CliffordFrame
-    :members:
-    :member-order: bysource
+.. autofunction:: graphqomb.pauli_frame.make_frame
 
 Pauli Frame Class
 -----------------
 
 .. autoclass:: graphqomb.pauli_frame.PauliFrame
+    :members:
+    :member-order: bysource
+
+Clifford Frame Class
+--------------------
+
+.. autoclass:: graphqomb.pauli_frame.CliffordFrame
     :members:
     :member-order: bysource

@@ -2,8 +2,9 @@
 
 This module provides:
 
-- `CliffordFrame`: A class to track the residual frame of a quantum computation.
 - `PauliFrame`: A lightweight tracker for Pauli corrections.
+- `CliffordFrame`: A class to track the residual frame of a quantum computation.
+- `make_frame`: Select a Pauli or Clifford frame for the supplied corrections.
 """
 
 from __future__ import annotations
@@ -110,7 +111,7 @@ class PauliFrame:
         self.graphstate = graphstate
         self.xflow = {node: set(targets) for node, targets in xflow.items()}
         self.zflow = {node: set(targets) for node, targets in zflow.items()}
-        check_flow(graphstate, self.xflow, self.zflow)
+        self._check_flow()
         self.x_pauli = dict.fromkeys(graphstate.nodes, False)
         self.z_pauli = dict.fromkeys(graphstate.nodes, False)
         self.parity_check_group = [set(item) for item in parity_check_group]
@@ -138,6 +139,21 @@ class PauliFrame:
         )
         # Cache for memoization of dependent chains
         self._chain_cache = {}
+
+    @property
+    def cflow(self) -> dict[int, dict[int, C1Element]]:
+        """Empty Clifford flow for Pauli-only frames.
+
+        Returns
+        -------
+        `dict`
+            An empty mapping. No Clifford state is stored on this frame.
+        """
+        return {}
+
+    def _check_flow(self) -> None:
+        """Validate the Pauli correction dependencies."""
+        check_flow(self.graphstate, self.xflow, self.zflow)
 
     def _build_inverse_flows(self) -> None:
         """Build the inverse correction flows, dropping self-corrections."""
@@ -481,8 +497,6 @@ class CliffordFrame(PauliFrame):
 
     Attributes
     ----------
-    cflow : `dict`\[`int`, `dict`\[`int`, `C1Element`\]\]
-        Clifford correction flow (normalized, nontrivial cosets only)
     correction_events : `dict`\[`int`, `tuple`\[`tuple`\[`int`, `C1Element`\], ...\]\]
         Ordered correcting gates per source, including the Pauli gates
     coset : `dict`\[`int`, `C1Element`\]
@@ -491,7 +505,7 @@ class CliffordFrame(PauliFrame):
         Inverse Clifford correction flow (target -> source -> coset)
     """
 
-    cflow: dict[int, dict[int, C1Element]]
+    _cflow: dict[int, dict[int, C1Element]]
     correction_events: dict[int, tuple[tuple[int, C1Element], ...]]
     coset: dict[int, C1Element]
     inv_cflow: dict[int, dict[int, C1Element]]
@@ -509,7 +523,7 @@ class CliffordFrame(PauliFrame):
     ) -> None:
         normalized_xflow = {node: set(targets) for node, targets in xflow.items()}
         normalized_zflow = {node: set(targets) for node, targets in zflow.items()}
-        self.cflow = _normalize_cflow(normalized_xflow, normalized_zflow, cflow)
+        self._cflow = _normalize_cflow(normalized_xflow, normalized_zflow, cflow)
         super().__init__(
             graphstate,
             normalized_xflow,
@@ -518,10 +532,26 @@ class CliffordFrame(PauliFrame):
             logical_observables,
             parity_check_tags=parity_check_tags,
         )
-        check_flow(graphstate, self.xflow, self.zflow, self.cflow)
         self.coset = dict.fromkeys(graphstate.nodes, clifford_algebra.IDENTITY)
         self._check_schedule_independence()
         self._build_correction_events()
+
+    @property
+    @typing_extensions.override
+    def cflow(self) -> dict[int, dict[int, C1Element]]:
+        """Normalized Clifford correction flow.
+
+        Returns
+        -------
+        `dict`
+            Stored nontrivial cosets for each source and target.
+        """
+        return self._cflow
+
+    @typing_extensions.override
+    def _check_flow(self) -> None:
+        """Validate the combined Pauli and Clifford correction dependencies."""
+        check_flow(self.graphstate, self.xflow, self.zflow, self.cflow)
 
     @typing_extensions.override
     def _build_inverse_flows(self) -> None:
@@ -706,7 +736,7 @@ class CliffordFrame(PauliFrame):
         return super()._collect_dependent_chain(node)
 
 
-def _make_frame(  # ruff:ignore[too-many-arguments]
+def make_frame(  # ruff:ignore[too-many-arguments]
     graphstate: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
     zflow: Mapping[int, AbstractSet[int]],
@@ -716,19 +746,42 @@ def _make_frame(  # ruff:ignore[too-many-arguments]
     parity_check_tags: Sequence[str] | None = None,
     cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
 ) -> PauliFrame:
-    """Choose the lightest frame after normalizing the correction flows.
+    r"""Construct a Pauli or Clifford frame according to the supplied corrections.
+
+    Parameters
+    ----------
+    graphstate : `BaseGraphState`
+        Resource graph whose measurement labels define the correction sources.
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        X corrections controlled by each measurement result.
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        Z corrections controlled by each measurement result.
+    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
+        Detector seed groups.
+    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
+        Observable indices and their seed nodes.
+    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
+        Stim tags aligned with the detector groups.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        Conditional correcting gates, not residual frame elements.
 
     Returns
     -------
     `PauliFrame`
-        A CliffordFrame only when nontrivial cosets remain.
+        A `CliffordFrame` if any correction has a nontrivial coset, otherwise
+        a Pauli-only `PauliFrame`.
+
+    Notes
+    -----
+    Pauli components of cflow are XORed into xflow/zflow. Input maps are not
+    modified. Both frame types validate flow causality; Clifford frames also
+    reject unordered noncommuting corrections. Construct `CliffordFrame`
+    directly to retain that type even when all corrections are Pauli-only.
     """
     if cflow:
-        normalized_xflow = {node: set(targets) for node, targets in xflow.items()}
-        normalized_zflow = {node: set(targets) for node, targets in zflow.items()}
-        normalized_cflow = _normalize_cflow(normalized_xflow, normalized_zflow, cflow)
-        xflow, zflow = normalized_xflow, normalized_zflow
-        if normalized_cflow:
+        paulis = {clifford_algebra.IDENTITY, clifford_algebra.X, clifford_algebra.Y, clifford_algebra.Z}
+        # X/Z flow cannot cancel a nontrivial Clifford coset.
+        if any(element not in paulis for targets in cflow.values() for element in targets.values()):
             return CliffordFrame(
                 graphstate,
                 xflow,
@@ -736,8 +789,12 @@ def _make_frame(  # ruff:ignore[too-many-arguments]
                 parity_check_group,
                 logical_observables,
                 parity_check_tags=parity_check_tags,
-                cflow=normalized_cflow,
+                cflow=cflow,
             )
+        normalized_xflow = {node: set(targets) for node, targets in xflow.items()}
+        normalized_zflow = {node: set(targets) for node, targets in zflow.items()}
+        _normalize_cflow(normalized_xflow, normalized_zflow, cflow)
+        xflow, zflow = normalized_xflow, normalized_zflow
     return PauliFrame(
         graphstate,
         xflow,

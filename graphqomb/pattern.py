@@ -69,7 +69,10 @@ class Pattern(Sequence[Command]):
     ) -> None:
         frames = [value for value in (frame, pauli_frame, clifford_frame) if value is not None]
         if len(frames) > 1:
-            msg = "Specify exactly one of frame, pauli_frame, or clifford_frame."
+            msg = (
+                "Specify exactly one of frame, pauli_frame, or clifford_frame. "
+                "For dataclasses.replace(), use frame=... instead of a legacy keyword."
+            )
             raise TypeError(msg)
         if not frames:
             msg = "A correction frame is required: specify frame, pauli_frame, or clifford_frame."

@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- **Pauli Frame Compatibility**: Use `Pattern(frame=...)` and `pattern.frame` for either correction type. Restored `pauli_frame` and retained `clifford_frame` as aliases referring to the same instance. Their constructor keywords now emit `DeprecationWarning` and will be removed in v0.8.0; migrate to `frame=`. The read-only property aliases remain available. The stored dataclass field is `frame`; use `dataclasses.replace(pattern, frame=...)` when replacing it. `PauliFrame` is again a dedicated X/Z tracker and `CliffordFrame` extends it. Compilation and `.ptn` loading choose the lightweight Pauli frame when normalized corrections have no nontrivial cosets; explicit `CliffordFrame` construction retains its type. Pass `cflow=` directly to `CliffordFrame`, rather than `PauliFrame`.
+- **Pauli Frame Compatibility**: Use `Pattern(frame=...)` and `pattern.frame` for either correction type. Restored `pauli_frame` and retained `clifford_frame` as aliases referring to the same instance. Their constructor keywords now emit `DeprecationWarning` and will be removed in v0.8.0; migrate to `frame=`. The read-only property aliases remain available. The stored dataclass field is `frame`; use `dataclasses.replace(pattern, frame=...)` when replacing it. `PauliFrame` is again a dedicated X/Z tracker and `CliffordFrame` extends it. The public `graphqomb.pauli_frame.make_frame` factory, compilation, and `.ptn` loading choose the lightweight Pauli frame when normalized corrections have no nontrivial cosets; explicit `CliffordFrame` construction retains its type. Pass `cflow=` to `make_frame` for automatic selection or to `CliffordFrame` to retain that type. Pauli frames expose a read-only empty `cflow` property for compatibility; `inv_cflow`, `coset`, and `correction_events` remain available only on `CliffordFrame`.
+
+### Fixed
 
 - **Eliminated Probe Coordinates**: `rewrite_syndrome_rounds` drops coordinate targets for eliminated probes with no remaining operation or Pauli-observable reference, preventing isolated output wires. It preserves coordinates for other lifetimes and originally idle wires, and no longer interprets `MPAD` bits as qubit references.
 - **Stim Default Initialization**: Inputs without an explicit reset now start in `|0>` when importing Stim circuits, matching Stim semantics. Explicit `RX` and `RY` preparations remain supported; callers requiring the previous `|+>` input must specify `RX`.

@@ -15,7 +15,7 @@ from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.feedforward import dag_from_flow
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import CliffordFrame, PauliFrame, _make_frame
+from graphqomb.pauli_frame import PauliFrame, make_frame
 from graphqomb.scheduler import Scheduler
 
 if TYPE_CHECKING:
@@ -80,7 +80,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
 
-    frame = _make_frame(
+    frame = make_frame(
         graph,
         xflow,
         zflow,
@@ -123,7 +123,7 @@ def _qompile(
     meas_bases = graph.meas_bases
     graph_coords = graph.coordinates
 
-    cflow = frame.cflow if isinstance(frame, CliffordFrame) else None
+    cflow = frame.cflow
     dag = dag_from_flow(graph, xflow=frame.xflow, zflow=frame.zflow, cflow=cflow)
 
     commands: list[Command] = []

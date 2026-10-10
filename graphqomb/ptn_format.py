@@ -38,7 +38,7 @@ from graphqomb.common import (
 )
 from graphqomb.graphstate import BaseGraphState
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import CliffordFrame, PauliFrame, _make_frame
+from graphqomb.pauli_frame import PauliFrame, make_frame
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -201,7 +201,7 @@ def _required_version(pattern: Pattern) -> int:
         Minimum version required to parse the serialized pattern.
     """
     frame = pattern.frame
-    if isinstance(frame, CliffordFrame) and frame.cflow:
+    if frame.cflow:
         return _CFLOW_VERSION
     has_tagged_input = any(init.tag for init in pattern.input_initializations.values())
     if has_tagged_input:
@@ -334,11 +334,10 @@ def _write_classical_section(out: StringIO, frame: PauliFrame) -> None:
 
     _write_pauli_flows(out, frame)
 
-    if isinstance(frame, CliffordFrame):
-        for source, coset_targets in sorted(frame.cflow.items()):
-            if coset_targets:
-                targets_str = " ".join(f"{t}:{COSET_NAMES[coset]}" for t, coset in sorted(coset_targets.items()))
-                out.write(f".cflow {source} -> {targets_str}\n")
+    for source, coset_targets in sorted(frame.cflow.items()):
+        if coset_targets:
+            targets_str = " ".join(f"{t}:{COSET_NAMES[coset]}" for t, coset in sorted(coset_targets.items()))
+            out.write(f".cflow {source} -> {targets_str}\n")
 
     for group, tag in zip(frame.parity_check_group, frame.parity_check_tags, strict=True):
         if group:
@@ -837,7 +836,7 @@ def _build_pattern(data: _PatternData) -> Pattern:
         _coordinates=coordinates,
         _input_initializations=input_initializations,
     )
-    frame = _make_frame(
+    frame = make_frame(
         graphstate,
         data.xflow,
         data.zflow,

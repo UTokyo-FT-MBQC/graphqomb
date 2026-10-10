@@ -4,20 +4,26 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import stim
 
 from graphqomb import clifford_algebra as ca
 from graphqomb.command import TICK
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import CliffordFrame, PauliFrame
+from graphqomb.pauli_frame import CliffordFrame, PauliFrame, make_frame
 from graphqomb.ptn_format import dumps, loads
 from graphqomb.qompiler import qompile
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.stim_glue.compiler import stim_compile
+from graphqomb.stim_glue.importer import stim_circuit_to_pattern
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @pytest.fixture
@@ -147,6 +153,77 @@ def test_dataclass_replace_preserves_frame_alias(graph: GraphState) -> None:
     ]
 
 
+@pytest.mark.parametrize("name", ["pauli_frame", "clifford_frame"])
+def test_dataclass_replace_legacy_keyword_explains_migration(graph: GraphState, name: str) -> None:
+    frame = PauliFrame(graph, {}, {})
+    pattern = Pattern({}, {}, (), frame=frame)
+    with pytest.raises(TypeError, match=r"For dataclasses\.replace\(\), use frame="):
+        (
+            dataclasses.replace(pattern, pauli_frame=frame)  # type: ignore[call-arg]
+            if name == "pauli_frame"
+            else dataclasses.replace(pattern, clifford_frame=frame)  # type: ignore[call-arg]
+        )
+
+
+@pytest.mark.parametrize("coset", ca.TRANSVERSAL)
+@pytest.mark.parametrize("pauli", [ca.IDENTITY, ca.X, ca.Y, ca.Z])
+def test_make_frame_selects_and_normalizes_all_cliffords(
+    graph: GraphState, coset: ca.C1Element, pauli: ca.C1Element
+) -> None:
+    xflow = {0: {1}, 1: {2}}
+    zflow = {0: {2}}
+    gate = ca.compose(coset, pauli)
+    cflow = {0: {1: gate}}
+    frame = make_frame(graph, xflow, zflow, cflow=cflow)
+    explicit = CliffordFrame(graph, xflow, zflow, cflow=cflow)
+
+    assert type(frame) is (PauliFrame if coset == ca.IDENTITY else CliffordFrame)
+    assert frame.xflow == explicit.xflow
+    assert frame.zflow == explicit.zflow
+    assert frame.cflow == explicit.cflow
+    frame.meas_flip(0)
+    explicit.meas_flip(0)
+    assert frame.x_pauli == explicit.x_pauli
+    assert frame.z_pauli == explicit.z_pauli
+    if isinstance(frame, CliffordFrame):
+        assert frame.coset == explicit.coset
+        assert frame.correction_events == explicit.correction_events
+    assert xflow == {0: {1}, 1: {2}}
+    assert zflow == {0: {2}}
+    assert cflow == {0: {1: gate}}
+
+
+@pytest.mark.parametrize("cflow", [None, {}, {0: {}}, {0: {1: ca.IDENTITY}}])
+def test_make_frame_empty_corrections_keep_metadata(
+    graph: GraphState, cflow: dict[int, dict[int, ca.C1Element]] | None
+) -> None:
+    frame = make_frame(graph, {0: {1}, 1: {2}}, {}, [{0}], {1: {1}}, parity_check_tags=["type=flag"], cflow=cflow)
+    assert type(frame) is PauliFrame
+    assert frame.cflow == {}
+    assert frame.parity_check_group == [{0}]
+    assert frame.logical_observables == {1: {1}}
+    assert frame.parity_check_tags == ["type=flag"]
+
+
+def test_pauli_frame_cflow_is_read_only_and_not_stored(graph: GraphState) -> None:
+    frame = PauliFrame(graph, {}, {})
+    empty = frame.cflow
+    empty[0] = {1: ca.S}
+    assert frame.cflow == {}
+    assert {"cflow", "_cflow", "inv_cflow", "coset", "correction_events"}.isdisjoint(vars(frame))
+    with pytest.raises(AttributeError):
+        setattr(frame, "cflow", {})  # ruff:ignore[set-attr-with-constant]
+
+
+def test_stim_import_and_ptn_reload_preserve_empty_cflow_access() -> None:
+    pattern = stim_circuit_to_pattern(stim.Circuit("RX 0\nM 0")).pattern
+    restored = loads(dumps(pattern))
+    for item in (pattern, restored):
+        assert type(item.frame) is PauliFrame
+        assert len(item.clifford_frame.cflow) == 0
+        assert not item.clifford_frame.cflow
+
+
 @pytest.mark.parametrize("cflow", [None, {}, {0: {}}, {0: {2: ca.IDENTITY}}])
 def test_no_clifford_corrections_choose_lightweight_frame(
     graph: GraphState,
@@ -154,7 +231,8 @@ def test_no_clifford_corrections_choose_lightweight_frame(
 ) -> None:
     pattern = qompile(graph, {0: {1}, 1: {2}}, cflow=cflow)
     assert type(pattern.frame) is PauliFrame
-    assert {"cflow", "inv_cflow", "coset", "correction_events"}.isdisjoint(vars(pattern.frame))
+    assert pattern.clifford_frame.cflow == {}
+    assert {"cflow", "_cflow", "inv_cflow", "coset", "correction_events"}.isdisjoint(vars(pattern.frame))
     restored = loads(dumps(pattern))
     assert type(restored.pauli_frame) is PauliFrame
     assert ".version 2" in dumps(pattern)
@@ -249,6 +327,16 @@ def test_direct_frame_construction_checks_invalid_sources(graph: GraphState, fra
         frame_type(graph, {2: {1}}, {})
     with pytest.raises(ValueError, match="Cycle detected"):
         frame_type(graph, {0: {1}, 1: {0}}, {})
+
+
+@pytest.mark.parametrize("constructor", [CliffordFrame, make_frame])
+def test_clifford_construction_checks_combined_flow(graph: GraphState, constructor: Callable[..., PauliFrame]) -> None:
+    with pytest.raises(ValueError, match="Flow source 2 is not measured"):
+        constructor(graph, {}, {}, cflow={2: {1: ca.S}})
+    with pytest.raises(ValueError, match="Cycle detected"):
+        constructor(graph, {0: {1}}, {}, cflow={1: {0: ca.S}})
+    with pytest.raises(ValueError, match="do not commute"):
+        constructor(graph, {0: {2}}, {}, cflow={1: {2: ca.S}})
 
 
 def test_clifford_dependent_chain_checks_indirect_influence(graph: GraphState) -> None:
