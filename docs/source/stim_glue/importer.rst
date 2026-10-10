@@ -23,8 +23,13 @@ becomes one GraphQOMB ``J`` primitive.
 Here, **circuit foliation** means constructing an MBQC pattern from the
 operations of a Clifford circuit, including gates, resets, measurements, and
 feedback. We distinguish this circuit construction from code foliation for
-memory operations such as CSS-code memories. Existing API names such as
-``foliation_circuit`` and ``YFoliation`` are unchanged.
+memory operations such as CSS-code memories. ``YFoliation`` selects the graph
+construction for products containing Y factors.
+
+For closed syndrome-extraction windows, first apply :doc:`round_rewriter`
+and pass its ``result.circuit`` to this importer. Record references already
+include any readout permutation; Pauli feedback follows the ordinary
+``xflow``/``zflow`` import path.
 
 Initial reset instructions
 --------------------------

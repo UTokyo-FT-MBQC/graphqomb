@@ -14,10 +14,8 @@ This package provides:
 - `optimize_j_cz`: Function to remove redundant Clifford J and CZ gates.
 - `STIM_GATE_J_ANGLES`: Mapping from single-qubit basis gates to J angles.
 - `UnsupportedInstructionError`: Error for instructions outside the supported basis.
-- `rewrite_to_mpp`: Function to rewrite a syndrome-extraction circuit into MPP form.
-- `MppRewriteResult`: Rewritten circuit with its per-measurement Pauli products.
-- `CheckMapping`: Mapping from one measurement record to its Pauli product.
-- `UnsupportedSyndromeCircuitError`: Error for unsupported syndrome circuits.
+- `rewrite_syndrome_rounds`: Local MPP extraction preserving successive data instruments.
+- `RoundRewriteResult`: Rewritten circuit, record permutation, and extraction statistics.
 - `stabilizer_code_from_stim_text`: Function to build a stabilizer code from Stim MPP text.
 - `stabilizer_code_from_stim_file`: Function to build a stabilizer code from a Stim file.
 - `StimMppExtraction`: Stabilizer-code data extracted from Stim MPP products.
@@ -35,13 +33,8 @@ from graphqomb.stim_glue.importer import (
     stim_text_to_pattern,
 )
 from graphqomb.stim_glue.mpp import stabilizer_code_from_stim_file, stabilizer_code_from_stim_text
-from graphqomb.stim_glue.mpp_rewriter import (
-    CheckMapping,
-    MppRewriteResult,
-    UnsupportedSyndromeCircuitError,
-    rewrite_to_mpp,
-)
 from graphqomb.stim_glue.postselect import FLAG_DETECTOR_TAG, flag_detector_indices, flag_postselection_mask
+from graphqomb.stim_glue.round_rewriter import RoundRewriteResult, rewrite_syndrome_rounds
 from graphqomb.stim_glue.transpiler import (
     STIM_GATE_J_ANGLES,
     UnsupportedInstructionError,
@@ -52,16 +45,14 @@ from graphqomb.stim_glue.transpiler import (
 __all__ = [
     "FLAG_DETECTOR_TAG",
     "STIM_GATE_J_ANGLES",
-    "CheckMapping",
-    "MppRewriteResult",
+    "RoundRewriteResult",
     "StimImportResult",
     "StimMppExtraction",
     "UnsupportedInstructionError",
-    "UnsupportedSyndromeCircuitError",
     "flag_detector_indices",
     "flag_postselection_mask",
     "optimize_j_cz",
-    "rewrite_to_mpp",
+    "rewrite_syndrome_rounds",
     "stabilizer_code_from_stim_file",
     "stabilizer_code_from_stim_text",
     "stim_circuit_to_pattern",

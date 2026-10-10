@@ -440,8 +440,7 @@ def plain_qubit_target(target: stim.GateTarget, instruction_name: str) -> int:
     """Return a plain Stim qubit target.
 
     Rejects Pauli-typed and inverted-result targets, which the importer cannot
-    represent. `mpp_rewriter._plain_qubit` deliberately accepts those
-    because it only needs the qubit id an instruction acts on.
+    represent.
 
     Returns
     -------
