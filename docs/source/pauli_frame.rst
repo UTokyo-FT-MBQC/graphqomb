@@ -24,8 +24,9 @@ flows determine scheduling and validation in both cases.
 
 Use ``isinstance(frame, CliffordFrame)`` before accessing Clifford-only
 attributes: ``cflow``, ``inv_cflow``, ``coset``, and ``correction_events``.
-The two Pattern frame names always refer to the complete frame; accessing
-``pattern.pauli_frame`` never discards Clifford information.
+``pattern.frame`` is the primary Pattern API. Its compatibility aliases
+``pattern.pauli_frame`` and ``pattern.clifford_frame`` always refer to the
+complete frame and never discard Clifford information.
 
 Residual convention and correction order
 ----------------------------------------

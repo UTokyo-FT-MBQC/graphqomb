@@ -203,7 +203,7 @@ class PatternSimulator:
 
     def _updated_measurement_basis(self, cmd: M) -> MeasBasis:
         basis = cmd.meas_basis
-        frame = self.__pattern.clifford_frame
+        frame = self.__pattern.frame
         x_pauli = frame.x_pauli[cmd.node]
         z_pauli = frame.z_pauli[cmd.node]
 
@@ -234,7 +234,7 @@ class PatternSimulator:
 
     def _apply_output_frame(self, node: int) -> None:
         node_id = self.node_indices.index(node)
-        frame = self.__pattern.clifford_frame
+        frame = self.__pattern.frame
         # Undo the frame F = D * X^a * Z^b: F^-1 = Z^b * X^a * D^-1 acts on the
         # state with the coset inverse first, then the Pauli bits.
         if isinstance(frame, CliffordFrame) and (coset := frame.coset[node]) != clifford_algebra.IDENTITY:
@@ -265,7 +265,7 @@ class PatternSimulator:
 
         # Measured outputs participate in feedforward like any other node.
         if result:
-            self.__pattern.clifford_frame.meas_flip(cmd.node)
+            self.__pattern.frame.meas_flip(cmd.node)
 
     @apply_cmd.register
     def _(self, cmd: TICK, *, rng: np.random.Generator) -> None:

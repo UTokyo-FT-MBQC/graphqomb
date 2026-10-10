@@ -70,7 +70,7 @@ def test_rewrite_preserves_data_coordinates_without_disconnected_probe_output() 
     result = rewrite_syndrome_rounds(source)
     assert result.eliminated_probes == 1
     imported = stim_circuit_to_pattern(result.circuit)
-    graph = imported.pattern.clifford_frame.graphstate
+    graph = imported.pattern.frame.graphstate
     data_node = graph.input_node_indices[imported.stim_to_qubit[0]]
     assert graph.coordinates[data_node][:2] == (0.0, 0.0)
     assert set(imported.stim_to_qubit) == {0}

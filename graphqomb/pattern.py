@@ -38,7 +38,7 @@ class Pattern(Sequence[Command]):
         The map of output nodes to their logical qubit indices
     commands : `tuple`\[`Command`, ...\]
         Commands of the pattern
-    clifford_frame : `PauliFrame`
+    frame : `PauliFrame`
         Correction frame, optionally a `CliffordFrame` for Clifford feedforward
     input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes (2D or 3D)
@@ -50,7 +50,7 @@ class Pattern(Sequence[Command]):
     input_node_indices: dict[int, int]
     output_node_indices: dict[int, int]
     commands: tuple[Command, ...]
-    clifford_frame: PauliFrame
+    frame: PauliFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
 
@@ -60,7 +60,7 @@ class Pattern(Sequence[Command]):
         input_node_indices: dict[int, int],
         output_node_indices: dict[int, int],
         commands: tuple[Command, ...],
-        clifford_frame: PauliFrame,
+        frame: PauliFrame,
         input_coordinates: dict[int, tuple[float, ...]] | None = None,
         input_initializations: dict[int, Initialization] | None = None,
     ) -> None: ...
@@ -71,11 +71,24 @@ class Pattern(Sequence[Command]):
         input_node_indices: dict[int, int],
         output_node_indices: dict[int, int],
         commands: tuple[Command, ...],
-        clifford_frame: None = None,
+        frame: None = None,
         input_coordinates: dict[int, tuple[float, ...]] | None = None,
         input_initializations: dict[int, Initialization] | None = None,
         *,
         pauli_frame: PauliFrame,
+    ) -> None: ...
+
+    @typing.overload
+    def __init__(
+        self,
+        input_node_indices: dict[int, int],
+        output_node_indices: dict[int, int],
+        commands: tuple[Command, ...],
+        frame: None = None,
+        input_coordinates: dict[int, tuple[float, ...]] | None = None,
+        input_initializations: dict[int, Initialization] | None = None,
+        *,
+        clifford_frame: PauliFrame,
     ) -> None: ...
 
     def __init__(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
@@ -83,23 +96,24 @@ class Pattern(Sequence[Command]):
         input_node_indices: dict[int, int],
         output_node_indices: dict[int, int],
         commands: tuple[Command, ...],
-        clifford_frame: PauliFrame | None = None,
+        frame: PauliFrame | None = None,
         input_coordinates: dict[int, tuple[float, ...]] | None = None,
         input_initializations: dict[int, Initialization] | None = None,
         *,
         pauli_frame: PauliFrame | None = None,
+        clifford_frame: PauliFrame | None = None,
     ) -> None:
-        if clifford_frame is not None and pauli_frame is not None:
-            msg = "Specify either clifford_frame or pauli_frame, not both."
+        frames = [value for value in (frame, pauli_frame, clifford_frame) if value is not None]
+        if len(frames) > 1:
+            msg = "Specify exactly one of frame, pauli_frame, or clifford_frame."
             raise TypeError(msg)
-        frame = clifford_frame if clifford_frame is not None else pauli_frame
-        if frame is None:
-            msg = "A correction frame is required: specify clifford_frame or pauli_frame."
+        if not frames:
+            msg = "A correction frame is required: specify frame, pauli_frame, or clifford_frame."
             raise TypeError(msg)
         object.__setattr__(self, "input_node_indices", input_node_indices)
         object.__setattr__(self, "output_node_indices", output_node_indices)
         object.__setattr__(self, "commands", commands)
-        object.__setattr__(self, "clifford_frame", frame)
+        object.__setattr__(self, "frame", frames[0])
         object.__setattr__(self, "input_coordinates", {} if input_coordinates is None else input_coordinates)
         object.__setattr__(
             self, "input_initializations", {} if input_initializations is None else input_initializations
@@ -107,14 +121,25 @@ class Pattern(Sequence[Command]):
 
     @property
     def pauli_frame(self) -> PauliFrame:
-        """Correction frame under its backwards-compatible name.
+        """Correction frame under its backwards-compatible Pauli name.
 
         Returns
         -------
         `PauliFrame`
-            The same instance as `clifford_frame`, which may be a CliffordFrame.
+            The same instance as `frame`, which may be a CliffordFrame.
         """
-        return self.clifford_frame
+        return self.frame
+
+    @property
+    def clifford_frame(self) -> PauliFrame:
+        """Correction frame under its backwards-compatible Clifford name.
+
+        Returns
+        -------
+        `PauliFrame`
+            The same instance as `frame`, which may be a PauliFrame.
+        """
+        return self.frame
 
     @typing_extensions.override
     def __len__(self) -> int:
@@ -292,7 +317,7 @@ def _ensure_no_unmeasured_output_dependencies(pattern: Pattern) -> None:
     for cmd in pattern:
         if isinstance(cmd, M):
             measured.add(cmd.node)
-            children_nodes = pattern.clifford_frame.parents(cmd.node)
+            children_nodes = pattern.frame.parents(cmd.node)
             acausal_children = children_nodes - measured
             if acausal_children:
                 msg = f"These nodes depend on a unmeasured output: {sorted(acausal_children)}"

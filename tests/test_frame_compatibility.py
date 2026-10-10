@@ -44,14 +44,14 @@ def test_pattern_frame_names_share_instance(graph: GraphState, frame_type: type[
     initializations = {0: Initialization(Axis.Y)}
     positional = Pattern({0: 0}, {2: 0}, (), frame, coordinates, initializations)
     legacy = Pattern({0: 0}, {2: 0}, (), pauli_frame=frame)
-    current = Pattern({0: 0}, {2: 0}, (), clifford_frame=frame)
+    current = Pattern({0: 0}, {2: 0}, (), frame=frame)
+    clifford_alias = Pattern({0: 0}, {2: 0}, (), clifford_frame=frame)
 
-    for pattern in (positional, legacy, current):
-        assert pattern.pauli_frame is frame
-        assert pattern.clifford_frame is frame
+    for pattern in (positional, legacy, current, clifford_alias):
+        assert pattern.frame is pattern.pauli_frame is pattern.clifford_frame is frame
     assert positional.input_coordinates is coordinates
     assert positional.input_initializations is initializations
-    assert legacy == current
+    assert legacy == current == clifford_alias
     assert legacy.input_coordinates is not current.input_coordinates
     assert legacy.input_initializations is not current.input_initializations
 
@@ -61,21 +61,38 @@ def test_legacy_attribute_preserves_clifford_corrections(graph: GraphState) -> N
     pattern = Pattern({0: 0}, {2: 0}, (), pauli_frame=frame)
     pattern.pauli_frame.meas_flip(0)
 
-    assert pattern.clifford_frame is frame
+    assert pattern.frame is frame
     assert frame.coset[2] == ca.S
     assert frame.z_pauli[2]
 
 
 @pytest.mark.parametrize("constructor", [Pattern])
-def test_pattern_requires_exactly_one_frame(graph: GraphState, constructor: Callable[..., Pattern]) -> None:
-    frame = PauliFrame(graph, {}, {})
+def test_pattern_requires_frame(constructor: Callable[..., Pattern]) -> None:
     with pytest.raises(TypeError, match="correction frame is required"):
         constructor({}, {}, ())
-    with pytest.raises(TypeError, match="not both"):
-        constructor({}, {}, (), clifford_frame=frame, pauli_frame=frame)
 
 
-@pytest.mark.parametrize("attribute", ["commands", "clifford_frame", "pauli_frame"])
+@pytest.mark.parametrize("constructor", [Pattern])
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("frame", "pauli_frame"),
+        ("frame", "clifford_frame"),
+        ("pauli_frame", "clifford_frame"),
+        ("frame", "pauli_frame", "clifford_frame"),
+    ],
+)
+def test_pattern_rejects_conflicting_frame_names(
+    graph: GraphState,
+    constructor: Callable[..., Pattern],
+    names: tuple[str, ...],
+) -> None:
+    frame = PauliFrame(graph, {}, {})
+    with pytest.raises(TypeError, match="Specify exactly one"):
+        constructor({}, {}, (), **dict.fromkeys(names, frame))
+
+
+@pytest.mark.parametrize("attribute", ["commands", "frame", "clifford_frame", "pauli_frame"])
 def test_pattern_remains_frozen(graph: GraphState, attribute: str) -> None:
     pattern = Pattern({}, {}, (), pauli_frame=PauliFrame(graph, {}, {}))
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -87,17 +104,17 @@ def test_dataclass_replace_preserves_frame_alias(graph: GraphState) -> None:
     pattern = Pattern({}, {}, (), pauli_frame=frame)
     updated = dataclasses.replace(pattern, commands=(TICK(),))
     replacement = CliffordFrame(graph, {}, {})
-    reframed = dataclasses.replace(updated, clifford_frame=replacement)
+    reframed = dataclasses.replace(updated, frame=replacement)
 
     assert pattern.commands == ()
     assert updated.commands == (TICK(),)
     assert updated.pauli_frame is frame
-    assert reframed.pauli_frame is reframed.clifford_frame is replacement
+    assert reframed.frame is reframed.pauli_frame is reframed.clifford_frame is replacement
     assert [field.name for field in dataclasses.fields(pattern)] == [
         "input_node_indices",
         "output_node_indices",
         "commands",
-        "clifford_frame",
+        "frame",
         "input_coordinates",
         "input_initializations",
     ]
@@ -109,8 +126,8 @@ def test_no_clifford_corrections_choose_lightweight_frame(
     cflow: dict[int, dict[int, ca.C1Element]] | None,
 ) -> None:
     pattern = qompile(graph, {0: {1}, 1: {2}}, cflow=cflow)
-    assert type(pattern.clifford_frame) is PauliFrame
-    assert {"cflow", "inv_cflow", "coset", "correction_events"}.isdisjoint(vars(pattern.clifford_frame))
+    assert type(pattern.frame) is PauliFrame
+    assert {"cflow", "inv_cflow", "coset", "correction_events"}.isdisjoint(vars(pattern.frame))
     restored = loads(dumps(pattern))
     assert type(restored.pauli_frame) is PauliFrame
     assert ".version 2" in dumps(pattern)
@@ -138,15 +155,15 @@ def test_pauli_cflow_normalizes_without_mutating_inputs(graph: GraphState, gate:
 def test_nontrivial_coset_selects_clifford_frame(graph: GraphState) -> None:
     cflow = {0: {1: ca.compose(ca.S, ca.X)}}
     pattern = qompile(graph, {0: {1}, 1: {2}}, {}, cflow)
-    frame = pattern.clifford_frame
+    frame = pattern.frame
     assert isinstance(frame, CliffordFrame)
     assert frame.cflow == {0: {1: ca.S}}
     assert frame.xflow == {0: set(), 1: {2}}
     assert cflow == {0: {1: ca.compose(ca.S, ca.X)}}
     restored = loads(dumps(pattern))
-    assert isinstance(restored.clifford_frame, CliffordFrame)
-    assert restored.clifford_frame.cflow == frame.cflow
-    assert restored.clifford_frame.correction_events == frame.correction_events
+    assert isinstance(restored.frame, CliffordFrame)
+    assert restored.frame.cflow == frame.cflow
+    assert restored.frame.correction_events == frame.correction_events
 
 
 def test_pauli_and_clifford_frames_agree_on_pauli_operations(graph: GraphState) -> None:
@@ -173,7 +190,7 @@ def test_pauli_and_clifford_frames_agree_on_pauli_operations(graph: GraphState) 
         logical_observables={0: {1}},
         parity_check_tags=["type=flag"],
     )
-    other = dataclasses.replace(pattern, clifford_frame=clifford)
+    other = dataclasses.replace(pattern, frame=clifford)
     assert stim_compile(pattern) == stim_compile(other)
     assert dumps(pattern) == dumps(other)
     assert type(loads(dumps(other)).pauli_frame) is PauliFrame
@@ -189,14 +206,14 @@ def test_pauli_and_clifford_simulation_agree(
     for node in (0, 1):
         graph.assign_meas_basis(node, PlannerMeasBasis(plane, 0.31))
     pattern = qompile(graph, {0: {1}, 1: {2}}, {0: {2}})
-    other = dataclasses.replace(pattern, clifford_frame=CliffordFrame(graph, {0: {1}, 1: {2}}, {0: {2}}))
+    other = dataclasses.replace(pattern, frame=CliffordFrame(graph, {0: {1}, 1: {2}}, {0: {2}}))
     simulators = [PatternSimulator(item, SimulatorBackend.StateVector) for item in (pattern, other)]
     for simulator in simulators:
         simulator.simulate(np.random.default_rng(seed))
     assert simulators[0].results == simulators[1].results
     np.testing.assert_allclose(simulators[0].state.state(), simulators[1].state.state(), atol=1e-12)
-    assert pattern.pauli_frame.x_pauli == other.clifford_frame.x_pauli
-    assert pattern.pauli_frame.z_pauli == other.clifford_frame.z_pauli
+    assert pattern.pauli_frame.x_pauli == other.frame.x_pauli
+    assert pattern.pauli_frame.z_pauli == other.frame.z_pauli
 
 
 @pytest.mark.parametrize("frame_type", [PauliFrame, CliffordFrame])
@@ -217,6 +234,6 @@ def test_clifford_dependent_chain_checks_indirect_influence(graph: GraphState) -
 @pytest.mark.parametrize("frame_type", [PauliFrame, CliffordFrame])
 def test_density_matrix_backend_remains_unsupported(graph: GraphState, frame_type: type[PauliFrame]) -> None:
     pattern = qompile(graph, {0: {1}, 1: {2}})
-    pattern = dataclasses.replace(pattern, clifford_frame=frame_type(graph, {0: {1}, 1: {2}}, {0: {2}}))
+    pattern = dataclasses.replace(pattern, frame=frame_type(graph, {0: {1}, 1: {2}}, {0: {2}}))
     with pytest.raises(NotImplementedError):
         PatternSimulator(pattern, SimulatorBackend.DensityMatrix)

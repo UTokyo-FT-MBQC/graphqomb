@@ -190,7 +190,7 @@ def test_rounds_survive_known_initial_state_and_graph_import() -> None:
     assert sum(inst.name == "MPP" for inst in result.circuit) == 2
     assert str(result.circuit).startswith("R 0\n")
     graph = stim_circuit_to_pattern(result.circuit)
-    assert len(graph.pattern.clifford_frame.graphstate.nodes) > 2
+    assert len(graph.pattern.frame.graphstate.nodes) > 2
     exported = stim.Circuit(stim_compile(graph.pattern))
     assert exported.num_detectors == 1
     assert not np.asarray(exported.compile_detector_sampler(seed=7).sample(16)).any()
@@ -204,7 +204,7 @@ def test_mixed_readout_annotations_and_feedback_remap() -> None:
     assert "OBSERVABLE_INCLUDE(2) rec[-1]" in str(result.circuit)
     assert "CX rec[-2] 0" in str(result.circuit)
     imported = stim_circuit_to_pattern(result.circuit)
-    assert imported.pattern.clifford_frame.xflow
+    assert imported.pattern.frame.xflow
 
 
 @pytest.mark.parametrize("tail", ["H 1", "M 1", "CX 1 0", "OBSERVABLE_INCLUDE(0) Z1"])

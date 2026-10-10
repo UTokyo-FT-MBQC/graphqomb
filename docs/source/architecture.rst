@@ -25,7 +25,8 @@ Lowering output
 The lowered pattern combines:
 
 - a scheduled command stream,
-- a :class:`graphqomb.pauli_frame.CliffordFrame` at ``pattern.clifford_frame`` used for dependency tracking,
+- a :class:`graphqomb.pauli_frame.PauliFrame` at ``pattern.frame`` used for dependency tracking,
+  extended to :class:`graphqomb.pauli_frame.CliffordFrame` when nontrivial Clifford cosets remain,
 - derived metrics such as depth, space usage, and active volume.
 
 Most scheduled work is serialized as prepare, entangle, and measure commands separated by ``TICK`` slice boundaries.

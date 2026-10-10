@@ -9,19 +9,25 @@ Pattern
 Pattern Classes
 ---------------
 
-The correction frame is available as ``pattern.clifford_frame`` or
-``pattern.pauli_frame``. Both names refer to the same instance, including when
-it is a :class:`graphqomb.pauli_frame.CliffordFrame`.
+The correction frame is available as ``pattern.frame``. It is a
+:class:`graphqomb.pauli_frame.PauliFrame`, optionally extended to a
+:class:`graphqomb.pauli_frame.CliffordFrame` for Clifford feedforward.
 
-Construction accepts ``Pattern(..., clifford_frame=frame)`` or the
-backwards-compatible ``Pattern(..., pauli_frame=frame)`` without deprecation
-warnings. The fourth positional argument is also the frame; the following
-positional arguments remain input coordinates and input initializations.
-Omitting the frame or supplying both frame keywords raises ``TypeError``.
+Construct a pattern with ``Pattern(..., frame=frame)``. The fourth positional
+argument is also the frame; the following positional arguments remain input
+coordinates and input initializations. Omitting the frame or supplying multiple
+frame arguments raises ``TypeError``.
 
-The stored dataclass field is ``clifford_frame``; ``pauli_frame`` is a read-only
-property. Use ``dataclasses.replace(pattern, clifford_frame=frame)`` to replace
-the frame. The pattern remains a frozen dataclass.
+The stored dataclass field is ``frame``. Use
+``dataclasses.replace(pattern, frame=frame)`` to replace it. The pattern remains
+a frozen dataclass.
+
+For compatibility, ``Pattern(..., pauli_frame=frame)`` and
+``Pattern(..., clifford_frame=frame)`` are accepted without deprecation warnings.
+Both ``pattern.pauli_frame`` and ``pattern.clifford_frame`` are read-only
+aliases of ``pattern.frame`` and return the complete frame, including for
+Clifford patterns. These aliases are not dataclass fields; use ``frame`` for
+``dataclasses.replace`` and dataclass field inspection.
 
 :func:`graphqomb.qompiler.qompile` and ``.ptn`` loading select
 :class:`graphqomb.pauli_frame.PauliFrame` for Pauli-only normalized corrections

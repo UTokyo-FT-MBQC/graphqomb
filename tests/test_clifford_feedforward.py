@@ -86,7 +86,7 @@ def _t_gadget_pattern() -> Pattern:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=commands,
-        clifford_frame=frame,
+        frame=frame,
         input_initializations=graph.input_initializations,
     )
 
@@ -117,7 +117,7 @@ def test_t_gadget_forced_branches(m0: bool, m1: bool) -> None:
         expected = _HADAMARD @ _T_GATE @ _HADAMARD @ psi
         assert _overlap(output, expected) == pytest.approx(1.0)
         # The recorded output frame on node 2 stays in the Pauli sector.
-        frame = pattern.clifford_frame
+        frame = pattern.frame
         assert isinstance(frame, CliffordFrame)
         assert frame.coset[2] == ca.IDENTITY
         assert frame.x_pauli[2] == m1
@@ -154,7 +154,7 @@ def test_qompile_folds_cflow_pauli_part() -> None:
     """A cflow value S*X folds its Pauli part into xflow, keeping the S coset."""
     graph = _t_gadget_graph()
     pattern = qompile(graph, xflow={0: {1}, 1: {2}}, cflow={0: {1: ca.compose(ca.S, ca.X)}})
-    frame = pattern.clifford_frame
+    frame = pattern.frame
     assert isinstance(frame, CliffordFrame)
     assert frame.cflow == {0: {1: ca.S}}
     # The folded X cancels the existing xflow correction 0 -> 1.
@@ -186,7 +186,7 @@ def _plane_change_pattern(theta: float) -> Pattern:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=commands,
-        clifford_frame=frame,
+        frame=frame,
         input_initializations=graph.input_initializations,
     )
 
@@ -197,7 +197,7 @@ def test_s_coset_moves_yz_measurement_to_xz_plane() -> None:
     pattern = _plane_change_pattern(theta)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=False)
 
-    pattern.clifford_frame.meas_flip(0)  # emulate outcome 1 on node 0
+    pattern.frame.meas_flip(0)  # emulate outcome 1 on node 0
     basis = simulator._updated_measurement_basis(M(1, PlannerMeasBasis(Plane.YZ, theta)))
     assert basis.plane == Plane.XZ
     # Frame S * X on (YZ, theta): the X flip gives theta + pi, then S maps
@@ -222,7 +222,7 @@ def test_s_correction_yz_to_xz_angle() -> None:
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=(N(n1), E((0, 1)), M(0, PlannerMeasBasis(Plane.XY, 0.0)), TICK()),
-        clifford_frame=frame,
+        frame=frame,
         input_initializations=graph.input_initializations,
     )
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=False)
@@ -317,7 +317,7 @@ def test_is_runnable_sees_cflow_dependencies() -> None:
             M(0, PlannerMeasBasis(Plane.XY, 0.0)),
             TICK(),
         ),
-        clifford_frame=frame,
+        frame=frame,
         input_initializations=graph.input_initializations,
     )
     with pytest.raises(ValueError, match="depend on a unmeasured output"):
