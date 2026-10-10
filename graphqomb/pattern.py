@@ -23,10 +23,10 @@ from graphqomb.common import Initialization
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from graphqomb.pauli_frame import CliffordFrame
+    from graphqomb.pauli_frame import PauliFrame
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, init=False)
 class Pattern(Sequence[Command]):
     r"""Pattern class.
 
@@ -38,8 +38,8 @@ class Pattern(Sequence[Command]):
         The map of output nodes to their logical qubit indices
     commands : `tuple`\[`Command`, ...\]
         Commands of the pattern
-    clifford_frame : `CliffordFrame`
-        Correction frame of the pattern to track the frame of each node
+    clifford_frame : `PauliFrame`
+        Correction frame, optionally a `CliffordFrame` for Clifford feedforward
     input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes (2D or 3D)
     input_initializations : `dict`\[`int`, `Initialization`\]
@@ -50,9 +50,71 @@ class Pattern(Sequence[Command]):
     input_node_indices: dict[int, int]
     output_node_indices: dict[int, int]
     commands: tuple[Command, ...]
-    clifford_frame: CliffordFrame
+    clifford_frame: PauliFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
+
+    @typing.overload
+    def __init__(
+        self,
+        input_node_indices: dict[int, int],
+        output_node_indices: dict[int, int],
+        commands: tuple[Command, ...],
+        clifford_frame: PauliFrame,
+        input_coordinates: dict[int, tuple[float, ...]] | None = None,
+        input_initializations: dict[int, Initialization] | None = None,
+    ) -> None: ...
+
+    @typing.overload
+    def __init__(
+        self,
+        input_node_indices: dict[int, int],
+        output_node_indices: dict[int, int],
+        commands: tuple[Command, ...],
+        clifford_frame: None = None,
+        input_coordinates: dict[int, tuple[float, ...]] | None = None,
+        input_initializations: dict[int, Initialization] | None = None,
+        *,
+        pauli_frame: PauliFrame,
+    ) -> None: ...
+
+    def __init__(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
+        self,
+        input_node_indices: dict[int, int],
+        output_node_indices: dict[int, int],
+        commands: tuple[Command, ...],
+        clifford_frame: PauliFrame | None = None,
+        input_coordinates: dict[int, tuple[float, ...]] | None = None,
+        input_initializations: dict[int, Initialization] | None = None,
+        *,
+        pauli_frame: PauliFrame | None = None,
+    ) -> None:
+        if clifford_frame is not None and pauli_frame is not None:
+            msg = "Specify either clifford_frame or pauli_frame, not both."
+            raise TypeError(msg)
+        frame = clifford_frame if clifford_frame is not None else pauli_frame
+        if frame is None:
+            msg = "A correction frame is required: specify clifford_frame or pauli_frame."
+            raise TypeError(msg)
+        object.__setattr__(self, "input_node_indices", input_node_indices)
+        object.__setattr__(self, "output_node_indices", output_node_indices)
+        object.__setattr__(self, "commands", commands)
+        object.__setattr__(self, "clifford_frame", frame)
+        object.__setattr__(self, "input_coordinates", {} if input_coordinates is None else input_coordinates)
+        object.__setattr__(
+            self, "input_initializations", {} if input_initializations is None else input_initializations
+        )
+
+    @property
+    def pauli_frame(self) -> PauliFrame:
+        """Correction frame under its backwards-compatible name.
+
+        Returns
+        -------
+        `PauliFrame`
+            The same instance as `clifford_frame`, which may be a CliffordFrame.
+        """
+        return self.clifford_frame
 
     @typing_extensions.override
     def __len__(self) -> int:

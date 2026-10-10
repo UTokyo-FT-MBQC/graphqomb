@@ -12,7 +12,7 @@ from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import PauliFrame
+from graphqomb.pauli_frame import CliffordFrame, PauliFrame
 from graphqomb.ptn_format import (
     dump,
     dumps,
@@ -108,7 +108,9 @@ def assert_pattern_equivalent(actual: Pattern, expected: Pattern) -> None:
     assert actual.input_initializations == expected.input_initializations
     assert actual.clifford_frame.xflow == expected.clifford_frame.xflow
     assert actual.clifford_frame.zflow == expected.clifford_frame.zflow
-    assert actual.clifford_frame.cflow == expected.clifford_frame.cflow
+    actual_cflow = actual.clifford_frame.cflow if isinstance(actual.clifford_frame, CliffordFrame) else {}
+    expected_cflow = expected.clifford_frame.cflow if isinstance(expected.clifford_frame, CliffordFrame) else {}
+    assert actual_cflow == expected_cflow
     assert actual.clifford_frame.parity_check_group == expected.clifford_frame.parity_check_group
     assert actual.clifford_frame.parity_check_tags == expected.clifford_frame.parity_check_tags
     assert actual.clifford_frame.logical_observables == expected.clifford_frame.logical_observables
@@ -1118,6 +1120,8 @@ def test_cflow_roundtrip() -> None:
 
     result = loads(ptn_str)
     assert_pattern_equivalent(result, pattern)
+    assert isinstance(result.clifford_frame, CliffordFrame)
+    assert isinstance(pattern.clifford_frame, CliffordFrame)
     assert result.clifford_frame.cflow == pattern.clifford_frame.cflow
     assert result.clifford_frame.correction_events == pattern.clifford_frame.correction_events
 

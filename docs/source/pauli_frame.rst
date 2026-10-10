@@ -1,10 +1,31 @@
-Clifford Frame
-==============
+Pauli and Clifford Frames
+=========================
 
 :mod:`graphqomb.pauli_frame` module
 ++++++++++++++++++++++++++++++++++++
 
 .. automodule:: graphqomb.pauli_frame
+
+Choosing a frame
+----------------
+
+:class:`PauliFrame` tracks X/Z bits and Pauli dependencies without allocating
+Clifford cosets or correction events. Its constructor retains the Pauli-only
+signature, including parity check groups, logical observables, and detector
+tags. To pass ``cflow=`` directly, construct :class:`CliffordFrame`, which
+inherits from :class:`PauliFrame`. An explicitly constructed Clifford frame
+retains its type even when ``cflow`` is empty.
+
+:func:`graphqomb.qompiler.qompile` and ``.ptn`` loading automatically choose a
+Pauli frame when normalization leaves no nontrivial cosets. Pauli gates in
+``cflow`` are folded into ``xflow`` and ``zflow`` using XOR, without modifying
+the caller's maps. Nontrivial cosets select a Clifford frame. The normalized
+flows determine scheduling and validation in both cases.
+
+Use ``isinstance(frame, CliffordFrame)`` before accessing Clifford-only
+attributes: ``cflow``, ``inv_cflow``, ``coset``, and ``correction_events``.
+The two Pattern frame names always refer to the complete frame; accessing
+``pattern.pauli_frame`` never discards Clifford information.
 
 Residual convention and correction order
 ----------------------------------------
@@ -64,6 +85,9 @@ Clifford Frame Class
     :members:
     :member-order: bysource
 
-.. data:: graphqomb.pauli_frame.PauliFrame
+Pauli Frame Class
+-----------------
 
-    Backwards-compatible alias of :class:`graphqomb.pauli_frame.CliffordFrame`.
+.. autoclass:: graphqomb.pauli_frame.PauliFrame
+    :members:
+    :member-order: bysource

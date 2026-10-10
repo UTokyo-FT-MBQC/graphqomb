@@ -118,6 +118,7 @@ def test_t_gadget_forced_branches(m0: bool, m1: bool) -> None:
         assert _overlap(output, expected) == pytest.approx(1.0)
         # The recorded output frame on node 2 stays in the Pauli sector.
         frame = pattern.clifford_frame
+        assert isinstance(frame, CliffordFrame)
         assert frame.coset[2] == ca.IDENTITY
         assert frame.x_pauli[2] == m1
         assert frame.z_pauli[2] == m0
@@ -154,6 +155,7 @@ def test_qompile_folds_cflow_pauli_part() -> None:
     graph = _t_gadget_graph()
     pattern = qompile(graph, xflow={0: {1}, 1: {2}}, cflow={0: {1: ca.compose(ca.S, ca.X)}})
     frame = pattern.clifford_frame
+    assert isinstance(frame, CliffordFrame)
     assert frame.cflow == {0: {1: ca.S}}
     # The folded X cancels the existing xflow correction 0 -> 1.
     assert frame.xflow[0] == set()

@@ -24,7 +24,7 @@ GraphQOMB is organized around three explicit compiler interfaces:
 These are lowered with `qompile(...)` into a `Pattern` carrying:
 
 - a command stream for scheduled MBQC execution,
-- a `PauliFrame` for classical dependency tracking,
+- a `PauliFrame` (or `CliffordFrame` when needed) for classical dependency tracking,
 - metrics such as `max_space`, `depth`, and `active_volume`.
 
 ## Features
@@ -124,7 +124,9 @@ If you already have a graph-state design and explicit feedforward maps, you can 
 
 GraphQOMB currently targets static, branch-free MBQC workflows. It is designed around causal feedforward dependencies and explicit scheduling, which makes it a good fit for pattern generation, simulation, and offline analysis of executable or fault-tolerant MBQC pipelines.
 
-Patterns support classically-controlled single-qubit Clifford feedforward: an optional `cflow` map assigns each measured node a conditional Clifford correction on its targets, whose inverse ordered product is tracked as a residual by the pattern's Clifford frame (`CliffordFrame`, of which `PauliFrame` is now an alias). Stim export and detector/observable certification remain Pauli-frame-only for now.
+Patterns support classically-controlled single-qubit Clifford feedforward: an optional `cflow` map assigns each measured node a conditional Clifford correction on its targets, whose inverse ordered product is tracked as a residual. `PauliFrame` is a lightweight tracker for X/Z corrections; `CliffordFrame` extends it with Clifford cosets and ordered correction events. `qompile` and `.ptn` loading select `PauliFrame` when the normalized corrections are Pauli-only, including when `cflow` contains only Pauli gates, and `CliffordFrame` when nontrivial cosets remain. Stim export and detector/observable certification remain Pauli-frame-only for now.
+
+Both `pattern.clifford_frame` and the backwards-compatible `pattern.pauli_frame` refer to the same frame, including for Clifford patterns. Direct construction accepts either `Pattern(..., clifford_frame=frame)` or `Pattern(..., pauli_frame=frame)` without deprecation warnings; specifying both raises `TypeError`. Use `PauliFrame(graph, xflow, zflow, ...)` for a Pauli-only frame and `CliffordFrame(graph, xflow, zflow, cflow=...)` for explicit Clifford corrections.
 
 ## Development
 

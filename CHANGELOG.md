@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pauli Frame Compatibility**: Restored `Pattern(pauli_frame=...)` and `pattern.pauli_frame` as warning-free alternatives to `clifford_frame`, both referring to the same instance. `PauliFrame` is again a dedicated X/Z tracker and `CliffordFrame` extends it. Compilation and `.ptn` loading choose the lightweight Pauli frame when normalized corrections have no nontrivial cosets; explicit `CliffordFrame` construction retains its type. Pass `cflow=` directly to `CliffordFrame`, rather than `PauliFrame`.
+
 - **Eliminated Probe Coordinates**: `rewrite_syndrome_rounds` drops coordinate targets for eliminated probes with no remaining operation or Pauli-observable reference, preventing isolated output wires. It preserves coordinates for other lifetimes and originally idle wires, and no longer interprets `MPAD` bits as qubit references.
 - **Stim Default Initialization**: Inputs without an explicit reset now start in `|0>` when importing Stim circuits, matching Stim semantics. Explicit `RX` and `RY` preparations remain supported; callers requiring the previous `|+>` input must specify `RX`.
 - **MPP Y-product Signs**: The Stim importer now compensates the Type-I foliation phase for products with one or two Y factors modulo four, preserving the fixed detector and observable signs as well as their determinism.
@@ -20,16 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Previous Stim MPP Rewriter**: Removed `rewrite_to_mpp`, `MppRewriteResult`, `CheckMapping`, and `UnsupportedSyndromeCircuitError`, including runtime flow-generator contraction. Use `rewrite_syndrome_rounds(source).circuit` for supported closed extraction windows, or import the source circuit directly to retain all physical quantum outputs.
 
-### Changed (Breaking)
-
-- Rename `Pattern.pauli_frame` and the `Pattern(pauli_frame=...)` constructor
-  argument to `clifford_frame`, matching the `CliffordFrame` type.
-
 ### Added
 
 - **Round-preserving Stim MPP Extraction**: `rewrite_syndrome_rounds` factors closed reset/interaction/readout probes into time-ordered MPP layers while preserving the arbitrary-input instrument on remaining wires and all source records. It retains data preparation, readout, residual Clifford blocks, native MPP layers, and Pauli feedback; record permutations update annotations and controls. The rule tracks signed controlled-Pauli products and inter-probe phases without runtime flow-generator verification. This structural pass requires no external data labels and does not promise preservation of quantum outputs on discarded probes.
 
-- **Clifford feedforward (Phase 1)**: `qompile(..., cflow=...)` accepts classically-controlled single-qubit Clifford corrections, tracked by the renamed `CliffordFrame` (`PauliFrame` stays as an alias) and simulated exactly; `.ptn` v5 serializes them, while Stim export and detector certification remain Pauli-frame-only (#285).
+- **Clifford feedforward (Phase 1)**: `qompile(..., cflow=...)` accepts classically-controlled single-qubit Clifford corrections, tracked by `CliffordFrame` (a subclass of the Pauli-only `PauliFrame`) and simulated exactly; `.ptn` v5 serializes them, while Stim export and detector certification remain Pauli-frame-only (#285).
   Pauli and Clifford corrections follow measurement order, with consistent frame adaptation for measurements and output correction.
 
 - **In-Place Graph Composition**: `graphstate.compose_into(graph1, graph2)` composes `graph2` into `graph1` by mutation with the same connection rule and validation as `compose`, keeping `graph1` node indices stable, plus `GraphState.unregister_output()` to drop an output registration. The Stim importer's fragment fold now uses it, replacing the per-step full-graph copy (quadratic in total) with a linear fold: on the 15-to-1 lattice-surgery proxy the compose stage drops from 5.0 s to 0.4 s (k=1, 23k nodes) and 54 s to 3.3 s (k=2, 101k nodes) — end-to-end import from 175 s to 82 s at k=2. The composed graph is identical up to node relabeling.

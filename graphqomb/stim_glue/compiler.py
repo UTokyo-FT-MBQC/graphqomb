@@ -37,6 +37,7 @@ from graphqomb.noise_model import (
     default_noise_placement,
     noise_op_to_stim,
 )
+from graphqomb.pauli_frame import CliffordFrame
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -309,7 +310,7 @@ def stim_compile(
     Non-Pauli measurements will raise a ValueError.
 
     Each parity check group compiles to a ``DETECTOR`` instruction, and the
-    group's tag from `graphqomb.pauli_frame.CliffordFrame.parity_check_tags` is
+    group's tag from `graphqomb.pauli_frame.PauliFrame.parity_check_tags` is
     emitted as a Stim instruction tag (for example ``DETECTOR[type=flag]``).
     Use `graphqomb.stim_glue.postselect.flag_postselection_mask` on the
     compiled circuit to post-select flag detectors with sinter.
@@ -331,7 +332,7 @@ def stim_compile(
     >>> #     ]
     >>> # )
     """
-    if pattern.clifford_frame.cflow:
+    if isinstance(pattern.clifford_frame, CliffordFrame) and pattern.clifford_frame.cflow:
         msg = (
             "Stim export supports Pauli-frame feedforward only: the pattern's frame carries "
             "Clifford feedforward (cflow), which stim classical feedback cannot express."

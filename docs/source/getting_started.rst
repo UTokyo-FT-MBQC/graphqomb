@@ -90,7 +90,9 @@ By default, :func:`graphqomb.qompiler.qompile` derives ``zflow`` from odd neighb
 The resulting :class:`graphqomb.pattern.Pattern` contains:
 
 - scheduled commands,
-- a :class:`graphqomb.pauli_frame.CliffordFrame` at ``pattern.clifford_frame``,
+- a :class:`graphqomb.pauli_frame.PauliFrame` at ``pattern.clifford_frame``
+  (also available as ``pattern.pauli_frame``), extended to
+  :class:`graphqomb.pauli_frame.CliffordFrame` when nontrivial Clifford cosets remain,
 - resource metrics such as `depth`, `max_space`, and `active_volume`.
 
 Inspect the result
