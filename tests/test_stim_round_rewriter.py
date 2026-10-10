@@ -220,6 +220,40 @@ def test_native_mpp_layers_are_untouched() -> None:
     assert rewrite_syndrome_rounds(source).circuit == source
 
 
+def test_eliminated_probe_coordinates_are_removed_across_all_lifetimes() -> None:
+    source = stim.Circuit(
+        "QUBIT_COORDS[shared](2, 3) 0 1 2\n"
+        "REPEAT 2 {\nR 1\nCX 0 1\nM 1\n}\n"
+        "MPAD 1\nDETECTOR rec[-2] rec[-3]\nOBSERVABLE_INCLUDE(0) rec[-1]\n"
+        "QUBIT_COORDS[probe](9, 9) 1"
+    )
+    result = rewrite_syndrome_rounds(source)
+    assert result.eliminated_probes == 2
+    assert result.record_map == (0, 1, 2)
+    # Keep both data and the originally coordinate-only wire, including the tag.
+    assert result.circuit.get_final_qubit_coordinates() == {0: [2, 3], 2: [2, 3]}
+    assert result.circuit[:1] == stim.Circuit("QUBIT_COORDS[shared](2, 3) 0 2")
+    assert result.circuit[-3:] == stim.Circuit("MPAD 1\nDETECTOR rec[-2] rec[-3]\nOBSERVABLE_INCLUDE(0) rec[-1]")
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("H 1\nM 1\n", ""),
+        ("", "R 1"),
+        ("", "R 1\nMPP X1"),
+        ("", "R 1\nCX rec[-1] 1"),
+        ("", "RX 1\nCZ 1 0\nS 1\nMX 1"),
+        ("OBSERVABLE_INCLUDE(0) Z1\nM 2\n", ""),
+    ],
+)
+def test_probe_coordinates_survive_references_elsewhere(before: str, after: str) -> None:
+    source = stim.Circuit("QUBIT_COORDS(1, 2) 1\n" + before + "R 1\nCX 0 1\nM 1\n" + after)
+    result = rewrite_syndrome_rounds(source)
+    assert result.eliminated_probes == 1
+    assert result.circuit.get_final_qubit_coordinates() == {1: [1, 2]}
+
+
 @pytest.mark.parametrize("noise", ["X_ERROR(0.01) 0", "M(0.01) 0", "HERALDED_ERASE(0) 0"])
 def test_noise_requires_explicit_caller_decision(noise: str) -> None:
     with pytest.raises(ValueError, match="ideal input"):

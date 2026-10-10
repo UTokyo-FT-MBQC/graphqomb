@@ -12,6 +12,8 @@ from functools import cache
 
 import stim
 
+from graphqomb.stim_glue._parse import iter_instructions
+
 _RESETS = {"R": "Z", "RX": "X", "RY": "Y"}
 _MEASUREMENTS = {"M": "Z", "MX": "X", "MY": "Y"}
 _METADATA = {"QUBIT_COORDS", "SHIFT_COORDS", "TICK", "DETECTOR", "OBSERVABLE_INCLUDE"}
@@ -40,6 +42,45 @@ def _gate_tableau(name: str) -> stim.Tableau:
     return stim.Tableau.from_named_gate(name)
 
 
+def _referenced_qubits(instruction: stim.CircuitInstruction) -> set[int]:
+    """Return quantum and Pauli-observable targets, excluding coordinates and pad bits.
+
+    Returns
+    -------
+    set[int]
+        Physical qubit IDs referenced by the instruction.
+    """
+    if instruction.name in {"QUBIT_COORDS", "MPAD"}:
+        return set()
+    return {target.value for target in instruction.targets_copy() if target.qubit_value is not None}
+
+
+def _remove_unused_probe_coordinates(circuit: stim.Circuit, eliminated: set[int]) -> stim.Circuit:
+    """Remove coordinates only for eliminated IDs with no remaining reference.
+
+    Returns
+    -------
+    stim.Circuit
+        Circuit with unused eliminated-probe coordinate targets removed.
+    """
+    if not eliminated:
+        return circuit
+    unused = eliminated.copy()
+    for inst in iter_instructions(circuit):
+        unused.difference_update(_referenced_qubits(inst))
+    if not unused:
+        return circuit
+    output = stim.Circuit()
+    for inst in iter_instructions(circuit):
+        if inst.name == "QUBIT_COORDS":
+            targets = [target for target in inst.targets_copy() if target.value not in unused]
+            if targets:
+                output.append(inst.name, targets, inst.gate_args_copy(), tag=inst.tag)
+        else:
+            output.append(inst)
+    return output
+
+
 def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     circuit: stim.Circuit,
 ) -> RoundRewriteResult:
@@ -58,6 +99,8 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
     vector are preserved for arbitrary block input. Only closed probe outputs
     are discarded. This is a structural compilation policy, not inference of
     the intended logical subsystem. Existing MPPs are barriers, not optimized.
+    Coordinates of eliminated probes are removed only if no operation or
+    Pauli observable anywhere in the rewritten circuit still references them.
 
     Parameters
     ----------
@@ -78,8 +121,8 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
     """
     instructions = [inst for inst in circuit.flattened() if isinstance(inst, stim.CircuitInstruction)]
     width = circuit.num_qubits
-    # Whether each measured coordinate's next quantum use is a reset. Metadata
-    # (including Pauli observable annotations) does not constitute quantum use.
+    # Whether each measured coordinate's next reference is a reset. Pauli
+    # observables protect their qubits; coordinates and record bits do not.
     next_use: dict[int, str] = {}
     closed: dict[int, set[int]] = {}
     for index in range(len(instructions) - 1, -1, -1):
@@ -90,14 +133,7 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
         if data.is_noisy_gate and (name not in noiseless_measurements or any(inst.gate_args_copy())):
             msg = "rewrite_syndrome_rounds requires ideal input; remove noise explicitly."
             raise ValueError(msg)
-        if name in _METADATA and not (
-            name == "OBSERVABLE_INCLUDE"
-            and any(t.is_x_target or t.is_y_target or t.is_z_target for t in inst.targets_copy())
-        ):
-            continue
-        qubits = [
-            t.value for t in inst.targets_copy() if t.is_qubit_target or t.is_x_target or t.is_y_target or t.is_z_target
-        ]
+        qubits = _referenced_qubits(inst)
         if name in _MEASUREMENTS:
             closed[index] = {q for q in qubits if q not in next_use or next_use[q] in _RESETS}
         for q in qubits:
@@ -109,6 +145,7 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
     output_count = 0
     pending: list[tuple[stim.CircuitInstruction, int]] = []
     rounds = probes = 0
+    eliminated: set[int] = set()
     reasons: list[str] = []
 
     def emit(inst: stim.CircuitInstruction, before: int, origins: list[int] | None = None) -> None:
@@ -142,7 +179,8 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
                 for new, before, origins in rewritten:
                     emit(new, before, origins)
                 rounds += 1
-                probes += removed
+                probes += len(removed)
+                eliminated.update(removed)
             pending.clear()
         elif count or inst.name in {"MR", "MRX", "MRY"}:
             for old, before in pending:
@@ -154,6 +192,7 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
         source_count += count
     for inst, before in pending:
         emit(inst, before)
+    output = _remove_unused_probe_coordinates(output, eliminated)
     return RoundRewriteResult(output, tuple(record_map[i] for i in range(source_count)), rounds, probes, tuple(reasons))
 
 
@@ -163,14 +202,14 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
     source_count: int,
     closed: set[int],
     width: int,
-) -> tuple[list[tuple[stim.CircuitInstruction, int, list[int] | None]] | None, int, str]:
+) -> tuple[list[tuple[stim.CircuitInstruction, int, list[int] | None]] | None, set[int], str]:
     resets = {t.value for inst, _ in pending if inst.name in _RESETS for t in inst.targets_copy()}
     measured = [t.value for t in readout.targets_copy()]
     candidates = resets & set(measured) & closed
     if not candidates:
-        return None, 0, ""
+        return None, set(), ""
     if len(set(measured)) != len(measured):
-        return None, 0, "repeated readout target"
+        return None, set(), "repeated readout target"
     # U = L_A (product_a controlled(P_a)) V_D. Reordering different
     # controls produces CZ phases on A; retain these symbolically until the
     # complete layer has been collected. No state of D enters this identity.
@@ -186,20 +225,20 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
         targets = inst.targets_copy()
         if name in _METADATA:
             if name == "OBSERVABLE_INCLUDE" and any(not t.is_measurement_record_target for t in targets):
-                return None, 0, "Pauli-target observable boundary"
+                return None, set(), "Pauli-target observable boundary"
             result.append((inst, before, None))
             continue
         if any(not t.is_qubit_target for t in targets):
-            return None, 0, "classical control or Pauli-product gate inside layer"
+            return None, set(), "classical control or Pauli-product gate inside layer"
         if name in _RESETS:
             keep = []
             for target in targets:
                 q = target.value
                 if q in touched:
-                    return None, 0, "reset after a quantum operation inside layer"
+                    return None, set(), "reset after a quantum operation inside layer"
                 if q in candidates:
                     if q in prepared:
-                        return None, 0, "multiple probe resets inside layer"
+                        return None, set(), "multiple probe resets inside layer"
                     prepared[q] = _RESETS[name]
                 else:
                     keep.append(target)
@@ -208,7 +247,7 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             continue
         data = stim.gate_data(name)
         if not data.is_unitary or data.takes_pauli_targets:
-            return None, 0, "operation outside controlled-Pauli layer"
+            return None, set(), "operation outside controlled-Pauli layer"
         arity = 1 if data.is_single_qubit_gate else 2
         for start in range(0, len(targets), arity):
             group = targets[start : start + arity]
@@ -221,23 +260,23 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
                         products[a] = p.after(_gate_tableau(name), targets=qubits)
                 result.append((stim.CircuitInstruction(name, group, tag=inst.tag), before, None))
             elif len(anc) > 1:
-                return None, 0, "interaction between probe candidates"
+                return None, set(), "interaction between probe candidates"
             else:
                 a = next(iter(anc))
                 if a not in prepared:
-                    return None, 0, "probe used before reset"
+                    return None, set(), "probe used before reset"
                 if arity == 1:
                     local[a] = local[a].then(_gate_tableau(name))
                     continue
                 if name not in {"CX", "CY", "CZ"}:
-                    return None, 0, "unsupported probe interaction"
+                    return None, set(), "unsupported probe interaction"
                 control_axis, data_axis = ("Z", name[-1]) if qubits[0] == a else (name[-1], "Z")
                 pulled = local[a].inverse()(stim.PauliString(control_axis))
                 if a in pointer and pointer[a] != pulled:
-                    return None, 0, "probe control axis changes during extraction"
+                    return None, set(), "probe control axis changes during extraction"
                 pointer[a] = pulled
                 if pulled.commutes(stim.PauliString(prepared[a])):
-                    return None, 0, "probe preparation not transverse to control"
+                    return None, set(), "probe preparation not transverse to control"
                 d = qubits[1] if qubits[0] == a else qubits[0]
                 factor = stim.PauliString(width)
                 factor[d] = data_axis
@@ -246,17 +285,17 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
                         phases.symmetric_difference_update({(b, a)})
                 products[a] = factor * products[a]
     if phases:
-        return None, 0, "residual phase between probes"
+        return None, set(), "residual phase between probes"
     ordered = sorted(candidates)
     for index, a in enumerate(ordered):
         if a not in pointer or products[a].weight == 0 or products[a].sign not in {1, -1}:
-            return None, 0, "probe has trivial or non-Hermitian data product"
+            return None, set(), "probe has trivial or non-Hermitian data product"
         if any(not products[a].commutes(products[b]) for b in ordered[:index]):
-            return None, 0, "noncommuting final data products"
+            return None, set(), "noncommuting final data products"
         pulled = local[a].inverse()(stim.PauliString(_MEASUREMENTS[readout.name]))
         positive = stim.PauliString(prepared[a])
         if pulled[0] != positive[0]:
-            return None, 0, "residual probe phase requires a quantum correction"
+            return None, set(), "residual probe phase requires a quantum correction"
         if pulled.sign == -1:
             products[a] *= -1
     # All probe projections precede data readout, even if Stim lists the data
@@ -282,4 +321,4 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             result.append(
                 (stim.CircuitInstruction(readout.name, [target], tag=readout.tag), source_count, [source_count + index])
             )
-    return result, len(candidates), ""
+    return result, candidates, ""

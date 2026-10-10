@@ -48,6 +48,12 @@ remaining coordinate, together with every measurement record. In particular:
 * ``M`` remains nondemolition. There is no ``M`` to ``MR`` replacement.
 * Record-controlled Pauli gates are retained, with record references remapped.
   The ordinary graph importer lowers them into ``xflow``/``zflow``.
+* Coordinate targets for eliminated probes are removed only when no operation
+  or Pauli-target observable anywhere in the rewritten circuit references
+  that qubit ID. IDs reused in retained lifetimes and originally coordinate-only
+  wires keep their coordinates. This prevents eliminated probes from becoming
+  isolated graph outputs. Record references and ``MPAD`` bits do not keep a
+  quantum wire alive.
 
 An arbitrary logical-channel compiler still requires logical boundary metadata.
 This restricted pass instead exposes a structural, local discard policy. A

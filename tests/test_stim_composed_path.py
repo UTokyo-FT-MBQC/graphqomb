@@ -65,7 +65,7 @@ def test_round_rewrite_preserves_exported_joint_annotations(text: str, rounds: i
     assert _annotation_moments(source) == _annotation_moments(exported)
 
 
-def test_rewrite_preserves_data_coordinates() -> None:
+def test_rewrite_preserves_data_coordinates_without_disconnected_probe_output() -> None:
     source = stim.Circuit("QUBIT_COORDS(0, 0) 0\nQUBIT_COORDS(1, 0) 1\nR 1\nCX 0 1\nM 1")
     result = rewrite_syndrome_rounds(source)
     assert result.eliminated_probes == 1
@@ -73,3 +73,5 @@ def test_rewrite_preserves_data_coordinates() -> None:
     graph = imported.pattern.clifford_frame.graphstate
     data_node = graph.input_node_indices[imported.stim_to_qubit[0]]
     assert graph.coordinates[data_node][:2] == (0.0, 0.0)
+    assert set(imported.stim_to_qubit) == {0}
+    assert all(graph.neighbors(node) for node in graph.nodes)
