@@ -57,6 +57,12 @@ General determinism criteria for branch-dependent measurement labels are
 future work. No Lambda-flow theorem or finder is implemented or claimed.
 Causality and the existing Pauli detector checks keep their separate meanings.
 
+Signal shifting can optimize Pauli regions outside the causal past of cflow
+targets while retaining the Clifford boundaries. See
+:doc:`feedforward` for the static boundary rule and the unchanged cflow
+argument required when compiling the optimized maps. Detector and observable
+backpropagation through Clifford-affected nodes remains unsupported.
+
 Clifford Frame Class
 --------------------
 
