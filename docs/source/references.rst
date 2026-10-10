@@ -26,7 +26,7 @@ Module reference
     scheduler/solver
     qeccode
     stim_glue/mpp
-    stim_glue/mpp_rewriter
+    stim_glue/round_rewriter
     stim_glue/transpiler
     stim_glue/importer
     stim_glue/compiler
