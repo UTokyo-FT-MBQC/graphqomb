@@ -115,7 +115,7 @@ If you already have a graph-state design and explicit feedforward maps, you can 
 - **API reference**: https://graphqomb.readthedocs.io/en/latest/references.html
 - **QEC graph-state builder reference**: https://graphqomb.readthedocs.io/en/latest/qeccode.html
 - **Stim MPP import reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/mpp.html
-- **Stim MPP rewriter reference (experimental)**: https://graphqomb.readthedocs.io/en/latest/stim_glue/mpp_rewriter.html
+- **Round-preserving syndrome extraction**: [Local MPP rewriting](docs/source/stim_glue/round_rewriter.rst), preserving successive data chains and measurement instruments.
 - **Stim Clifford transpiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/transpiler.html
 - **Stim circuit import reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/importer.html
 - **Stim compiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/compiler.html

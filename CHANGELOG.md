@@ -9,20 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Eliminated Probe Coordinates**: `rewrite_syndrome_rounds` drops coordinate targets for eliminated probes with no remaining operation or Pauli-observable reference, preventing isolated output wires. It preserves coordinates for other lifetimes and originally idle wires, and no longer interprets `MPAD` bits as qubit references.
 - **Stim Default Initialization**: Inputs without an explicit reset now start in `|0>` when importing Stim circuits, matching Stim semantics. Explicit `RX` and `RY` preparations remain supported; callers requiring the previous `|+>` input must specify `RX`.
-- **Pair-measurement Foliation Layers**: `foliation_circuit` now normalizes `MXX`, `MYY`, and `MZZ` to MPP so repeated and anticommuting products, including mixtures with explicit MPPs, are separated before import.
 - **MPP Y-product Signs**: The Stim importer now compensates the Type-I foliation phase for products with one or two Y factors modulo four, preserving the fixed detector and observable signs as well as their determinism.
 - Validate supplied schedules against the combined normalized xflow/zflow/cflow DAG;
   reject correction sources without measurements and omit permitted self-targets
   from runtime correction events in all three flows.
 
-### Changed
-
-- **Exact Pending-Clifford MPP Rewrite**: `rewrite_to_mpp` now applies the instrument identity `Π(P) U = U Π(U† P U)` directly: Clifford bodies move unchanged behind their pulled Pauli measurements and materialize at resets, feedback barriers, or circuit exit. At a measure-reset, equal canonical Stim flows certify that the reduced MPP has replaced the source extraction ancilla, whose pending body is then discarded; the new `foliation_circuit` drops the reset-only source ancillas listed in `eliminated_qubits`. Source `TICK`s, repeated identical supports, and anticommuting products bound the imported MPP graph layers. The Stim extra now requires `stim>=1.16`, whose flow analysis the contraction certificate relies on.
-
 ### Removed
 
-- **Legacy MPP Rewrite Compatibility API**: Removed the unused `fallback` argument from `rewrite_to_mpp`, the always-empty `MppRewriteResult.fallback_segments` field, the never-raised `MppRewriteVerificationError`, and the fallback-era `CheckMapping.segment_index`. The exact pending-Clifford rewrite is now the only public path.
+- **Previous Stim MPP Rewriter**: Removed `rewrite_to_mpp`, `MppRewriteResult`, `CheckMapping`, and `UnsupportedSyndromeCircuitError`, including runtime flow-generator contraction. Use `rewrite_syndrome_rounds(source).circuit` for supported closed extraction windows, or import the source circuit directly to retain all physical quantum outputs.
 
 ### Changed (Breaking)
 
@@ -40,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Statevector tests cover all branches of a magic-state T teleportation
   before and after shifting. Clifford-dependent parity backpropagation and
   Pauli simplification with cflow remain unsupported.
+- **Round-preserving Stim MPP Extraction**: `rewrite_syndrome_rounds` factors closed reset/interaction/readout probes into time-ordered MPP layers while preserving the arbitrary-input instrument on remaining wires and all source records. It retains data preparation, readout, residual Clifford blocks, native MPP layers, and Pauli feedback; record permutations update annotations and controls. The rule tracks signed controlled-Pauli products and inter-probe phases without runtime flow-generator verification. This structural pass requires no external data labels and does not promise preservation of quantum outputs on discarded probes.
 
 - **Clifford feedforward (Phase 1)**: `qompile(..., cflow=...)` accepts classically-controlled single-qubit Clifford corrections, tracked by the renamed `CliffordFrame` (`PauliFrame` stays as an alias) and simulated exactly; `.ptn` v5 serializes them, while Stim export and detector certification remain Pauli-frame-only (#285).
   Pauli and Clifford corrections follow measurement order, with consistent frame adaptation for measurements and output correction.
