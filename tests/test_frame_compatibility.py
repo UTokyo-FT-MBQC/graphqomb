@@ -127,14 +127,14 @@ def test_pattern_rejects_conflicting_frame_names(
 
 @pytest.mark.parametrize("attribute", ["commands", "frame", "clifford_frame", "pauli_frame"])
 def test_pattern_remains_frozen(graph: GraphState, attribute: str) -> None:
-    pattern = Pattern({}, {}, (), pauli_frame=PauliFrame(graph, {}, {}))
+    pattern = Pattern({}, {}, (), frame=PauliFrame(graph, {}, {}))
     with pytest.raises(dataclasses.FrozenInstanceError):
         setattr(pattern, attribute, ())
 
 
 def test_dataclass_replace_preserves_frame_alias(graph: GraphState) -> None:
     frame = PauliFrame(graph, {}, {})
-    pattern = Pattern({}, {}, (), pauli_frame=frame)
+    pattern = Pattern({}, {}, (), frame=frame)
     updated = dataclasses.replace(pattern, commands=(TICK(),))
     replacement = CliffordFrame(graph, {}, {})
     reframed = dataclasses.replace(updated, frame=replacement)
@@ -207,8 +207,8 @@ def test_make_frame_empty_corrections_keep_metadata(
 
 def test_pauli_frame_cflow_is_read_only_and_not_stored(graph: GraphState) -> None:
     frame = PauliFrame(graph, {}, {})
-    empty = frame.cflow
-    empty[0] = {1: ca.S}
+    with pytest.raises(TypeError):
+        frame.cflow[0] = {1: ca.S}  # type: ignore[index]  # ty: ignore[invalid-assignment]
     assert frame.cflow == {}
     assert {"cflow", "_cflow", "inv_cflow", "coset", "correction_events"}.isdisjoint(vars(frame))
     with pytest.raises(AttributeError):

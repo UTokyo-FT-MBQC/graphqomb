@@ -25,7 +25,7 @@ the caller's maps. Nontrivial cosets select a Clifford frame. The normalized
 flows determine scheduling and validation in both cases.
 
 Both frame types expose ``cflow``; for a Pauli frame it is a read-only
-property returning an empty dictionary without stored Clifford state.
+property returning an immutable empty mapping without stored Clifford state.
 Use ``isinstance(frame, CliffordFrame)`` before accessing Clifford-only
 attributes: ``inv_cflow``, ``coset``, and ``correction_events``.
 ``pattern.frame`` is the primary Pattern API. Its compatibility aliases

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import itertools
 from collections import defaultdict
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import typing_extensions
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
 
     from graphqomb.clifford_algebra import C1Element
     from graphqomb.graphstate import BaseGraphState
+
+
+_EMPTY_CFLOW: Mapping[int, Mapping[int, C1Element]] = MappingProxyType({})
 
 
 def _normalize_cflow(
@@ -141,15 +145,15 @@ class PauliFrame:
         self._chain_cache = {}
 
     @property
-    def cflow(self) -> dict[int, dict[int, C1Element]]:
+    def cflow(self) -> Mapping[int, Mapping[int, C1Element]]:
         """Empty Clifford flow for Pauli-only frames.
 
         Returns
         -------
-        `dict`
-            An empty mapping. No Clifford state is stored on this frame.
+        `collections.abc.Mapping`
+            An immutable empty mapping. No Clifford state is stored on this frame.
         """
-        return {}
+        return _EMPTY_CFLOW
 
     def _check_flow(self) -> None:
         """Validate the Pauli correction dependencies."""
