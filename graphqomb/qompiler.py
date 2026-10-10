@@ -15,7 +15,7 @@ from graphqomb.command import TICK, Command, E, M, N
 from graphqomb.feedforward import dag_from_flow
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import CliffordFrame
+from graphqomb.pauli_frame import PauliFrame, make_frame
 from graphqomb.scheduler import Scheduler
 
 if TYPE_CHECKING:
@@ -73,13 +73,14 @@ def qompile(  # ruff:ignore[too-many-arguments]
     Returns
     -------
     `Pattern`
-        compiled pattern
+        Compiled pattern with a PauliFrame unless normalized cflow contains
+        nontrivial cosets, in which case it carries a CliffordFrame.
     """
     graph.check_canonical_form()
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
 
-    clifford_frame = CliffordFrame(
+    frame = make_frame(
         graph,
         xflow,
         zflow,
@@ -88,12 +89,12 @@ def qompile(  # ruff:ignore[too-many-arguments]
         parity_check_tags=parity_check_tags,
         cflow=cflow,
     )
-    return _qompile(graph, clifford_frame, scheduler=scheduler)
+    return _qompile(graph, frame, scheduler=scheduler)
 
 
 def _qompile(
     graph: BaseGraphState,
-    clifford_frame: CliffordFrame,
+    frame: PauliFrame,
     *,
     scheduler: Scheduler | None = None,
 ) -> Pattern:
@@ -105,7 +106,7 @@ def _qompile(
     ----------
     graph : `BaseGraphState`
         graph state
-    clifford_frame : `CliffordFrame`
+    frame : `PauliFrame`
         correction frame to track the frame of each node
     scheduler : `Scheduler` | `None`, optional
         scheduler to schedule the graph state preparation and measurements,
@@ -122,11 +123,12 @@ def _qompile(
     meas_bases = graph.meas_bases
     graph_coords = graph.coordinates
 
-    dag = dag_from_flow(graph, xflow=clifford_frame.xflow, zflow=clifford_frame.zflow, cflow=clifford_frame.cflow)
+    cflow = frame.cflow
+    dag = dag_from_flow(graph, xflow=frame.xflow, zflow=frame.zflow, cflow=cflow)
 
     commands: list[Command] = []
     if scheduler is None:
-        scheduler = Scheduler(graph, clifford_frame.xflow, clifford_frame.zflow, cflow=clifford_frame.cflow)
+        scheduler = Scheduler(graph, frame.xflow, frame.zflow, cflow=cflow)
         scheduler.solve_schedule()
     else:
         scheduler.validate_schedule(dag=dag)
@@ -156,7 +158,7 @@ def _qompile(
         input_node_indices=graph.input_node_indices,
         output_node_indices=graph.output_node_indices,
         commands=tuple(commands),
-        clifford_frame=clifford_frame,
+        frame=frame,
         input_coordinates=input_coords,
         input_initializations=graph.input_initializations,
     )

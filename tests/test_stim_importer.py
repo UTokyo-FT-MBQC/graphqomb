@@ -136,7 +136,7 @@ def test_stim_text_to_pattern_cancels_repeated_cz_in_one_tick_block() -> None:
         CZ 0 1
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     input_coordinates = {qubit: graph.coordinates[node] for node, qubit in graph.input_node_indices.items()}
 
     assert graph.number_of_nodes() == 2
@@ -146,7 +146,7 @@ def test_stim_text_to_pattern_cancels_repeated_cz_in_one_tick_block() -> None:
 
 def test_stim_text_to_pattern_does_not_advance_z_for_cancelled_single_qubit_block() -> None:
     result = stim_text_to_pattern("QUBIT_COORDS(0, 0) 0\nH 0\nH 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     input_node = next(iter(graph.input_node_indices))
 
     assert graph.number_of_nodes() == 1
@@ -170,7 +170,7 @@ def test_stim_text_to_pattern_imports_classically_controlled_pauli_corrections(
     has_z_correction: bool,
 ) -> None:
     result = stim_text_to_pattern(f"M 0\nTICK\n{instruction}")
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
     source = next(node for node, qubit in result.pattern.output_node_indices.items() if qubit == 0)
     target = next(node for node, qubit in result.pattern.output_node_indices.items() if qubit == 1)
 
@@ -189,7 +189,7 @@ def test_stim_text_to_pattern_feedback_x_adds_deferred_z_on_future_neighbors() -
         H 1
         """
     )
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
     source = next(iter(frame.parity_check_group[0]))
     target = next(iter(frame.xflow[source]))
     output = next(node for node, qubit in result.pattern.output_node_indices.items() if qubit == 1)
@@ -212,7 +212,7 @@ def test_stim_text_to_pattern_feedback_x_skips_z_on_past_neighbors() -> None:
         H 1
         """
     )
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
     source = next(iter(frame.parity_check_group[0]))
     target = next(iter(frame.xflow[source]))
     output = next(node for node, qubit in result.pattern.output_node_indices.items() if qubit == 1)
@@ -239,7 +239,7 @@ def test_stim_text_to_pattern_feedback_before_entanglement_keeps_detectors_deter
         DETECTOR rec[-1] rec[-3]
         """
     )
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
 
     assert frame.detector_determinism() == [True, True]
     exported = stim.Circuit(stim_compile(result.pattern))
@@ -256,7 +256,7 @@ def test_stim_text_to_pattern_imports_batched_feedback_pairs_by_parity() -> None
         CX rec[-1] 1 rec[-1] 2 rec[-1] 2
         """
     )
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
     source = next(iter(frame.parity_check_group[0]))
     target = next(node for node, qubit in result.pattern.output_node_indices.items() if qubit == 1)
 
@@ -270,7 +270,7 @@ def test_stim_text_to_pattern_schedules_direct_measurement_feedback_source_causa
 
     is_runnable(pattern)
     source = next(node for node, qubit in pattern.output_node_indices.items() if qubit == 0)
-    target = next(iter(pattern.clifford_frame.xflow[source]))
+    target = next(iter(pattern.frame.xflow[source]))
     measured_order = [cmd.node for cmd in pattern if isinstance(cmd, M)]
 
     assert measured_order.index(source) < measured_order.index(target)
@@ -335,8 +335,8 @@ def test_stim_text_to_pattern_preserves_unitary_semantics_across_ticks() -> None
 def test_stim_text_to_pattern_merge_safe_ticks_cancels_gates_across_ticks() -> None:
     text = "R 0\nTICK\nH 0\nTICK\nH 0\nTICK\nM 0"
 
-    default_nodes = stim_text_to_pattern(text).pattern.clifford_frame.graphstate.number_of_nodes()
-    merged_nodes = stim_text_to_pattern(text, merge_safe_ticks=True).pattern.clifford_frame.graphstate.number_of_nodes()
+    default_nodes = stim_text_to_pattern(text).pattern.frame.graphstate.number_of_nodes()
+    merged_nodes = stim_text_to_pattern(text, merge_safe_ticks=True).pattern.frame.graphstate.number_of_nodes()
 
     assert default_nodes == 3
     assert merged_nodes == 1
@@ -345,8 +345,8 @@ def test_stim_text_to_pattern_merge_safe_ticks_cancels_gates_across_ticks() -> N
 def test_stim_text_to_pattern_merge_safe_ticks_folds_boundary_cliffords_across_ticks() -> None:
     text = "R 0\nTICK\nH 0\nTICK\nM 0"
 
-    default_nodes = stim_text_to_pattern(text).pattern.clifford_frame.graphstate.number_of_nodes()
-    merged_nodes = stim_text_to_pattern(text, merge_safe_ticks=True).pattern.clifford_frame.graphstate.number_of_nodes()
+    default_nodes = stim_text_to_pattern(text).pattern.frame.graphstate.number_of_nodes()
+    merged_nodes = stim_text_to_pattern(text, merge_safe_ticks=True).pattern.frame.graphstate.number_of_nodes()
 
     assert default_nodes == 2
     assert merged_nodes == 1
@@ -359,7 +359,7 @@ def test_stim_text_to_pattern_merge_safe_ticks_keeps_detectors_deterministic() -
     result = stim_text_to_pattern(text, merge_safe_ticks=True)
     compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
 
-    assert result.pattern.clifford_frame.graphstate.number_of_nodes() == 3
+    assert result.pattern.frame.graphstate.number_of_nodes() == 3
     assert compiled.num_detectors == 1
     assert compiled.detector_error_model().num_errors == 0
     assert np.array_equal(
@@ -437,9 +437,9 @@ def test_stim_import_entry_points_accept_merge_safe_ticks(tmp_path: Path) -> Non
     from_file = stim_file_to_pattern(path, merge_safe_ticks=True)
     from_circuit = stim_circuit_to_pattern(stim.Circuit(text), merge_safe_ticks=True)
 
-    assert from_text.pattern.clifford_frame.graphstate.number_of_nodes() == 1
-    assert from_file.pattern.clifford_frame.graphstate.number_of_nodes() == 1
-    assert from_circuit.pattern.clifford_frame.graphstate.number_of_nodes() == 1
+    assert from_text.pattern.frame.graphstate.number_of_nodes() == 1
+    assert from_file.pattern.frame.graphstate.number_of_nodes() == 1
+    assert from_circuit.pattern.frame.graphstate.number_of_nodes() == 1
 
 
 @pytest.mark.parametrize(
@@ -508,7 +508,7 @@ def test_stim_text_to_pattern_aligns_parallel_gate_outputs_with_different_depths
         S 1
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     output_coordinates = {qubit: graph.coordinates[node] for node, qubit in graph.output_node_indices.items()}
     lane_0_z = sorted(coord[2] for coord in graph.coordinates.values() if np.isclose(coord[0], 0.0))
     lane_1_z = sorted(coord[2] for coord in graph.coordinates.values() if np.isclose(coord[0], 1.0))
@@ -526,7 +526,7 @@ def test_stim_text_to_pattern_relocates_idle_input_without_adding_a_wire_node() 
         H 0
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     idle_input = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
     idle_output = next(node for node, qubit in graph.output_node_indices.items() if qubit == 1)
 
@@ -598,8 +598,8 @@ def test_stim_text_to_pattern_imports_tick_separated_mpp_block() -> None:
 
     assert result.stim_to_qubit == {10: 0, 12: 1}
     assert len(result.mpp_extractions) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
-    assert set(result.pattern.clifford_frame.logical_observables) == {3}
+    assert len(result.pattern.frame.parity_check_group) == 1
+    assert set(result.pattern.frame.logical_observables) == {3}
     assert set(result.pattern.output_node_indices.values()) == {0, 1}
 
 
@@ -615,7 +615,7 @@ def test_stim_text_to_pattern_combines_commuting_mpp_instructions_in_one_tick_bl
 
     assert len(result.mpp_extractions) == 1
     assert result.mpp_extractions[0].supports == (((0, "X"),), ((1, "Z"),))
-    assert len(result.pattern.clifford_frame.parity_check_group) == 2
+    assert len(result.pattern.frame.parity_check_group) == 2
 
 
 def test_stim_text_to_pattern_rejects_anticommuting_mpp_in_one_tick_block() -> None:
@@ -626,7 +626,7 @@ def test_stim_text_to_pattern_rejects_anticommuting_mpp_in_one_tick_block() -> N
 def test_stim_text_to_pattern_preserves_signed_mpp_measurement_result() -> None:
     result = stim_text_to_pattern("MPP !X0*Z1")
     extraction = result.mpp_extractions[0]
-    graphstate = result.pattern.clifford_frame.graphstate
+    graphstate = result.pattern.frame.graphstate
     negative_x_measurements = [
         node
         for node, meas_basis in graphstate.meas_bases.items()
@@ -642,7 +642,7 @@ def test_stim_text_to_pattern_preserves_signed_mpp_measurement_result() -> None:
 def test_stim_text_to_pattern_preserves_signed_mpp_y_measurement_axis() -> None:
     source = stim.Circuit("RY 0\nTICK\nMPP !Y0\nDETECTOR rec[-1]")
     result = stim_circuit_to_pattern(source)
-    graphstate = result.pattern.clifford_frame.graphstate
+    graphstate = result.pattern.frame.graphstate
     positive_y_measurements = [
         node
         for node, meas_basis in graphstate.meas_bases.items()
@@ -779,7 +779,7 @@ def test_stim_text_to_pattern_builds_commuting_mpp_block_at_common_z(
         """,
         y_foliation=y_foliation,
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     z_coordinates = {coordinate[2] for coordinate in graph.coordinates.values()}
 
     assert len(result.mpp_extractions) == 1
@@ -789,8 +789,8 @@ def test_stim_text_to_pattern_builds_commuting_mpp_block_at_common_z(
     assert np.isclose(max(z_coordinates), 2.0)
     assert set(result.pattern.input_node_indices.values()) == set(range(7))
     assert set(result.pattern.output_node_indices.values()) == set(range(7))
-    mixed_check_ancilla = next(iter(result.pattern.clifford_frame.parity_check_group[2]))
-    mixed_loop_ancilla = next(iter(result.pattern.clifford_frame.parity_check_group[5]))
+    mixed_check_ancilla = next(iter(result.pattern.frame.parity_check_group[2]))
+    mixed_loop_ancilla = next(iter(result.pattern.frame.parity_check_group[5]))
     assert graph.has_edge(mixed_check_ancilla, mixed_loop_ancilla)
 
 
@@ -805,7 +805,7 @@ def test_stim_text_to_pattern_advances_z_once_per_mpp_tick_block() -> None:
         MPP X0*X1
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     z_coordinates = {coordinate[2] for coordinate in graph.coordinates.values()}
 
     assert len(result.mpp_extractions) == 2
@@ -820,7 +820,7 @@ def test_stim_text_to_pattern_relocates_idle_input_to_mpp_output_layer() -> None
         MPP X0
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     idle_input = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
     idle_output = next(node for node, qubit in graph.output_node_indices.items() if qubit == 1)
     active_output = next(node for node, qubit in graph.output_node_indices.items() if qubit == 0)
@@ -833,14 +833,14 @@ def test_stim_text_to_pattern_relocates_idle_input_to_mpp_output_layer() -> None
 
 def test_stim_text_to_pattern_derives_complete_zflow_from_xflow() -> None:
     result = stim_text_to_pattern("H 0\nTICK\nMPP X0")
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
 
     assert frame.zflow == {node: odd_neighbors(targets, frame.graphstate) for node, targets in frame.xflow.items()}
 
 
 def test_stim_text_to_pattern_excludes_mpp_ancilla_from_xflow() -> None:
     result = stim_text_to_pattern("MPP X0\nDETECTOR rec[-1]")
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
 
     ancilla_nodes = frame.parity_check_group[0]
     assert len(ancilla_nodes) == 1
@@ -850,7 +850,7 @@ def test_stim_text_to_pattern_excludes_mpp_ancilla_from_xflow() -> None:
 
 def test_stim_text_to_pattern_appends_output_after_type_i_mpp_measurements() -> None:
     result = stim_text_to_pattern("MPP X0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
 
     assert graph.number_of_nodes() == 4
     assert len(graph.meas_bases) == 3
@@ -860,7 +860,7 @@ def test_stim_text_to_pattern_appends_output_after_type_i_mpp_measurements() -> 
 
 def test_stim_text_to_pattern_appends_output_after_type_ii_y_measurements() -> None:
     result = stim_text_to_pattern("MPP Y0", y_foliation=YFoliation.TYPE_II)
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     y_measurements = [
         basis for basis in graph.meas_bases.values() if isinstance(basis, AxisMeasBasis) and basis.axis == Axis.Y
     ]
@@ -881,7 +881,7 @@ def test_stim_import_entry_points_accept_type_ii_foliation(tmp_path: Path) -> No
     for result in (circuit_result, file_result):
         axes = [
             basis.axis
-            for basis in result.pattern.clifford_frame.graphstate.meas_bases.values()
+            for basis in result.pattern.frame.graphstate.meas_bases.values()
             if isinstance(basis, AxisMeasBasis)
         ]
         assert axes.count(Axis.Y) == 3
@@ -927,7 +927,7 @@ def test_stim_text_to_pattern_assigns_single_measurement_to_existing_wire_node()
     assert isinstance(output_measurements[0].meas_basis, AxisMeasBasis)
     assert output_measurements[0].meas_basis.axis == Axis.X
     assert output_measurements[0].meas_basis.sign == Sign.PLUS
-    assert result.pattern.clifford_frame.graphstate.coordinates[output_node] == (1.0, 2.0, 1.0)
+    assert result.pattern.frame.graphstate.coordinates[output_node] == (1.0, 2.0, 1.0)
 
 
 def test_stim_text_to_pattern_preserves_mpp_lane_coordinate_for_terminal_measurement() -> None:
@@ -939,7 +939,7 @@ def test_stim_text_to_pattern_preserves_mpp_lane_coordinate_for_terminal_measure
         MX 0
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     output_node = next(node for node, qubit in result.pattern.output_node_indices.items() if qubit == 0)
     output_basis = graph.meas_bases[output_node]
 
@@ -960,7 +960,7 @@ def test_stim_text_to_pattern_places_gate_after_mpp_at_next_z_layer() -> None:
         MX 0
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     output_node = next(node for node, qubit in graph.output_node_indices.items() if qubit == 0)
 
     assert graph.coordinates[output_node] == (1.0, 2.0, 3.0)
@@ -978,7 +978,7 @@ def test_stim_text_to_pattern_composes_gate_output_with_mpp_input_at_same_z() ->
         MPP X0*Z1
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     input_coordinates = {qubit: graph.coordinates[node] for node, qubit in graph.input_node_indices.items()}
     output_coordinates = {qubit: graph.coordinates[node] for node, qubit in graph.output_node_indices.items()}
 
@@ -1029,8 +1029,8 @@ def test_stim_text_to_pattern_preserves_multiple_measurement_results_in_target_o
         )
         == 2
     )
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group[0]) == 2
+    assert len(result.pattern.frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group[0]) == 2
 
 
 def test_stim_text_to_pattern_maps_m_and_mpp_records_to_one_detector() -> None:
@@ -1048,8 +1048,8 @@ def test_stim_text_to_pattern_maps_m_and_mpp_records_to_one_detector() -> None:
         isinstance(command, M) and isinstance(command.meas_basis, AxisMeasBasis) and command.meas_basis.axis == Axis.Z
         for command in result.pattern.commands
     )
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group[0]) == 2
+    assert len(result.pattern.frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group[0]) == 2
 
 
 def test_stim_text_to_pattern_omits_noise_and_measurement_error_probabilities() -> None:
@@ -1067,7 +1067,7 @@ def test_stim_text_to_pattern_omits_noise_and_measurement_error_probabilities() 
     assert len(measurements) == 1
     assert isinstance(measurements[0].meas_basis, AxisMeasBasis)
     assert measurements[0].meas_basis.axis == Axis.X
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group) == 1
 
 
 def test_stim_text_to_pattern_preserves_ideal_herald_records_as_zero() -> None:
@@ -1080,8 +1080,8 @@ def test_stim_text_to_pattern_preserves_ideal_herald_records_as_zero() -> None:
     )
 
     assert result.mpp_extractions[0].supports == (((0, "X"),),)
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group[0]) == 1
+    assert len(result.pattern.frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group[0]) == 1
 
 
 def test_stim_text_to_pattern_preserves_cross_block_detector_records() -> None:
@@ -1095,8 +1095,8 @@ def test_stim_text_to_pattern_preserves_cross_block_detector_records() -> None:
     )
 
     assert len(result.mpp_extractions) == 2
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group[0]) == 1
+    assert len(result.pattern.frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group[0]) == 1
 
 
 def test_stim_text_to_pattern_tracks_all_record_types_with_global_indices() -> None:
@@ -1117,9 +1117,9 @@ def test_stim_text_to_pattern_tracks_all_record_types_with_global_indices() -> N
     for extraction in result.mpp_extractions:
         assert extraction.detector_record_indices == (frozenset({0, 1, 2, 3}),)
         assert extraction.logical_observable_record_indices == {5: frozenset({0, 3})}
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group[0]) == 3
-    assert len(result.pattern.clifford_frame.logical_observables[5]) == 2
+    assert len(result.pattern.frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group[0]) == 3
+    assert len(result.pattern.frame.logical_observables[5]) == 2
 
 
 @pytest.mark.parametrize(
@@ -1169,8 +1169,8 @@ def test_stim_text_to_pattern_preserves_deterministic_type_i_y_mpp_detector(
     expected_ancilla_axis: Axis,
 ) -> None:
     pattern = stim_text_to_pattern(text, y_foliation=YFoliation.TYPE_I).pattern
-    ancilla_node = next(iter(pattern.clifford_frame.parity_check_group[0]))
-    ancilla_basis = pattern.clifford_frame.graphstate.meas_bases[ancilla_node]
+    ancilla_node = next(iter(pattern.frame.parity_check_group[0]))
+    ancilla_basis = pattern.frame.graphstate.meas_bases[ancilla_node]
     compiled = stim.Circuit(stim_compile(pattern, emit_qubit_coords=False))
 
     assert isinstance(ancilla_basis, AxisMeasBasis)
@@ -1180,7 +1180,7 @@ def test_stim_text_to_pattern_preserves_deterministic_type_i_y_mpp_detector(
 
 def test_stim_text_to_pattern_composes_mpp_output_into_next_mpp_input() -> None:
     result = stim_text_to_pattern("MPP X0\nTICK\nMPP X0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
 
     assert graph.number_of_nodes() == 7
     assert len(graph.meas_bases) == 6
@@ -1197,7 +1197,7 @@ def test_stim_text_to_pattern_accepts_annotation_only_tick_block() -> None:
         """
     )
 
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group) == 1
 
 
 @pytest.mark.parametrize(
@@ -1214,7 +1214,7 @@ def test_stim_text_to_pattern_folds_clifford_into_same_tick_measurement(
     expected_sign: Sign,
 ) -> None:
     result = stim_text_to_pattern(text)
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     measurements = [command for command in result.pattern.commands if isinstance(command, M)]
 
     assert graph.number_of_nodes() == 1
@@ -1243,7 +1243,7 @@ def test_stim_text_to_pattern_accepts_clifford_with_pauli_product_in_one_tick(me
     result = stim_text_to_pattern(f"H 0\n{measurement}\nDETECTOR rec[-1]")
 
     assert len(result.mpp_extractions) == 1
-    assert len(result.pattern.clifford_frame.parity_check_group) == 1
+    assert len(result.pattern.frame.parity_check_group) == 1
 
 
 def test_stim_text_to_pattern_orders_clifford_before_same_tick_pauli_product() -> None:
@@ -1290,7 +1290,7 @@ def test_stim_text_to_pattern_folds_initial_h_into_rx_and_aligns_input_z() -> No
         H 1
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     input_nodes = {qubit: node for node, qubit in graph.input_node_indices.items()}
     compiled = stim_compile(result.pattern, emit_qubit_coords=False).splitlines()
 
@@ -1306,7 +1306,7 @@ def test_stim_text_to_pattern_folds_initial_h_into_rx_and_aligns_input_z() -> No
 
 def test_stim_text_to_pattern_removes_clifford_preserving_initial_reset_state() -> None:
     result = stim_text_to_pattern("QUBIT_COORDS(0, 0) 0\nR 0\nS 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     input_node = next(iter(graph.input_node_indices))
 
     assert graph.number_of_nodes() == 1
@@ -1366,7 +1366,7 @@ def test_stim_text_to_pattern_reset_reuse_keeps_syndrome_detector_deterministic(
         MX 0
         """
     )
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     fresh_input = next(node for node, q_index in graph.input_node_indices.items() if q_index == 2)
     coordinate = graph.coordinates[fresh_input]
 
@@ -1500,7 +1500,7 @@ def test_stim_text_to_pattern_continues_reused_wire_in_post_measurement_state() 
 
 def test_stim_text_to_pattern_places_reused_wire_at_same_xy_and_new_z() -> None:
     result = stim_text_to_pattern("QUBIT_COORDS(1, 2) 0\nM 0\nTICK\nH 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     coordinates = sorted(graph.coordinates.values(), key=operator.itemgetter(2))
 
     assert len(coordinates) == graph.number_of_nodes()
@@ -1525,7 +1525,7 @@ def test_stim_text_to_pattern_repeated_measurement_outcomes_agree(
         assert len(simulator.results) == 2
         assert len(set(simulator.results.values())) == 1
 
-    graph = stim_text_to_pattern(f"{measurement} 0\nTICK\n{measurement} 0").pattern.clifford_frame.graphstate
+    graph = stim_text_to_pattern(f"{measurement} 0\nTICK\n{measurement} 0").pattern.frame.graphstate
     continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
     assert graph.input_initializations[continuation_node].axis == expected_axis
 
@@ -1576,7 +1576,7 @@ def test_stim_text_to_pattern_entangles_reused_wire_after_measurement() -> None:
 
 def test_stim_text_to_pattern_keeps_measured_state_when_qubit_is_reused() -> None:
     result = stim_text_to_pattern("H 0\nM 0\nTICK\nH 0\nTICK\nMX 0\nDETECTOR rec[-1] rec[-2]")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     measured_axes = [basis.axis for basis in graph.meas_bases.values() if isinstance(basis, AxisMeasBasis)]
     compiled = stim.Circuit(stim_compile(result.pattern, emit_qubit_coords=False))
 
@@ -1595,7 +1595,7 @@ def test_stim_text_to_pattern_rejects_reuse_after_inverted_measurement() -> None
 )
 def test_stim_text_to_pattern_reuses_qubit_after_measure_reset(measurement: str, reset_axis: Axis) -> None:
     result = stim_text_to_pattern(f"{measurement} 0\nTICK\nH 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
 
     assert result.qubit_to_stim == {0: 0, 1: 0}
     continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
@@ -1648,7 +1648,7 @@ def test_stim_text_to_pattern_measure_reset_entangled_partner_keeps_outcome() ->
         simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
         simulator.simulate(rng=np.random.default_rng(seed))
 
-        record_node = next(iter(result.pattern.clifford_frame.parity_check_group[0]))
+        record_node = next(iter(result.pattern.frame.parity_check_group[0]))
         outcome = int(simulator.results[record_node])
         reused_wire = np.asarray([1.0, 1.0], dtype=np.complex128) / np.sqrt(2)
         partner_wire = np.asarray([1.0, (-1.0) ** outcome], dtype=np.complex128) / np.sqrt(2)
@@ -1658,7 +1658,7 @@ def test_stim_text_to_pattern_measure_reset_entangled_partner_keeps_outcome() ->
 
 def test_stim_text_to_pattern_terminal_measure_reset_matches_plain_measurement() -> None:
     result = stim_text_to_pattern("MR 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     measurements = [command for command in result.pattern.commands if isinstance(command, M)]
 
     assert graph.number_of_nodes() == 1
@@ -1743,7 +1743,7 @@ def test_stim_text_to_pattern_matches_stim_for_random_reuse_circuits() -> None:
             simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
             simulator.simulate(rng=np.random.default_rng(sim_seed))
 
-            record_nodes = [next(iter(group)) for group in result.pattern.clifford_frame.parity_check_group]
+            record_nodes = [next(iter(group)) for group in result.pattern.frame.parity_check_group]
             outcomes = [simulator.results[node] for node in record_nodes]
             reference = _postselected_stim_state(text, outcomes)
             overlap = abs(np.vdot(reference, simulator.state.state().flatten()))
@@ -1819,7 +1819,7 @@ def test_stim_text_to_pattern_matches_stim_for_random_two_qubit_reuse_circuits()
             simulator = PatternSimulator(result.pattern, SimulatorBackend.StateVector)
             simulator.simulate(rng=np.random.default_rng(sim_seed))
 
-            record_nodes = [next(iter(group)) for group in result.pattern.clifford_frame.parity_check_group]
+            record_nodes = [next(iter(group)) for group in result.pattern.frame.parity_check_group]
             outcomes = [simulator.results[node] for node in record_nodes]
             reference = _postselected_stim_state(text, outcomes)
             reference = np.transpose(reference.reshape(2, 2), axes=stim_order).flatten()
@@ -1904,7 +1904,7 @@ def test_stim_text_to_pattern_preserves_detector_tags() -> None:
         """
     )
 
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
     assert len(frame.parity_check_group) == 2
     assert frame.parity_check_tags == ["type=flag", ""]
     assert result.mpp_extractions[0].detector_tags == ("type=flag", "")
@@ -1921,7 +1921,7 @@ def test_stim_text_to_pattern_preserves_direct_measurement_detector_tags() -> No
         """
     )
 
-    frame = result.pattern.clifford_frame
+    frame = result.pattern.frame
     assert frame.parity_check_tags == ["type=flag", "custom tag"]
 
 
@@ -1988,7 +1988,7 @@ def test_stim_text_to_pattern_fresh_wire_keeps_mid_circuit_reset_tag() -> None:
 
 def test_stim_text_to_pattern_measure_reset_tag_marks_continuation() -> None:
     result = stim_text_to_pattern("MR[mr] 0\nTICK\nH 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
 
     assert graph.input_initializations[continuation_node].tag == "mr"
@@ -1996,7 +1996,7 @@ def test_stim_text_to_pattern_measure_reset_tag_marks_continuation() -> None:
 
 def test_stim_text_to_pattern_plain_measurement_reuse_leaves_continuation_untagged() -> None:
     result = stim_text_to_pattern("M[m] 0\nTICK\nH 0")
-    graph = result.pattern.clifford_frame.graphstate
+    graph = result.pattern.frame.graphstate
     continuation_node = next(node for node, qubit in graph.input_node_indices.items() if qubit == 1)
 
     assert not graph.input_initializations[continuation_node].tag

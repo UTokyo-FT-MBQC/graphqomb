@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import typing
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -23,10 +24,10 @@ from graphqomb.common import Initialization
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from graphqomb.pauli_frame import CliffordFrame
+    from graphqomb.pauli_frame import PauliFrame
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, init=False)
 class Pattern(Sequence[Command]):
     r"""Pattern class.
 
@@ -38,8 +39,8 @@ class Pattern(Sequence[Command]):
         The map of output nodes to their logical qubit indices
     commands : `tuple`\[`Command`, ...\]
         Commands of the pattern
-    clifford_frame : `CliffordFrame`
-        Correction frame of the pattern to track the frame of each node
+    frame : `PauliFrame`
+        Correction frame, optionally a `CliffordFrame` for Clifford feedforward
     input_coordinates : `dict`\[`int`, `tuple`\[`float`, ...\]\]
         Coordinates for input nodes (2D or 3D)
     input_initializations : `dict`\[`int`, `Initialization`\]
@@ -50,9 +51,67 @@ class Pattern(Sequence[Command]):
     input_node_indices: dict[int, int]
     output_node_indices: dict[int, int]
     commands: tuple[Command, ...]
-    clifford_frame: CliffordFrame
+    frame: PauliFrame
     input_coordinates: dict[int, tuple[float, ...]] = dataclasses.field(default_factory=dict[int, tuple[float, ...]])
     input_initializations: dict[int, Initialization] = dataclasses.field(default_factory=dict[int, Initialization])
+
+    def __init__(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
+        self,
+        input_node_indices: dict[int, int],
+        output_node_indices: dict[int, int],
+        commands: tuple[Command, ...],
+        frame: PauliFrame | None = None,
+        input_coordinates: dict[int, tuple[float, ...]] | None = None,
+        input_initializations: dict[int, Initialization] | None = None,
+        *,
+        pauli_frame: PauliFrame | None = None,
+        clifford_frame: PauliFrame | None = None,
+    ) -> None:
+        frames = [value for value in (frame, pauli_frame, clifford_frame) if value is not None]
+        if len(frames) > 1:
+            msg = (
+                "Specify exactly one of frame, pauli_frame, or clifford_frame. "
+                "For dataclasses.replace(), use frame=... instead of a legacy keyword."
+            )
+            raise TypeError(msg)
+        if not frames:
+            msg = "A correction frame is required: specify frame, pauli_frame, or clifford_frame."
+            raise TypeError(msg)
+        if pauli_frame is not None or clifford_frame is not None:
+            name = "pauli_frame" if pauli_frame is not None else "clifford_frame"
+            msg = f"Pattern({name}=...) is deprecated and will be removed in v0.8.0; use frame=... instead."
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        # Frozen dataclasses require object.__setattr__ during initialization.
+        object.__setattr__(self, "input_node_indices", input_node_indices)
+        object.__setattr__(self, "output_node_indices", output_node_indices)
+        object.__setattr__(self, "commands", commands)
+        object.__setattr__(self, "frame", frames[0])
+        object.__setattr__(self, "input_coordinates", {} if input_coordinates is None else input_coordinates)
+        object.__setattr__(
+            self, "input_initializations", {} if input_initializations is None else input_initializations
+        )
+
+    @property
+    def pauli_frame(self) -> PauliFrame:
+        """Correction frame under its backwards-compatible Pauli name.
+
+        Returns
+        -------
+        `PauliFrame`
+            The same instance as `frame`, which may be a CliffordFrame.
+        """
+        return self.frame
+
+    @property
+    def clifford_frame(self) -> PauliFrame:
+        """Correction frame under its backwards-compatible Clifford name.
+
+        Returns
+        -------
+        `PauliFrame`
+            The same instance as `frame`, which may be a PauliFrame.
+        """
+        return self.frame
 
     @typing_extensions.override
     def __len__(self) -> int:
@@ -230,7 +289,7 @@ def _ensure_no_unmeasured_output_dependencies(pattern: Pattern) -> None:
     for cmd in pattern:
         if isinstance(cmd, M):
             measured.add(cmd.node)
-            children_nodes = pattern.clifford_frame.parents(cmd.node)
+            children_nodes = pattern.frame.parents(cmd.node)
             acausal_children = children_nodes - measured
             if acausal_children:
                 msg = f"These nodes depend on a unmeasured output: {sorted(acausal_children)}"

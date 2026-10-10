@@ -21,6 +21,7 @@ from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, Initialization, MeasBasis, Plane, PlannerMeasBasis
 from graphqomb.gates import MultiGate, SingleGate, TwoQubitGate
 from graphqomb.pattern import is_runnable
+from graphqomb.pauli_frame import CliffordFrame
 from graphqomb.rng import ensure_rng
 from graphqomb.statevec import StateVector
 
@@ -202,8 +203,9 @@ class PatternSimulator:
 
     def _updated_measurement_basis(self, cmd: M) -> MeasBasis:
         basis = cmd.meas_basis
-        x_pauli = self.__pattern.clifford_frame.x_pauli[cmd.node]
-        z_pauli = self.__pattern.clifford_frame.z_pauli[cmd.node]
+        frame = self.__pattern.frame
+        x_pauli = frame.x_pauli[cmd.node]
+        z_pauli = frame.z_pauli[cmd.node]
 
         if cmd.meas_basis.plane == Plane.XY:
             if x_pauli:
@@ -224,8 +226,7 @@ class PatternSimulator:
         # Residual F = K^-1; the executed observable is F A F^-1.
         # Frame normal form is D * X^a * Z^b: the Pauli adaptation above is
         # followed by the coset action on the (plane, angle) label.
-        coset = self.__pattern.clifford_frame.coset.get(cmd.node, clifford_algebra.IDENTITY)
-        if coset != clifford_algebra.IDENTITY:
+        if isinstance(frame, CliffordFrame) and (coset := frame.coset[cmd.node]) != clifford_algebra.IDENTITY:
             plane, eps, quarter_turns = clifford_algebra.act_on_plane_angle(coset, basis.plane)
             basis = PlannerMeasBasis(plane, eps * basis.angle + quarter_turns * math.pi / 2)
 
@@ -233,11 +234,10 @@ class PatternSimulator:
 
     def _apply_output_frame(self, node: int) -> None:
         node_id = self.node_indices.index(node)
-        frame = self.__pattern.clifford_frame
+        frame = self.__pattern.frame
         # Undo the frame F = D * X^a * Z^b: F^-1 = Z^b * X^a * D^-1 acts on the
         # state with the coset inverse first, then the Pauli bits.
-        coset = frame.coset.get(node, clifford_algebra.IDENTITY)
-        if coset != clifford_algebra.IDENTITY:
+        if isinstance(frame, CliffordFrame) and (coset := frame.coset[node]) != clifford_algebra.IDENTITY:
             self.state.evolve(clifford_algebra.to_matrix(clifford_algebra.inverse(coset)), node_id)
         if frame.x_pauli[node]:
             self.state.evolve(_X_MATRIX, node_id)
@@ -265,7 +265,7 @@ class PatternSimulator:
 
         # Measured outputs participate in feedforward like any other node.
         if result:
-            self.__pattern.clifford_frame.meas_flip(cmd.node)
+            self.__pattern.frame.meas_flip(cmd.node)
 
     @apply_cmd.register
     def _(self, cmd: TICK, *, rng: np.random.Generator) -> None:
