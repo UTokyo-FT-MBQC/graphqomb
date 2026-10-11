@@ -258,3 +258,24 @@ def test_probe_coordinates_survive_references_elsewhere(before: str, after: str)
 def test_noise_requires_explicit_caller_decision(noise: str) -> None:
     with pytest.raises(ValueError, match="ideal input"):
         rewrite_syndrome_rounds(stim.Circuit(noise))
+
+
+def test_data_gate_moves_probe_support_before_phase_check_accepts_commuting_layer() -> None:
+    """Support moved onto another data qubit by a data Clifford is seen by the later probe's phase check."""
+    source = stim.Circuit("RX 2 3\nCX 2 0\nCZ 0 1\nCZ 1 3\nMX 2 3")
+    result = rewrite_syndrome_rounds(source)
+
+    assert result.rewritten_rounds == 1
+    assert result.eliminated_probes == 2
+    mpps = [str(inst) for inst in result.circuit if inst.name == "MPP"]
+    assert mpps == ["MPP X0*Z1 Z1"]
+
+
+def test_data_gate_moves_probe_support_before_phase_check_rejects_residual_phase() -> None:
+    """A later probe anticommuting with the moved support leaves the window unchanged with its reason."""
+    source = stim.Circuit("RX 2 3\nCX 2 0\nCZ 0 1\nCX 3 1\nMX 2 3")
+    result = rewrite_syndrome_rounds(source)
+
+    assert result.rewritten_rounds == 0
+    assert result.retained_reasons == ("residual phase between probes",)
+    assert result.circuit == source
