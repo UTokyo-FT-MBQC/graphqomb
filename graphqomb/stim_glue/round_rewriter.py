@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cache
+from typing import TYPE_CHECKING
 
 import stim
 
 from graphqomb.stim_glue._parse import iter_instructions
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _RESETS = {"R": "Z", "RX": "X", "RY": "Y"}
 _MEASUREMENTS = {"M": "Z", "MX": "X", "MY": "Y"}
@@ -196,6 +200,24 @@ def rewrite_syndrome_rounds(  # ruff: ignore[complex-structure, too-many-branche
     return RoundRewriteResult(output, tuple(record_map[i] for i in range(source_count)), rounds, probes, tuple(reasons))
 
 
+def _refresh_support(
+    support_index: dict[int, set[int]],
+    product: stim.PauliString,
+    probe: int,
+    qubits: Iterable[int],
+) -> None:
+    """Keep ``support_index[q]`` equal to the probes whose data product is non-identity on ``q``.
+
+    Only the qubits a gate or factor touched can change, so refreshing those keeps the index exact.
+    """
+    for qubit in qubits:
+        probes = support_index.setdefault(qubit, set())
+        if product[qubit]:
+            probes.add(probe)
+        else:
+            probes.discard(probe)
+
+
 def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements, too-many-locals, too-many-return-statements]
     pending: list[tuple[stim.CircuitInstruction, int]],
     readout: stim.CircuitInstruction,
@@ -217,6 +239,11 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
     prepared: dict[int, str] = {}
     pointer: dict[int, stim.PauliString] = {}
     products = {a: stim.PauliString(width) for a in candidates}
+    # data qubit -> probes whose product currently acts on it; conjugation by a
+    # data gate and factor multiplication only touch a few qubits, so every
+    # product update below is proportional to the gate's locality, not to the
+    # number of probes in the layer.
+    support_index: dict[int, set[int]] = {}
     phases: set[tuple[int, int]] = set()
     result: list[tuple[stim.CircuitInstruction, int, list[int] | None]] = []
     touched: set[int] = set()
@@ -255,9 +282,12 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             touched.update(qubits)
             anc = candidates.intersection(qubits)
             if not anc:
-                for a, p in products.items():
-                    if any(p[q] for q in qubits):
-                        products[a] = p.after(_gate_tableau(name), targets=qubits)
+                affected: set[int] = set()
+                for q in qubits:
+                    affected |= support_index.get(q, set())
+                for a in affected:
+                    products[a] = products[a].after(_gate_tableau(name), targets=qubits)
+                    _refresh_support(support_index, products[a], a, qubits)
                 result.append((stim.CircuitInstruction(name, group, tag=inst.tag), before, None))
             elif len(anc) > 1:
                 return None, set(), "interaction between probe candidates"
@@ -280,17 +310,24 @@ def _extract_layer(  # ruff: ignore[complex-structure, too-many-branches, too-ma
                 d = qubits[1] if qubits[0] == a else qubits[0]
                 factor = stim.PauliString(width)
                 factor[d] = data_axis
-                for b, p in products.items():
-                    if b < a and p[d] and p[d] != factor[d]:
+                factor_d = factor[d]
+                for b in support_index.get(d, ()):
+                    if b < a and products[b][d] != factor_d:
                         phases.symmetric_difference_update({(b, a)})
                 products[a] = factor * products[a]
+                _refresh_support(support_index, products[a], a, (d,))
     if phases:
         return None, set(), "residual phase between probes"
     ordered = sorted(candidates)
-    for index, a in enumerate(ordered):
-        if a not in pointer or products[a].weight == 0 or products[a].sign not in {1, -1}:
+    for a in ordered:
+        product = products[a]
+        if a not in pointer or product.weight == 0 or product.sign not in {1, -1}:
             return None, set(), "probe has trivial or non-Hermitian data product"
-        if any(not products[a].commutes(products[b]) for b in ordered[:index]):
+        # Disjoint products commute trivially; compare only against earlier probes sharing support.
+        overlapping: set[int] = set()
+        for q in product.pauli_indices():
+            overlapping |= support_index.get(q, set())
+        if any(b < a and not product.commutes(products[b]) for b in overlapping):
             return None, set(), "noncommuting final data products"
         pulled = local[a].inverse()(stim.PauliString(_MEASUREMENTS[readout.name]))
         positive = stim.PauliString(prepared[a])

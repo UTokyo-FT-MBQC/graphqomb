@@ -76,3 +76,17 @@ def test_axis_meas_basis_conjugate_negates_angle(axis: Axis, sign: Sign) -> None
     assert conjugated.axis == axis
     assert conjugated.sign == expected_sign
     assert is_close_angle(conjugated.angle, -basis.angle)
+
+
+def test_is_close_angle_rejects_non_finite_angles() -> None:
+    assert not is_close_angle(math.nan, 0)
+    assert not is_close_angle(math.inf, 0)
+    assert not is_close_angle(0, -math.inf)
+
+
+def test_is_close_angle_tolerance_boundary() -> None:
+    assert is_close_angle(1e-10, 0)
+    assert is_close_angle(2 * math.pi - 1e-10, 0)
+    assert not is_close_angle(2e-9, 0, atol=1e-9)
+    assert is_close_angle(2e-9, 0, atol=5e-9)
+    assert isinstance(is_close_angle(0, 0), bool)

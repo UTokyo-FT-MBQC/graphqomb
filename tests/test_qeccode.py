@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import math
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 import pytest
 from scipy.sparse import csr_array
 
+from graphqomb import qeccode
 from graphqomb.common import Axis, AxisMeasBasis, Sign
+from graphqomb.graphstate import GraphState
 from graphqomb.qeccode import StabilizerCode, YFoliation, build_graph_state
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def _matrix(data: list[list[int]]) -> csr_array[Any, tuple[int, int]]:
@@ -502,3 +508,167 @@ def test_build_graph_state_rejects_non_integer_z_base() -> None:
 
     with pytest.raises(TypeError, match="z_base must be an integer"):
         build_graph_state(code, z_base=0.5)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
+def test_build_graph_state_skips_distance_scan_when_centroid_is_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A free centroid is accepted from the occupancy index without a distance scan over all nodes."""
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0]]),
+        qubit_coords={0: (0.0, 0.0), 1: (1.0, 0.0)},
+    )
+
+    def fail(*_args: object) -> float:
+        pytest.fail("free centroid must not trigger math.dist over occupied coordinates")
+
+    monkeypatch.setattr(math, "dist", fail)
+    result = build_graph_state(code)
+
+    assert result.graph.coordinates[result.ancilla_nodes[0]] == (0.5, 0.0, 1.0)
+
+
+def test_build_graph_state_detects_collision_within_tolerance_across_rounding_cells() -> None:
+    """Points closer than the tolerance collide even when they round to different index cells."""
+    centroid_x = 1.0 - 2e-10
+    occupied_x = centroid_x + 8e-10
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0, 0, 0]]),
+        qubit_coords={
+            0: (centroid_x - 1.0, 0.0),
+            1: (centroid_x + 1.0, 0.0),
+            2: (occupied_x, 0.0),
+        },
+    )
+
+    result = build_graph_state(code)
+    ancilla = result.graph.coordinates[result.ancilla_nodes[0]]
+
+    assert not math.isclose(ancilla[0], centroid_x, abs_tol=1e-9)
+    assert math.isclose(ancilla[0], centroid_x + 0.5)
+    assert ancilla[1:] == (0.0, 1.0)
+
+
+def test_build_graph_state_keeps_centroid_beyond_tolerance_in_same_rounding_cell() -> None:
+    """A neighbor farther than the tolerance does not displace the ancilla."""
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0, 0, 0]]),
+        qubit_coords={
+            0: (0.0, 0.0),
+            1: (1.0, 0.0),
+            2: (0.5 + 5e-7, 0.0),
+        },
+    )
+
+    result = build_graph_state(code)
+
+    assert result.graph.coordinates[result.ancilla_nodes[0]] == (0.5, 0.0, 1.0)
+
+
+def test_build_graph_state_separates_ancillas_sharing_a_centroid() -> None:
+    """Previously placed ancillas count as occupied for later stabilizers of the same block."""
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0], [0, 0, 1, 1]]),
+        qubit_coords={0: (0.0, 0.0), 1: (1.0, 0.0)},
+    )
+
+    result = build_graph_state(code, y_foliation=YFoliation.TYPE_I)
+    coords = result.graph.coordinates
+    ancilla_xy = [coords[result.ancilla_nodes[row]][:2] for row in range(2)]
+    data_xy = {coords[node][:2] for node in result.data_nodes.values()}
+
+    assert ancilla_xy[0] == (0.5, 0.0)
+    assert ancilla_xy[1] != ancilla_xy[0]
+    assert ancilla_xy[1] not in data_xy
+
+
+def _reference_avoid_occupied_coordinate(
+    occupied_coordinates: Sequence[tuple[float, ...]],
+    coordinate: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Full-scan restatement of the escape search (the pre-index algorithm)."""
+    tolerance = 1e-9
+    occupied = [c for c in occupied_coordinates if math.isfinite(c[0]) and math.isfinite(c[1])]
+    if not any(math.dist(coordinate[:2], o[:2]) <= tolerance for o in occupied):
+        return coordinate
+    xs = [o[0] for o in occupied]
+    ys = [o[1] for o in occupied]
+    span = max(max(xs) * 0.05 - min(xs) * 0.05, max(ys) * 0.05 - min(ys) * 0.05)
+    clearance = max(0.5, span)
+    directions = ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0))
+    x, y, z = coordinate
+    for radius in range(1, 3 * len(occupied) + 2):
+        distance = radius * clearance
+        for dx, dy in directions:
+            candidate = (x + dx * distance, y + dy * distance, z)
+            if all(math.dist(candidate[:2], o[:2]) >= clearance - tolerance for o in occupied):
+                return candidate
+    pytest.fail("reference search exhausted")
+
+
+def _graph_with_coordinates(coordinates: Sequence[tuple[float, ...]]) -> GraphState:
+    graph = GraphState()
+    for coordinate in coordinates:
+        graph.add_node(coordinate=coordinate)
+    return graph
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_avoid_occupied_coordinate_matches_full_scan_reference(seed: int) -> None:
+    """Indexed collision and clearance queries place ancillas exactly where the full scan did."""
+    rng = np.random.default_rng(seed)
+    count = int(rng.integers(1, 60))
+    scale = float(rng.choice([1.0, 7.0, 400.0]))
+    # Half-integer lattice with duplicates forces collisions and dense escape rings.
+    occupied: list[tuple[float, ...]] = [
+        (float(rng.integers(-6, 7)) * 0.5 * scale, float(rng.integers(-6, 7)) * 0.5 * scale, float(rng.integers(0, 3)))
+        for _ in range(count)
+    ]
+    if rng.random() < 0.2:
+        occupied.append((math.nan, 1.0, 0.0))
+    queries = [occupied[int(rng.integers(0, len(occupied)))] for _ in range(4)]
+    queries.extend([(0.25 * scale, 0.25 * scale, 1.0), (occupied[0][0] + 5e-10, occupied[0][1], 2.0)])
+
+    graph = _graph_with_coordinates(occupied)
+    occupancy = qeccode._CoordinateOccupancy.from_graph(graph)
+    for query in queries:
+        if not (math.isfinite(query[0]) and math.isfinite(query[1])):
+            continue
+        coordinate = (float(query[0]), float(query[1]), float(query[2]))
+        expected = _reference_avoid_occupied_coordinate(occupied, coordinate)
+        assert qeccode._avoid_occupied_coordinate(graph, coordinate, occupancy) == expected
+        assert qeccode._avoid_occupied_coordinate(graph, coordinate) == expected
+
+
+def test_avoid_occupied_coordinate_collision_work_is_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolving a collision touches only nearby coordinates, not every assigned coordinate."""
+    far_away = [(1000.0 + 3.0 * i, 1000.0 + 3.0 * (i % 7), 0.0) for i in range(2000)]
+    occupied = [*far_away, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    graph = _graph_with_coordinates(occupied)
+    occupancy = qeccode._CoordinateOccupancy.from_graph(graph)
+    expected = _reference_avoid_occupied_coordinate(occupied, (0.0, 0.0, 1.0))
+
+    calls = 0
+    real_dist = math.dist
+
+    def counting(p: Sequence[float], q: Sequence[float]) -> float:
+        nonlocal calls
+        calls += 1
+        return real_dist(p, q)
+
+    monkeypatch.setattr(math, "dist", counting)
+    placed = qeccode._avoid_occupied_coordinate(graph, (0.0, 0.0, 1.0), occupancy)
+
+    assert placed == expected
+    # The full-scan algorithm evaluated every coordinate once per collision check and per
+    # escape candidate (about 10,000 distances here); local queries need a small fraction.
+    assert calls < 1000
+
+
+def test_coordinate_occupancy_handles_huge_magnitudes_exactly() -> None:
+    """Coordinates beyond the indexable magnitude fall back to exact full scans."""
+    occupied = [(1e12, 0.0, 0.0), (1e12 + 0.5, 0.0, 0.0), (3.0, 4.0, 0.0)]
+    graph = _graph_with_coordinates(occupied)
+    occupancy = qeccode._CoordinateOccupancy.from_graph(graph)
+
+    for coordinate in [(1e12, 0.0, 1.0), (3.0, 4.0, 1.0), (5.0, 5.0, 1.0)]:
+        expected = _reference_avoid_occupied_coordinate(occupied, coordinate)
+        assert qeccode._avoid_occupied_coordinate(graph, coordinate, occupancy) == expected

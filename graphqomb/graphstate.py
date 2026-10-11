@@ -267,6 +267,11 @@ class GraphState(BaseGraphState):
     __meas_bases: dict[int, MeasBasis]
     __local_cliffords: dict[int, LocalClifford]
     __coordinates: dict[int, tuple[float, ...]]
+    # Inverse registries (qubit index -> node) for O(1) duplicate detection.
+    __input_q_index_to_node: dict[int, int]
+    __output_q_index_to_node: dict[int, int]
+    # Nodes violating canonical form rule 2 (no measurement basis, not an output).
+    __unmeasured_non_outputs: set[int]
 
     __node_counter: int
 
@@ -276,6 +281,9 @@ class GraphState(BaseGraphState):
         self.__input_node_indices = {}
         self.__input_initializations = {}
         self.__output_node_indices = {}
+        self.__input_q_index_to_node = {}
+        self.__output_q_index_to_node = {}
+        self.__unmeasured_non_outputs = set()
         self.__nodes = set()
         self.__neighbors = {}
         self.__meas_bases = {}
@@ -319,6 +327,28 @@ class GraphState(BaseGraphState):
             qubit indices map of output nodes.
         """
         return self.__output_node_indices.copy()
+
+    @property
+    def input_q_index_to_node(self) -> MappingProxyType[int, int]:
+        r"""Read-only inverse of `input_node_indices` (qubit index to input node).
+
+        Returns
+        -------
+        `types.MappingProxyType`\[`int`, `int`\]
+            live view mapping each registered input qubit index to its node.
+        """
+        return MappingProxyType(self.__input_q_index_to_node)
+
+    @property
+    def output_q_index_to_node(self) -> MappingProxyType[int, int]:
+        r"""Read-only inverse of `output_node_indices` (qubit index to output node).
+
+        Returns
+        -------
+        `types.MappingProxyType`\[`int`, `int`\]
+            live view mapping each registered output qubit index to its node.
+        """
+        return MappingProxyType(self.__output_q_index_to_node)
 
     @property
     @typing_extensions.override
@@ -452,6 +482,7 @@ class GraphState(BaseGraphState):
             raise ValueError(msg)
         self.__nodes |= {node}
         self.__neighbors[node] = set()
+        self.__unmeasured_non_outputs.add(node)
         if coordinate is not None:
             self.__coordinates[node] = coordinate
         self.__node_counter = max(self.__node_counter, node + 1)
@@ -503,7 +534,7 @@ class GraphState(BaseGraphState):
             If the input node is specified
         """
         self._ensure_node_exists(node)
-        if node in self.input_node_indices:
+        if node in self.__input_node_indices:
             msg = "The input node cannot be removed"
             raise ValueError(msg)
         self.__nodes -= {node}
@@ -511,8 +542,10 @@ class GraphState(BaseGraphState):
             self.__neighbors[neighbor] -= {node}
         del self.__neighbors[node]
 
-        if node in self.output_node_indices:
-            del self.__output_node_indices[node]
+        output_q_index = self.__output_node_indices.pop(node, None)
+        if output_q_index is not None:
+            del self.__output_q_index_to_node[output_q_index]
+        self.__unmeasured_non_outputs.discard(node)
         self.__meas_bases.pop(node, None)
         self.__local_cliffords.pop(node, None)
         self.__coordinates.pop(node, None)
@@ -568,7 +601,7 @@ class GraphState(BaseGraphState):
         if node in self.__input_node_indices:
             msg = "The node is already registered as an input node."
             raise ValueError(msg)
-        if q_index in self.input_node_indices.values():
+        if q_index in self.__input_q_index_to_node:
             msg = "The q_index already exists in input qubit indices"
             raise ValueError(msg)
         if init is None:
@@ -577,6 +610,7 @@ class GraphState(BaseGraphState):
             msg = "Input initialization must be an Initialization"
             raise TypeError(msg)
         self.__input_node_indices[node] = q_index
+        self.__input_q_index_to_node[q_index] = node
         self.__input_initializations[node] = init
 
     @typing_extensions.override
@@ -601,10 +635,12 @@ class GraphState(BaseGraphState):
         if node in self.__output_node_indices:
             msg = "The node is already registered as an output node."
             raise ValueError(msg)
-        if q_index in self.output_node_indices.values():
+        if q_index in self.__output_q_index_to_node:
             msg = "The q_index already exists in output qubit indices"
             raise ValueError(msg)
         self.__output_node_indices[node] = q_index
+        self.__output_q_index_to_node[q_index] = node
+        self.__unmeasured_non_outputs.discard(node)
 
     def unregister_output(self, node: int) -> None:
         """Remove the node's output registration, keeping the node itself.
@@ -628,7 +664,18 @@ class GraphState(BaseGraphState):
         if node not in self.__output_node_indices:
             msg = "The node is not registered as an output node."
             raise ValueError(msg)
-        del self.__output_node_indices[node]
+        q_index = self.__output_node_indices.pop(node)
+        del self.__output_q_index_to_node[q_index]
+        if node not in self.__meas_bases:
+            self.__unmeasured_non_outputs.add(node)
+
+    def _clear_output_registrations(self) -> None:
+        """Drop every output registration, keeping the nodes themselves."""
+        for node in self.__output_node_indices:
+            if node not in self.__meas_bases:
+                self.__unmeasured_non_outputs.add(node)
+        self.__output_node_indices = {}
+        self.__output_q_index_to_node.clear()
 
     @typing_extensions.override
     def assign_meas_basis(self, node: int, meas_basis: MeasBasis) -> None:
@@ -643,6 +690,7 @@ class GraphState(BaseGraphState):
         """
         self._ensure_node_exists(node)
         self.__meas_bases[node] = meas_basis
+        self.__unmeasured_non_outputs.discard(node)
 
     def apply_local_clifford(self, node: int, lc: LocalClifford) -> None:
         """Apply a local clifford to the node.
@@ -700,10 +748,10 @@ class GraphState(BaseGraphState):
         if self.__local_cliffords:
             msg = "Clifford operators are applied."
             raise ValueError(msg)
-        for node in self.nodes - self.output_node_indices.keys():
-            if self.meas_bases.get(node) is None:
-                msg = "All non-output nodes must have measurement basis."
-                raise ValueError(msg)
+        # Maintained incrementally by add_node / assign_meas_basis / (un)register_output / remove_node.
+        if self.__unmeasured_non_outputs:
+            msg = "All non-output nodes must have measurement basis."
+            raise ValueError(msg)
 
     def expand_local_cliffords(self) -> ExpansionMaps:
         r"""Expand local Clifford operators applied on the input and output nodes.
@@ -770,6 +818,7 @@ class GraphState(BaseGraphState):
             )
 
         self.__input_node_indices = {}
+        self.__input_q_index_to_node.clear()
         self.__input_initializations = {}
         for new_input_index, q_index in new_input_indices.items():
             self.register_input(
@@ -813,7 +862,7 @@ class GraphState(BaseGraphState):
                 new_node_index0, new_node_index1, new_node_index2
             )
 
-        self.__output_node_indices = {}
+        self._clear_output_registrations()
         for new_output_index, q_index in new_output_index_map.items():
             self.register_output(new_output_index, q_index)
 
@@ -1152,15 +1201,21 @@ def _composition_connection_targets(graph1: BaseGraphState, graph2: BaseGraphSta
     graph1.check_canonical_form()
     graph2.check_canonical_form()
 
-    # Automatically detect connection targets: qindices that appear in both graphs
-    output_q_indices1 = set(graph1.output_node_indices.values())
+    # Work is proportional to graph2's boundary (plus graph1's boundary for a
+    # generic BaseGraphState); GraphState exposes live inverse registries.
+    input_q_index_to_node1, output_q_index_to_node1 = _q_index_registries(graph1)
     input_q_indices2 = set(graph2.input_node_indices.values())
-    target_q_indices = output_q_indices1 & input_q_indices2
+    output_q_indices2 = set(graph2.output_node_indices.values())
+
+    # Automatically detect connection targets: qindices that appear in both graphs
+    target_q_indices = {q_index for q_index in input_q_indices2 if q_index in output_q_index_to_node1}
 
     # Check for qindex conflicts: qindices used in both graphs but not for connection
-    all_q_indices1 = set(graph1.input_node_indices.values()) | output_q_indices1
-    all_q_indices2 = input_q_indices2 | set(graph2.output_node_indices.values())
-    conflicting_q_indices = (all_q_indices1 & all_q_indices2) - target_q_indices
+    conflicting_q_indices = {
+        q_index
+        for q_index in input_q_indices2 | output_q_indices2
+        if (q_index in input_q_index_to_node1 or q_index in output_q_index_to_node1) and q_index not in target_q_indices
+    }
 
     if conflicting_q_indices:
         msg = (
@@ -1171,16 +1226,31 @@ def _composition_connection_targets(graph1: BaseGraphState, graph2: BaseGraphSta
 
     # A measured output is a projective readout: the wire is consumed and
     # cannot be continued by a following graph.
+    meas_bases1 = graph1.meas_bases
     measured_connection_q_indices = sorted(
-        q_index
-        for node, q_index in graph1.output_node_indices.items()
-        if q_index in target_q_indices and node in graph1.meas_bases
+        q_index for q_index in target_q_indices if output_q_index_to_node1[q_index] in meas_bases1
     )
     if measured_connection_q_indices:
         msg = f"Cannot compose through measured output qubit indices: {measured_connection_q_indices}."
         raise ValueError(msg)
 
     return target_q_indices
+
+
+def _q_index_registries(graph: BaseGraphState) -> tuple[Mapping[int, int], Mapping[int, int]]:
+    r"""Return (input, output) qubit-index-to-node maps without copying a `GraphState`.
+
+    Returns
+    -------
+    `tuple`\[`collections.abc.Mapping`\[`int`, `int`\], `collections.abc.Mapping`\[`int`, `int`\]\]
+        Inverse registries of the input and output qubit indices.
+    """
+    if isinstance(graph, GraphState):
+        return graph.input_q_index_to_node, graph.output_q_index_to_node
+    return (
+        {q_index: node for node, q_index in graph.input_node_indices.items()},
+        {q_index: node for node, q_index in graph.output_node_indices.items()},
+    )
 
 
 def compose_into(graph1: GraphState, graph2: BaseGraphState) -> dict[int, int]:
@@ -1264,7 +1334,7 @@ def _consume_boundary_outputs(
     `dict`\[`int`, `int`\]
         Node map from each connected ``graph2`` input to its ``graph1`` node.
     """
-    output_node_by_q_index = {q_index: node for node, q_index in graph1.output_node_indices.items()}
+    output_node_by_q_index = dict(graph1.output_q_index_to_node)
     meas_bases2 = graph2.meas_bases
     coordinates2 = graph2.coordinates
 

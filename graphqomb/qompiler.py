@@ -124,13 +124,14 @@ def _qompile(
     graph_coords = graph.coordinates
 
     cflow = frame.cflow
-    dag = dag_from_flow(graph, xflow=frame.xflow, zflow=frame.zflow, cflow=cflow)
 
     commands: list[Command] = []
     if scheduler is None:
+        # Scheduler builds its own dependency DAG; building another here would be redundant.
         scheduler = Scheduler(graph, frame.xflow, frame.zflow, cflow=cflow)
         scheduler.solve_schedule()
     else:
+        dag = dag_from_flow(graph, xflow=frame.xflow, zflow=frame.zflow, cflow=cflow)
         scheduler.validate_schedule(dag=dag)
 
     timeline = scheduler.timeline
