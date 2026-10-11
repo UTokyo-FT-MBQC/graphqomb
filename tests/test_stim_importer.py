@@ -5,26 +5,31 @@ from __future__ import annotations
 import operator
 import re
 import warnings
-from typing import TYPE_CHECKING
+from itertools import pairwise
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pytest
+from scipy.sparse import csr_array
 
 from graphqomb.command import E, M
 from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import is_runnable
 from graphqomb.ptn_format import dumps as ptn_dumps
-from graphqomb.qeccode import YFoliation
+from graphqomb.qeccode import StabilizerCode, YFoliation, build_graph_state
 from graphqomb.scheduler import ScheduleConfig, Strategy
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
+from graphqomb.stim_glue import importer
+from graphqomb.stim_glue._parse import PauliSupport, StimMppExtraction, stim_mpp_extraction_from_records
 from graphqomb.stim_glue.compiler import stim_compile
 from graphqomb.stim_glue.importer import stim_circuit_to_pattern, stim_file_to_pattern, stim_text_to_pattern
 
 stim = pytest.importorskip("stim")
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -2053,3 +2058,95 @@ def test_stim_text_to_pattern_schedule_config_infeasible_raises() -> None:
             "RX 0\nR 1\nTICK\nCZ 0 1\nTICK\nM 1\nTICK\nMX 0",
             schedule_config=ScheduleConfig(Strategy.MINIMIZE_TIME, max_qubit_count=1, use_greedy=False),
         )
+
+
+def test_mpp_block_commutation_check_only_compares_overlapping_products(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Products on disjoint qubits trivially commute and are not compared pairwise."""
+    calls: list[tuple[object, object]] = []
+
+    def counting(left: object, right: object) -> bool:
+        calls.append((left, right))
+        return True
+
+    monkeypatch.setattr(importer, "pauli_products_commute", counting)
+    supports = tuple(((qubit, "Z"),) for qubit in range(200))
+    importer._validate_commuting_mpp_supports(supports)
+
+    assert calls == []
+
+
+def test_mpp_block_commutation_check_rejects_anticommuting_overlap() -> None:
+    supports = (((0, "X"), (1, "X")), ((5, "Z"),), ((1, "Z"), (2, "Z")))
+    with pytest.raises(ValueError, match="products 0 and 2 anticommute"):
+        importer._validate_commuting_mpp_supports(supports)
+
+
+def test_mpp_block_extraction_receives_only_detectors_touching_its_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each MPP block is matched against the detectors referencing its records, not the whole detector list."""
+    seen: list[int] = []
+
+    def recording(  # ruff:ignore[too-many-arguments]
+        supports: Sequence[PauliSupport],
+        record_indices: Sequence[int],
+        *,
+        coordinate_by_stim_id: Mapping[int, tuple[float, ...]],
+        detector_record_indices: Sequence[frozenset[int]],
+        logical_observable_record_indices: Mapping[int, frozenset[int]],
+        detector_tags: Sequence[str] | None = None,
+    ) -> StimMppExtraction:
+        seen.append(len(detector_record_indices))
+        return stim_mpp_extraction_from_records(
+            supports,
+            record_indices,
+            coordinate_by_stim_id=coordinate_by_stim_id,
+            detector_record_indices=detector_record_indices,
+            logical_observable_record_indices=logical_observable_record_indices,
+            detector_tags=detector_tags,
+        )
+
+    monkeypatch.setattr(importer, "stim_mpp_extraction_from_records", recording)
+    circuit = stim.Circuit(
+        """
+        MPP X0*X1
+        TICK
+        MPP Z0*Z1
+        TICK
+        MPP X0*X1
+        DETECTOR rec[-3]
+        DETECTOR rec[-2]
+        DETECTOR rec[-1] rec[-3]
+        """
+    )
+
+    result = stim_circuit_to_pattern(circuit)
+
+    assert seen == [2, 1, 1]
+    assert [extraction.detector_record_indices for extraction in result.mpp_extractions] == [
+        (frozenset({0}), frozenset({0, 2})),
+        (frozenset({1}),),
+        (frozenset({0, 2}),),
+    ]
+    assert [extraction.detector_rows for extraction in result.mpp_extractions] == [
+        (frozenset({0}), frozenset({0})),
+        (frozenset({0}),),
+        (frozenset({0}),),
+    ]
+    assert len(result.pattern.frame.parity_check_group) == 3
+
+
+def test_mpp_flow_chains_each_data_qubit_through_its_layers() -> None:
+    """The MPP data flow links consecutive layer nodes of every data qubit, in qubit then layer order."""
+    code = StabilizerCode(cast("csr_array[Any, tuple[int, int]]", csr_array([[1, 1, 0, 0, 0, 0], [0, 0, 0, 0, 1, 1]])))
+    result = build_graph_state(code, y_foliation=YFoliation.TYPE_I, data_as_io=True)
+
+    xflow = importer._mpp_flow(result)
+
+    expected: dict[int, set[int]] = {}
+    for qubit in sorted({key[0] for key in result.data_nodes}):
+        chain = [node for (data_qubit, _layer), node in sorted(result.data_nodes.items()) if data_qubit == qubit]
+        for current, following in pairwise(chain):
+            if current in result.graph.meas_bases:
+                expected[current] = {following}
+    assert xflow == expected
+    assert list(xflow) == list(expected)
+    assert xflow
