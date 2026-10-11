@@ -22,7 +22,12 @@ from graphqomb.scheduler import ScheduleConfig, Strategy
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
 from graphqomb.stim_glue import importer
-from graphqomb.stim_glue._parse import PauliSupport, StimMppExtraction, stim_mpp_extraction_from_records
+from graphqomb.stim_glue._parse import (
+    PauliSupport,
+    StimMppExtraction,
+    pauli_products_commute,
+    stim_mpp_extraction_from_records,
+)
 from graphqomb.stim_glue.compiler import stim_compile
 from graphqomb.stim_glue.importer import stim_circuit_to_pattern, stim_file_to_pattern, stim_text_to_pattern
 
@@ -2079,6 +2084,23 @@ def test_mpp_block_commutation_check_rejects_anticommuting_overlap() -> None:
     supports = (((0, "X"), (1, "X")), ((5, "Z"),), ((1, "Z"), (2, "Z")))
     with pytest.raises(ValueError, match="products 0 and 2 anticommute"):
         importer._validate_commuting_mpp_supports(supports)
+
+
+def test_mpp_block_commutation_check_rejects_first_anticommuting_pair_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An invalid block is rejected at its first anticommuting pair instead of after scanning every pair."""
+    calls = 0
+
+    def counting(left: PauliSupport, right: PauliSupport) -> bool:
+        nonlocal calls
+        calls += 1
+        return pauli_products_commute(left, right)
+
+    monkeypatch.setattr(importer, "pauli_products_commute", counting)
+    supports = tuple(((0, "X" if index % 2 else "Z"),) for index in range(200))
+    with pytest.raises(ValueError, match="products 0 and 1 anticommute"):
+        importer._validate_commuting_mpp_supports(supports)
+
+    assert calls == 1
 
 
 def test_mpp_block_extraction_receives_only_detectors_touching_its_records(monkeypatch: pytest.MonkeyPatch) -> None:

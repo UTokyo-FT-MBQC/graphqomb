@@ -550,6 +550,24 @@ def test_expand_local_cliffords_keeps_output_q_index_registry_consistent(canonic
     canonical_graph.register_output(extra, q_index + 1000)
 
 
+def test_input_q_index_view_stays_live_across_local_clifford_expansion(canonical_graph: GraphState) -> None:
+    view = canonical_graph.input_q_index_to_node
+    in_node = next(iter(canonical_graph.input_node_indices))
+    canonical_graph.apply_local_clifford(in_node, LocalClifford())
+    canonical_graph.expand_local_cliffords()
+    assert view[0] != in_node
+    assert dict(view) == {q_index: node for node, q_index in canonical_graph.input_node_indices.items()}
+
+
+def test_output_q_index_view_stays_live_across_local_clifford_expansion(canonical_graph: GraphState) -> None:
+    view = canonical_graph.output_q_index_to_node
+    out_node = next(iter(canonical_graph.output_node_indices))
+    canonical_graph.apply_local_clifford(out_node, LocalClifford())
+    canonical_graph.expand_local_cliffords()
+    assert view[0] != out_node
+    assert dict(view) == {q_index: node for node, q_index in canonical_graph.output_node_indices.items()}
+
+
 def test_check_canonical_form_tracks_measurement_and_output_changes(canonical_graph: GraphState) -> None:
     node = canonical_graph.add_node()
     with pytest.raises(ValueError, match="All non-output nodes must have measurement basis"):

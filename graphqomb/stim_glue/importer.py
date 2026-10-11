@@ -1639,25 +1639,21 @@ def _mpp_fragment(
 
 def _validate_commuting_mpp_supports(supports: Sequence[PauliSupport]) -> None:
     # Anticommutation needs a shared qubit, so only products overlapping on some
-    # qubit are compared. The reported pair is the lexicographically first
-    # anticommuting (left, right) pair, as a full pairwise scan would report.
+    # qubit are compared, in the (left, right) order a full pairwise scan would
+    # use; the first anticommuting pair found is the one that scan would report.
     products_by_qubit: dict[int, list[int]] = {}
-    conflicts: list[tuple[int, int]] = []
     for index, support in enumerate(supports):
-        compared: set[int] = set()
-        for qubit, _pauli in support:
-            for other in products_by_qubit.get(qubit, ()):
-                if other in compared:
-                    continue
-                compared.add(other)
-                if not pauli_products_commute(supports[other], support):
-                    conflicts.append((other, index))
         for qubit, _pauli in support:
             products_by_qubit.setdefault(qubit, []).append(index)
-    if conflicts:
-        left_index, right_index = min(conflicts)
-        msg = f"MPP products within one TICK block must commute; products {left_index} and {right_index} anticommute."
-        raise ValueError(msg)
+    for left_index, left in enumerate(supports):
+        overlapping = {other for qubit, _pauli in left for other in products_by_qubit[qubit] if other > left_index}
+        for right_index in sorted(overlapping):
+            if not pauli_products_commute(left, supports[right_index]):
+                msg = (
+                    "MPP products within one TICK block must commute; "
+                    f"products {left_index} and {right_index} anticommute."
+                )
+                raise ValueError(msg)
 
 
 def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]

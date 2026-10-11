@@ -675,7 +675,7 @@ class GraphState(BaseGraphState):
             if node not in self.__meas_bases:
                 self.__unmeasured_non_outputs.add(node)
         self.__output_node_indices = {}
-        self.__output_q_index_to_node = {}
+        self.__output_q_index_to_node.clear()
 
     @typing_extensions.override
     def assign_meas_basis(self, node: int, meas_basis: MeasBasis) -> None:
@@ -818,7 +818,7 @@ class GraphState(BaseGraphState):
             )
 
         self.__input_node_indices = {}
-        self.__input_q_index_to_node = {}
+        self.__input_q_index_to_node.clear()
         self.__input_initializations = {}
         for new_input_index, q_index in new_input_indices.items():
             self.register_input(
