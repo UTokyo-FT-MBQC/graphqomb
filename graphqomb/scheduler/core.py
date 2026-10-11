@@ -377,16 +377,18 @@ class Scheduler:
         Only schedules entanglement for edges with `None` time. Preserves manually set times.
         Validation of measurement causality is performed by `validate_schedule()`.
         """
+        # input_node_indices copies the registration map on every access; take it once.
+        input_nodes = self.graph.input_node_indices
         for edge in self.graph.edges:
             node1, node2 = edge
 
             # Get preparation times (input nodes are considered prepared at time -1)
             time1 = self.prepare_time.get(node1)
-            if time1 is None and node1 in self.graph.input_node_indices:
+            if time1 is None and node1 in input_nodes:
                 time1 = -1
 
             time2 = self.prepare_time.get(node2)
-            if time2 is None and node2 in self.graph.input_node_indices:
+            if time2 is None and node2 in input_nodes:
                 time2 = -1
 
             # Edge can be created when both nodes are prepared

@@ -1,10 +1,14 @@
 """Test greedy scheduling algorithms."""
 
 import itertools
+import math
+from fractions import Fraction
 
+import numpy as np
 import pytest
 
 from graphqomb.common import Plane, PlannerMeasBasis
+from graphqomb.feedforward import inverse_dag_from_dag
 from graphqomb.graphstate import GraphState
 from graphqomb.scheduler import (
     ScheduleConfig,
@@ -13,6 +17,7 @@ from graphqomb.scheduler import (
     greedy_minimize_space,
     greedy_minimize_time,
 )
+from graphqomb.scheduler.greedy import _compute_criticality, _get_prep_candidates_with_priority
 
 
 def test_greedy_minimize_time_simple() -> None:
@@ -787,3 +792,70 @@ def test_solve_schedule_orders_measured_output_after_dependencies(strategy: Stra
     assert time1 is not None
     assert time2 is not None
     assert time0 < time1 < time2
+
+
+def _reference_prep_candidates(
+    inv_dag: dict[int, set[int]],
+    neighbors_map: dict[int, set[int]],
+    prepared: set[int],
+    unmeasured: set[int],
+    criticality: dict[int, int],
+) -> list[tuple[int, float]]:
+    """Exact-arithmetic restatement of the pairwise candidate scoring."""
+    missing_map: dict[int, set[int]] = {}
+    for node in unmeasured:
+        if inv_dag[node]:
+            continue
+        missing = set(neighbors_map[node]) - set(prepared)
+        if node not in prepared:
+            missing.add(node)
+        if missing:
+            missing_map[node] = missing
+    if not missing_map:
+        return []
+    scores: dict[int, Fraction] = {}
+    for blocked, missing in missing_map.items():
+        for candidate in missing:
+            scores[candidate] = scores.get(candidate, Fraction(0)) + Fraction(criticality.get(blocked, 1), len(missing))
+    items = ((candidate, float(score)) for candidate, score in scores.items())
+    return sorted(items, key=lambda item: (-item[1], item[0]))
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_prep_candidate_scores_match_exact_pairwise_reference(seed: int) -> None:
+    """Sparse accumulation along missing-neighbor incidences reproduces the pairwise scores and order."""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(3, 15))
+    nodes = list(range(n))
+    neighbors_map: dict[int, set[int]] = {node: set() for node in nodes}
+    for a, b in itertools.combinations(nodes, 2):
+        if rng.random() < 0.3:
+            neighbors_map[a].add(b)
+            neighbors_map[b].add(a)
+    inv_dag = {node: {p for p in nodes[:node] if rng.random() < 0.2} for node in nodes}
+    prepared = {node for node in nodes if rng.random() < 0.5}
+    unmeasured = {node for node in nodes if rng.random() < 0.7}
+    criticality = {node: int(rng.integers(1, 7)) for node in nodes if rng.random() < 0.8}
+
+    result = _get_prep_candidates_with_priority(inv_dag, neighbors_map, prepared, unmeasured, criticality)
+    expected = _reference_prep_candidates(inv_dag, neighbors_map, prepared, unmeasured, criticality)
+
+    assert [candidate for candidate, _ in result] == [candidate for candidate, _ in expected]
+    for (_, score), (_, ref) in zip(result, expected, strict=True):
+        assert math.isclose(score, ref, rel_tol=1e-12, abs_tol=0.0)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_compute_criticality_accepts_precomputed_inverse_dag(seed: int) -> None:
+    """Passing the caller's inverse DAG (keyed by every node) yields the same criticality values."""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(2, 13))
+    nodes = set(range(n))
+    dag = {node: {child for child in range(node + 1, n) if rng.random() < 0.3} for node in range(n)}
+    outputs = {node for node in nodes if rng.random() < 0.2}
+
+    baseline = _compute_criticality(dag, outputs)
+    with_inverse = _compute_criticality(dag, outputs, inv_dag=inverse_dag_from_dag(dag, nodes))
+
+    assert all(with_inverse.get(node, 0) == baseline.get(node, 0) for node in nodes)
+    assert all(with_inverse.get(node, 1) == baseline.get(node, 1) for node in nodes)

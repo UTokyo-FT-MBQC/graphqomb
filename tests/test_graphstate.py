@@ -489,3 +489,130 @@ def test_compose_copies_coordinates() -> None:
     # Verify coordinates from graph2
     assert composed.coordinates[node_map2[g2_in]] == (2.0, 0.0)
     assert composed.coordinates[node_map2[g2_out]] == (3.0, 0.0)
+
+
+def test_register_input_rejects_duplicate_q_index(graph: GraphState) -> None:
+    node0 = graph.add_node()
+    node1 = graph.add_node()
+    graph.register_input(node0, 7)
+    with pytest.raises(ValueError, match="q_index already exists in input qubit indices"):
+        graph.register_input(node1, 7)
+
+
+def test_register_output_rejects_duplicate_q_index(graph: GraphState) -> None:
+    node0 = graph.add_node()
+    node1 = graph.add_node()
+    graph.register_output(node0, 7)
+    with pytest.raises(ValueError, match="q_index already exists in output qubit indices"):
+        graph.register_output(node1, 7)
+
+
+def test_unregister_output_frees_q_index(graph: GraphState) -> None:
+    node0 = graph.add_node()
+    node1 = graph.add_node()
+    graph.register_output(node0, 3)
+    graph.unregister_output(node0)
+    graph.register_output(node1, 3)
+    assert graph.output_node_indices == {node1: 3}
+
+
+def test_remove_output_node_frees_q_index(graph: GraphState) -> None:
+    node0 = graph.add_node()
+    node1 = graph.add_node()
+    graph.register_output(node0, 3)
+    graph.remove_node(node0)
+    graph.register_output(node1, 3)
+    assert graph.output_node_indices == {node1: 3}
+
+
+def test_expand_local_cliffords_keeps_input_q_index_registry_consistent(canonical_graph: GraphState) -> None:
+    in_node = next(iter(canonical_graph.input_node_indices))
+    q_index = canonical_graph.input_node_indices[in_node]
+    canonical_graph.apply_local_clifford(in_node, LocalClifford())
+    canonical_graph.expand_local_cliffords()
+    extra = canonical_graph.add_node()
+    with pytest.raises(ValueError, match="q_index already exists in input qubit indices"):
+        canonical_graph.register_input(extra, q_index)
+    canonical_graph.register_input(extra, q_index + 1000)
+    assert canonical_graph.input_node_indices[extra] == q_index + 1000
+
+
+def test_expand_local_cliffords_keeps_output_q_index_registry_consistent(canonical_graph: GraphState) -> None:
+    out_node = next(iter(canonical_graph.output_node_indices))
+    q_index = canonical_graph.output_node_indices[out_node]
+    canonical_graph.apply_local_clifford(out_node, LocalClifford())
+    canonical_graph.expand_local_cliffords()
+    extra = canonical_graph.add_node()
+    with pytest.raises(ValueError, match="q_index already exists in output qubit indices"):
+        canonical_graph.register_output(extra, q_index)
+    canonical_graph.register_output(extra, q_index + 1000)
+    canonical_graph.unregister_output(extra)
+    canonical_graph.register_output(extra, q_index + 1000)
+
+
+def test_input_q_index_view_stays_live_across_local_clifford_expansion(canonical_graph: GraphState) -> None:
+    view = canonical_graph.input_q_index_to_node
+    in_node = next(iter(canonical_graph.input_node_indices))
+    canonical_graph.apply_local_clifford(in_node, LocalClifford())
+    canonical_graph.expand_local_cliffords()
+    assert view[0] != in_node
+    assert dict(view) == {q_index: node for node, q_index in canonical_graph.input_node_indices.items()}
+
+
+def test_output_q_index_view_stays_live_across_local_clifford_expansion(canonical_graph: GraphState) -> None:
+    view = canonical_graph.output_q_index_to_node
+    out_node = next(iter(canonical_graph.output_node_indices))
+    canonical_graph.apply_local_clifford(out_node, LocalClifford())
+    canonical_graph.expand_local_cliffords()
+    assert view[0] != out_node
+    assert dict(view) == {q_index: node for node, q_index in canonical_graph.output_node_indices.items()}
+
+
+def test_check_canonical_form_tracks_measurement_and_output_changes(canonical_graph: GraphState) -> None:
+    node = canonical_graph.add_node()
+    with pytest.raises(ValueError, match="All non-output nodes must have measurement basis"):
+        canonical_graph.check_canonical_form()
+    canonical_graph.register_output(node, 999)
+    canonical_graph.check_canonical_form()
+    canonical_graph.unregister_output(node)
+    with pytest.raises(ValueError, match="All non-output nodes must have measurement basis"):
+        canonical_graph.check_canonical_form()
+    canonical_graph.assign_meas_basis(node, PlannerMeasBasis(Plane.XY, 0.0))
+    canonical_graph.check_canonical_form()
+
+
+def test_check_canonical_form_after_removing_unmeasured_node(canonical_graph: GraphState) -> None:
+    node = canonical_graph.add_node()
+    with pytest.raises(ValueError, match="All non-output nodes must have measurement basis"):
+        canonical_graph.check_canonical_form()
+    canonical_graph.remove_node(node)
+    canonical_graph.check_canonical_form()
+
+
+def test_check_canonical_form_does_not_materialize_node_set(
+    canonical_graph: GraphState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canonical check is a constant-time invariant lookup, not a scan over all nodes."""
+
+    def fail(_self: GraphState) -> set[int]:
+        pytest.fail("check_canonical_form must not copy the node set")
+
+    monkeypatch.setattr(GraphState, "nodes", property(fail))
+    canonical_graph.check_canonical_form()
+
+
+def test_register_output_does_not_scan_existing_registrations(
+    graph: GraphState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duplicate q_index detection uses an index, not a copy of the registration map."""
+    node0 = graph.add_node()
+    node1 = graph.add_node()
+    graph.register_output(node0, 0)
+
+    def fail(_self: GraphState) -> dict[int, int]:
+        pytest.fail("register_output must not copy output_node_indices")
+
+    monkeypatch.setattr(GraphState, "output_node_indices", property(fail))
+    graph.register_output(node1, 1)
+    with pytest.raises(ValueError, match="q_index already exists in output qubit indices"):
+        graph.register_output(graph.add_node(), 1)

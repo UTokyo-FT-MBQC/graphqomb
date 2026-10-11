@@ -22,13 +22,19 @@ from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.graphstate import GraphState
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 
 _TYPE_II_CHAIN_LENGTH = 3
 _MIN_ANCILLA_COLLISION_CLEARANCE = 0.5
 _ANCILLA_COLLISION_CLEARANCE_RATIO = 0.05
 _COORDINATE_TOLERANCE = 1e-9
+# Cell width of the XY occupancy index; must exceed ``_COORDINATE_TOLERANCE`` so that
+# two points within the tolerance always fall into the same or adjacent cells.
+_OCCUPANCY_CELL_WIDTH = 1e-6
+# Beyond this magnitude ``x / _OCCUPANCY_CELL_WIDTH`` loses the adjacent-cell guarantee,
+# so the index declines to screen and the exact distance scan is used.
+_OCCUPANCY_SAFE_MAGNITUDE = 1e9
 _ANCILLA_ESCAPE_DIRECTIONS = (
     (1.0, 0.0),
     (-1.0, 0.0),
@@ -303,9 +309,12 @@ def _add_ancilla_nodes(
     ancilla_nodes: dict[int, int] = {}
     supports = _stabilizer_supports(code)
     y_meas_basis = AxisMeasBasis(Axis.Y, Sign.PLUS)
+    occupancy = _CoordinateOccupancy.from_graph(graph)
     for stabilizer, support in enumerate(supports):
         explicit_ancilla_coord = _explicit_ancilla_coordinate(code, stabilizer)
         ancilla_node = graph.add_node(coordinate=explicit_ancilla_coord)
+        if explicit_ancilla_coord is not None:
+            occupancy.add(explicit_ancilla_coord)
         has_odd_y_support = len(support.hx & support.hz) % 2 == 1
         ancilla_meas_basis = (
             y_meas_basis if data_layer_plan.y_foliation is YFoliation.TYPE_I and has_odd_y_support else meas_basis
@@ -324,7 +333,9 @@ def _add_ancilla_nodes(
         if explicit_ancilla_coord is None:
             inferred_coord = _average_node_coordinates(graph, connected_data_nodes)
             if inferred_coord is not None:
-                graph.set_coordinate(ancilla_node, _avoid_occupied_coordinate(graph, inferred_coord))
+                placed_coord = _avoid_occupied_coordinate(graph, inferred_coord, occupancy)
+                graph.set_coordinate(ancilla_node, placed_coord)
+                occupancy.add(placed_coord)
 
     twisted_pairs = _twisted_stabilizer_pairs(
         supports,
@@ -531,15 +542,173 @@ def _average_node_coordinates(graph: GraphState, nodes: list[int]) -> tuple[floa
     )
 
 
+def _finite_xy(coordinate: tuple[float, ...]) -> bool:
+    return math.isfinite(coordinate[0]) and math.isfinite(coordinate[1])
+
+
+def _within_indexable_magnitude(coordinate: tuple[float, ...]) -> bool:
+    return abs(coordinate[0]) <= _OCCUPANCY_SAFE_MAGNITUDE and abs(coordinate[1]) <= _OCCUPANCY_SAFE_MAGNITUDE
+
+
+def _occupancy_cell(coordinate: tuple[float, ...], width: float) -> tuple[int, int]:
+    return (math.floor(coordinate[0] / width), math.floor(coordinate[1] / width))
+
+
+class _CoordinateOccupancy:
+    """Finite XY coordinates already assigned in a graph, bucketed by cells for local exact queries.
+
+    Two grids are kept: fine cells (``_OCCUPANCY_CELL_WIDTH``) answer the
+    collision test within ``_COORDINATE_TOLERANCE`` from the 3x3 neighborhood,
+    and coarse cells whose width is at least the requested clearance answer
+    clearance tests from the 5x5 neighborhood. The clearance only grows with
+    the coordinate span, so the coarse grid is rebuilt at most a logarithmic
+    number of times. Both queries apply the same distance predicates as a scan
+    over every coordinate; the grids only restrict which coordinates can
+    possibly matter. Coordinates beyond ``_OCCUPANCY_SAFE_MAGNITUDE`` make the
+    cell arithmetic unreliable, so once any such coordinate is stored or
+    queried the full list is scanned instead. The running bounds give the
+    clearance scale without a pass over the list.
+    """
+
+    __slots__ = (
+        "_coarse",
+        "_coarse_width",
+        "_fine",
+        "_max_x",
+        "_max_y",
+        "_min_x",
+        "_min_y",
+        "_unindexable",
+        "coordinates",
+    )
+
+    def __init__(self, coordinates: Iterable[tuple[float, ...]]) -> None:
+        self.coordinates: list[tuple[float, ...]] = []
+        self._fine: dict[tuple[int, int], list[tuple[float, ...]]] = {}
+        self._coarse: dict[tuple[int, int], list[tuple[float, ...]]] = {}
+        self._coarse_width = _MIN_ANCILLA_COLLISION_CLEARANCE
+        self._min_x = self._min_y = math.inf
+        self._max_x = self._max_y = -math.inf
+        self._unindexable = False
+        for coordinate in coordinates:
+            self.add(coordinate)
+
+    @classmethod
+    def from_graph(cls, graph: GraphState) -> _CoordinateOccupancy:
+        """Index every finite coordinate currently assigned in ``graph``.
+
+        Returns
+        -------
+        `_CoordinateOccupancy`
+            The occupancy index.
+        """
+        return cls(graph.coordinates.values())
+
+    def add(self, coordinate: tuple[float, ...]) -> None:
+        """Record a newly assigned coordinate; non-finite XY values are ignored like the exact scan does."""
+        if not _finite_xy(coordinate):
+            return
+        self.coordinates.append(coordinate)
+        x, y = coordinate[0], coordinate[1]
+        self._min_x, self._max_x = min(self._min_x, x), max(self._max_x, x)
+        self._min_y, self._max_y = min(self._min_y, y), max(self._max_y, y)
+        if not _within_indexable_magnitude(coordinate):
+            self._unindexable = True
+        self._fine.setdefault(_occupancy_cell(coordinate, _OCCUPANCY_CELL_WIDTH), []).append(coordinate)
+        self._coarse.setdefault(_occupancy_cell(coordinate, self._coarse_width), []).append(coordinate)
+
+    def _ensure_coarse_width(self, clearance: float) -> None:
+        """Rebuild the coarse grid when the clearance outgrows its cell width."""
+        if clearance <= self._coarse_width:
+            return
+        self._coarse_width = clearance
+        self._coarse = {}
+        for coordinate in self.coordinates:
+            self._coarse.setdefault(_occupancy_cell(coordinate, clearance), []).append(coordinate)
+
+    def _near(
+        self,
+        coordinate: tuple[float, ...],
+        grid: dict[tuple[int, int], list[tuple[float, ...]]],
+        width: float,
+        reach: int,
+    ) -> Iterable[tuple[float, ...]]:
+        r"""Return the coordinates that may lie within ``reach`` cells of ``coordinate`` on ``grid``.
+
+        Returns
+        -------
+        `collections.abc.Iterable`\[`tuple`\[`float`, ...\]\]
+            The coordinates of the surrounding cells, or every coordinate when
+            the cell arithmetic is unreliable for the magnitudes involved.
+        """
+        if self._unindexable or not _within_indexable_magnitude(coordinate):
+            return self.coordinates
+        cell_x, cell_y = _occupancy_cell(coordinate, width)
+        return (
+            occupied
+            for dx in range(-reach, reach + 1)
+            for dy in range(-reach, reach + 1)
+            for occupied in grid.get((cell_x + dx, cell_y + dy), ())
+        )
+
+    def collides(self, coordinate: tuple[float, ...]) -> bool:
+        """Return whether an assigned coordinate lies within ``_COORDINATE_TOLERANCE`` of ``coordinate``.
+
+        Returns
+        -------
+        `bool`
+            Same answer as scanning every assigned coordinate.
+        """
+        # Two points within the tolerance differ by at most one fine cell per axis.
+        nearby = self._near(coordinate, self._fine, _OCCUPANCY_CELL_WIDTH, 1)
+        return any(math.dist(coordinate[:2], occupied[:2]) <= _COORDINATE_TOLERANCE for occupied in nearby)
+
+    def has_clearance(self, candidate: tuple[float, ...], clearance: float) -> bool:
+        """Return whether every assigned coordinate is at least ``clearance`` (minus tolerance) away.
+
+        Returns
+        -------
+        `bool`
+            Same answer as scanning every assigned coordinate.
+        """
+        radius = clearance - _COORDINATE_TOLERANCE
+        self._ensure_coarse_width(clearance)
+        # With cells at least ``clearance`` wide, a point closer than ``radius``
+        # is at most two coarse cells away per axis (one for the distance, one
+        # for the floor rounding of the cell index).
+        nearby = self._near(candidate, self._coarse, self._coarse_width, 2)
+        return all(math.dist(candidate[:2], occupied[:2]) >= radius for occupied in nearby)
+
+    def clearance(self) -> float:
+        """Return the escape step: a fraction of the coordinate span, at least the minimum clearance.
+
+        Returns
+        -------
+        `float`
+            The clearance used between an inferred ancilla and other nodes.
+        """
+        if not self.coordinates:
+            return _MIN_ANCILLA_COLLISION_CLEARANCE
+        scaled_coordinate_span = max(
+            self._max_x * _ANCILLA_COLLISION_CLEARANCE_RATIO - self._min_x * _ANCILLA_COLLISION_CLEARANCE_RATIO,
+            self._max_y * _ANCILLA_COLLISION_CLEARANCE_RATIO - self._min_y * _ANCILLA_COLLISION_CLEARANCE_RATIO,
+        )
+        return max(_MIN_ANCILLA_COLLISION_CLEARANCE, scaled_coordinate_span)
+
+
 def _avoid_occupied_coordinate(
     graph: GraphState,
     coordinate: tuple[float, float, float],
+    occupancy: _CoordinateOccupancy | None = None,
 ) -> tuple[float, float, float]:
     r"""Move an inferred ancilla coordinate aside when its centroid is occupied.
 
     The temporal coordinate is preserved. Candidate positions expand
     deterministically in the data plane until one has enough clearance from
-    every node whose coordinate has already been assigned.
+    every node whose coordinate has already been assigned. ``occupancy`` is the
+    index of those coordinates; when omitted it is built from ``graph``. Every
+    query is local to the cells around the point, so a collision costs work
+    proportional to the nearby coordinates rather than to all of them.
 
     Returns
     -------
@@ -551,35 +720,23 @@ def _avoid_occupied_coordinate(
     ValueError
         If no finite candidate can be found within the bounded search.
     """
-    if not all(math.isfinite(value) for value in coordinate[:2]):
+    if not _finite_xy(coordinate):
         return coordinate
 
-    occupied_coordinates = tuple(
-        occupied for occupied in graph.coordinates.values() if all(math.isfinite(value) for value in occupied[:2])
-    )
-    if not any(math.dist(coordinate[:2], occupied[:2]) <= _COORDINATE_TOLERANCE for occupied in occupied_coordinates):
+    if occupancy is None:
+        occupancy = _CoordinateOccupancy.from_graph(graph)
+    if not occupancy.collides(coordinate):
         return coordinate
 
-    x_coordinates = tuple(occupied[0] for occupied in occupied_coordinates)
-    y_coordinates = tuple(occupied[1] for occupied in occupied_coordinates)
-    scaled_coordinate_span = max(
-        max(x_coordinates) * _ANCILLA_COLLISION_CLEARANCE_RATIO
-        - min(x_coordinates) * _ANCILLA_COLLISION_CLEARANCE_RATIO,
-        max(y_coordinates) * _ANCILLA_COLLISION_CLEARANCE_RATIO
-        - min(y_coordinates) * _ANCILLA_COLLISION_CLEARANCE_RATIO,
-    )
-    clearance = max(_MIN_ANCILLA_COLLISION_CLEARANCE, scaled_coordinate_span)
+    clearance = occupancy.clearance()
 
     x, y, z = coordinate
-    max_radius = 3 * len(occupied_coordinates) + 1
+    max_radius = 3 * len(occupancy.coordinates) + 1
     for radius in range(1, max_radius + 1):
         distance = radius * clearance
         for dx, dy in _ANCILLA_ESCAPE_DIRECTIONS:
             candidate = (x + dx * distance, y + dy * distance, z)
-            if all(math.isfinite(value) for value in candidate[:2]) and all(
-                math.dist(candidate[:2], occupied[:2]) >= clearance - _COORDINATE_TOLERANCE
-                for occupied in occupied_coordinates
-            ):
+            if _finite_xy(candidate) and occupancy.has_clearance(candidate, clearance):
                 return candidate
 
     msg = "could not find a finite coordinate for the inferred ancilla"

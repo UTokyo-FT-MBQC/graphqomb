@@ -190,7 +190,7 @@ def test_rounds_survive_known_initial_state_and_graph_import() -> None:
     assert sum(inst.name == "MPP" for inst in result.circuit) == 2
     assert str(result.circuit).startswith("R 0\n")
     graph = stim_circuit_to_pattern(result.circuit)
-    assert len(graph.pattern.clifford_frame.graphstate.nodes) > 2
+    assert len(graph.pattern.frame.graphstate.nodes) > 2
     exported = stim.Circuit(stim_compile(graph.pattern))
     assert exported.num_detectors == 1
     assert not np.asarray(exported.compile_detector_sampler(seed=7).sample(16)).any()
@@ -204,7 +204,7 @@ def test_mixed_readout_annotations_and_feedback_remap() -> None:
     assert "OBSERVABLE_INCLUDE(2) rec[-1]" in str(result.circuit)
     assert "CX rec[-2] 0" in str(result.circuit)
     imported = stim_circuit_to_pattern(result.circuit)
-    assert imported.pattern.clifford_frame.xflow
+    assert imported.pattern.frame.xflow
 
 
 @pytest.mark.parametrize("tail", ["H 1", "M 1", "CX 1 0", "OBSERVABLE_INCLUDE(0) Z1"])
@@ -258,3 +258,24 @@ def test_probe_coordinates_survive_references_elsewhere(before: str, after: str)
 def test_noise_requires_explicit_caller_decision(noise: str) -> None:
     with pytest.raises(ValueError, match="ideal input"):
         rewrite_syndrome_rounds(stim.Circuit(noise))
+
+
+def test_data_gate_moves_probe_support_before_phase_check_accepts_commuting_layer() -> None:
+    """Support moved onto another data qubit by a data Clifford is seen by the later probe's phase check."""
+    source = stim.Circuit("RX 2 3\nCX 2 0\nCZ 0 1\nCZ 1 3\nMX 2 3")
+    result = rewrite_syndrome_rounds(source)
+
+    assert result.rewritten_rounds == 1
+    assert result.eliminated_probes == 2
+    mpps = [str(inst) for inst in result.circuit if inst.name == "MPP"]
+    assert mpps == ["MPP X0*Z1 Z1"]
+
+
+def test_data_gate_moves_probe_support_before_phase_check_rejects_residual_phase() -> None:
+    """A later probe anticommuting with the moved support leaves the window unchanged with its reason."""
+    source = stim.Circuit("RX 2 3\nCX 2 0\nCZ 0 1\nCX 3 1\nMX 2 3")
+    result = rewrite_syndrome_rounds(source)
+
+    assert result.rewritten_rounds == 0
+    assert result.retained_reasons == ("residual phase between probes",)
+    assert result.circuit == source

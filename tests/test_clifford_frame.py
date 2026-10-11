@@ -25,8 +25,9 @@ def _chain_graph(length: int) -> GraphState:
     return graph
 
 
-def test_pauli_frame_is_clifford_frame_alias() -> None:
-    assert PauliFrame is CliffordFrame
+def test_clifford_frame_extends_pauli_frame() -> None:
+    assert PauliFrame is not CliffordFrame
+    assert issubclass(CliffordFrame, PauliFrame)
 
 
 def test_cflow_normalization_splits_pauli_part() -> None:

@@ -12,7 +12,7 @@ from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
 from graphqomb.pattern import Pattern
-from graphqomb.pauli_frame import PauliFrame
+from graphqomb.pauli_frame import CliffordFrame, PauliFrame
 from graphqomb.ptn_format import (
     dump,
     dumps,
@@ -106,12 +106,14 @@ def assert_pattern_equivalent(actual: Pattern, expected: Pattern) -> None:
     assert actual.output_node_indices == expected.output_node_indices
     assert actual.input_coordinates == expected.input_coordinates
     assert actual.input_initializations == expected.input_initializations
-    assert actual.clifford_frame.xflow == expected.clifford_frame.xflow
-    assert actual.clifford_frame.zflow == expected.clifford_frame.zflow
-    assert actual.clifford_frame.cflow == expected.clifford_frame.cflow
-    assert actual.clifford_frame.parity_check_group == expected.clifford_frame.parity_check_group
-    assert actual.clifford_frame.parity_check_tags == expected.clifford_frame.parity_check_tags
-    assert actual.clifford_frame.logical_observables == expected.clifford_frame.logical_observables
+    assert actual.frame.xflow == expected.frame.xflow
+    assert actual.frame.zflow == expected.frame.zflow
+    actual_cflow = actual.frame.cflow if isinstance(actual.frame, CliffordFrame) else {}
+    expected_cflow = expected.frame.cflow if isinstance(expected.frame, CliffordFrame) else {}
+    assert actual_cflow == expected_cflow
+    assert actual.frame.parity_check_group == expected.frame.parity_check_group
+    assert actual.frame.parity_check_tags == expected.frame.parity_check_tags
+    assert actual.frame.logical_observables == expected.frame.logical_observables
     assert [command_signature(cmd) for cmd in actual.commands] == [command_signature(cmd) for cmd in expected.commands]
 
 
@@ -391,7 +393,7 @@ def test_dumps_formats_near_known_angle() -> None:
         input_node_indices={},
         output_node_indices={},
         commands=(M(node, PlannerMeasBasis(Plane.XY, math.pi / 4 + 1e-10)),),
-        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
+        frame=PauliFrame(graph, xflow={}, zflow={}),
     )
 
     assert f"M {node} XY pi/4" in dumps(pattern)
@@ -409,7 +411,7 @@ def test_dumps_preserves_xz_plane_x_pauli_sign() -> None:
             M(plus_node, PlannerMeasBasis(Plane.XZ, math.pi / 2)),
             M(minus_node, PlannerMeasBasis(Plane.XZ, 3 * math.pi / 2)),
         ),
-        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
+        frame=PauliFrame(graph, xflow={}, zflow={}),
     )
 
     ptn_str = dumps(pattern)
@@ -436,7 +438,7 @@ def test_dumps_preserves_consecutive_trailing_ticks() -> None:
         input_node_indices={},
         output_node_indices={},
         commands=(N(node), TICK(), TICK()),
-        clifford_frame=PauliFrame(graph, xflow={}, zflow={}),
+        frame=PauliFrame(graph, xflow={}, zflow={}),
     )
 
     ptn_str = dumps(pattern)
@@ -647,8 +649,8 @@ M 0 XY 0
 """
     result = loads(ptn_str)
 
-    assert result.clifford_frame.xflow == {0: {1, 2}}
-    assert result.clifford_frame.zflow == {0: {3, 4}}
+    assert result.frame.xflow == {0: {1, 2}}
+    assert result.frame.zflow == {0: {3, 4}}
 
 
 def test_loads_detector_parsing() -> None:
@@ -666,9 +668,9 @@ M 0 XY 0
 """
     result = loads(ptn_str)
 
-    assert len(result.clifford_frame.parity_check_group) == 2
-    assert result.clifford_frame.parity_check_group[0] == {0, 1, 2}
-    assert result.clifford_frame.parity_check_group[1] == {3, 4}
+    assert len(result.frame.parity_check_group) == 2
+    assert result.frame.parity_check_group[0] == {0, 1, 2}
+    assert result.frame.parity_check_group[1] == {3, 4}
 
 
 def test_loads_observable_parsing() -> None:
@@ -686,7 +688,7 @@ M 1 X +
 """
     result = loads(ptn_str)
 
-    assert result.clifford_frame.logical_observables == {0: {0, 1}}
+    assert result.frame.logical_observables == {0: {0, 1}}
 
 
 def test_loads_missing_version() -> None:
@@ -835,8 +837,8 @@ M 0 XY 0
 """
     result = loads(ptn_str)
 
-    assert result.clifford_frame.xflow == {}
-    assert result.clifford_frame.zflow == {}
+    assert result.frame.xflow == {}
+    assert result.frame.zflow == {}
 
 
 def test_comments_ignored() -> None:
@@ -906,16 +908,16 @@ M 20 Y -
 
     assert result.input_node_indices == {10: 0}
     assert result.output_node_indices == {30: 0}
-    assert result.clifford_frame.graphstate.nodes == {10, 20, 30}
-    assert result.clifford_frame.graphstate.edges == {(10, 20), (20, 30)}
-    assert result.clifford_frame.graphstate.has_node(20)
-    assert result.clifford_frame.graphstate.has_edge(30, 20)
-    assert result.clifford_frame.graphstate.number_of_nodes() == 3
-    assert result.clifford_frame.graphstate.number_of_edges() == 2
+    assert result.frame.graphstate.nodes == {10, 20, 30}
+    assert result.frame.graphstate.edges == {(10, 20), (20, 30)}
+    assert result.frame.graphstate.has_node(20)
+    assert result.frame.graphstate.has_edge(30, 20)
+    assert result.frame.graphstate.number_of_nodes() == 3
+    assert result.frame.graphstate.number_of_edges() == 2
     with pytest.raises(NotImplementedError, match="read-only"):
-        result.clifford_frame.graphstate.add_node()
+        result.frame.graphstate.add_node()
     with pytest.raises(NotImplementedError, match="read-only"):
-        result.clifford_frame.graphstate.add_edge(10, 30)
+        result.frame.graphstate.add_edge(10, 30)
     assert any(isinstance(cmd, N) and cmd.node == 20 for cmd in result.commands)
 
 
@@ -975,8 +977,8 @@ def test_dumps_keeps_version_2_without_detector_tags() -> None:
 def test_dumps_keeps_version_2_for_tag_on_empty_group() -> None:
     """A tag on an empty (unwritten) group does not force the version 3 header."""
     pattern = create_simple_pattern()
-    pattern.clifford_frame.parity_check_group.append(set())
-    pattern.clifford_frame.parity_check_tags.append("type=flag")
+    pattern.frame.parity_check_group.append(set())
+    pattern.frame.parity_check_tags.append("type=flag")
 
     ptn_str = dumps(pattern)
 
@@ -989,7 +991,7 @@ def test_ptn_roundtrip_preserves_detector_tags(tag: str) -> None:
     loaded = loads(dumps(pattern))
 
     assert_pattern_equivalent(loaded, pattern)
-    assert loaded.clifford_frame.parity_check_tags == [tag]
+    assert loaded.frame.parity_check_tags == [tag]
 
 
 def test_loads_detector_tag_parsing() -> None:
@@ -1009,8 +1011,8 @@ M 0 XY 0
 """
     pattern = loads(ptn_str)
 
-    assert pattern.clifford_frame.parity_check_tags == ["type=flag", "sp ace#hash", "a]b\\c", ""]
-    assert pattern.clifford_frame.parity_check_group == [{0}, {0}, {0}, {0}]
+    assert pattern.frame.parity_check_tags == ["type=flag", "sp ace#hash", "a]b\\c", ""]
+    assert pattern.frame.parity_check_group == [{0}, {0}, {0}, {0}]
 
 
 def test_loads_rejects_unclosed_detector_tag() -> None:
@@ -1093,7 +1095,7 @@ M 0 XY 0
 .detector[] 0
 """
     pattern = loads(ptn_str)
-    assert list(pattern.clifford_frame.parity_check_tags) == [""]
+    assert list(pattern.frame.parity_check_tags) == [""]
 
 
 def _pattern_with_cflow() -> Pattern:
@@ -1118,8 +1120,10 @@ def test_cflow_roundtrip() -> None:
 
     result = loads(ptn_str)
     assert_pattern_equivalent(result, pattern)
-    assert result.clifford_frame.cflow == pattern.clifford_frame.cflow
-    assert result.clifford_frame.correction_events == pattern.clifford_frame.correction_events
+    assert isinstance(result.frame, CliffordFrame)
+    assert isinstance(pattern.frame, CliffordFrame)
+    assert result.frame.cflow == pattern.frame.cflow
+    assert result.frame.correction_events == pattern.frame.correction_events
 
 
 def test_cflow_requires_version_5() -> None:

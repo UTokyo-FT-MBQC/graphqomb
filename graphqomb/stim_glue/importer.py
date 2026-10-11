@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from itertools import combinations, pairwise
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -130,6 +130,8 @@ class _ImportContext:
     schedule_strategy: CircuitScheduleStrategy
     y_foliation: YFoliation
     split_wire_ids: frozenset[int]
+    # Inverse of detector_record_indices: record index -> detectors referencing it.
+    detectors_by_record: Mapping[int, Sequence[int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -332,7 +334,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     id, and stim_to_final_qubit selects the live one among them.
 
     ``DETECTOR`` instruction tags are preserved: each imported detector's tag
-    is carried into pattern.clifford_frame.parity_check_tags (aligned with
+    is carried into pattern.frame.parity_check_tags (aligned with
     parity_check_group) and re-emitted by
     `graphqomb.stim_glue.compiler.stim_compile`, so post-selection flag
     detectors (``DETECTOR[type=flag]``) survive the import/export round trip.
@@ -399,6 +401,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
         split_wire_ids=frozenset(reset_split.split_to_original),
+        detectors_by_record=_detectors_by_record(annotations.detectors),
     )
 
     build = _fragments_from_blocks(analysis.blocks, context=context)
@@ -441,6 +444,21 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         wire_to_stim={wire_id: reset_split.split_to_original.get(wire_id, wire_id) for wire_id in sorted(stim_ids)},
         stim_to_final_qubit=_final_qubit_by_stim_id(build.stim_to_qubit, reset_split.split_to_original),
     )
+
+
+def _detectors_by_record(detector_record_indices: Sequence[frozenset[int]]) -> dict[int, list[int]]:
+    r"""Index detectors by the measurement records they reference.
+
+    Returns
+    -------
+    `dict`\[`int`, `list`\[`int`\]\]
+        Ascending detector indices for each record index.
+    """
+    index: dict[int, list[int]] = {}
+    for detector, records in enumerate(detector_record_indices):
+        for record in records:
+            index.setdefault(record, []).append(detector)
+    return index
 
 
 def _final_qubit_by_stim_id(
@@ -1589,13 +1607,18 @@ def _mpp_fragment(
     )
     _validate_commuting_mpp_supports(supports)
     record_indices = tuple(record_index for analyzed in block for record_index in analyzed.record_indices)
+    # Only detectors referencing one of this block's records can select a row;
+    # the others would be dropped by the extraction anyway, so skip them.
+    touched_detectors = sorted(
+        {detector for record_index in record_indices for detector in context.detectors_by_record.get(record_index, ())}
+    )
     extraction = stim_mpp_extraction_from_records(
         supports,
         record_indices,
         coordinate_by_stim_id=context.coordinate_by_stim_id,
-        detector_record_indices=context.detector_record_indices,
+        detector_record_indices=[context.detector_record_indices[detector] for detector in touched_detectors],
         logical_observable_record_indices=context.logical_observable_record_indices,
-        detector_tags=context.detector_tags,
+        detector_tags=[context.detector_tags[detector] for detector in touched_detectors],
     )
     fragment = _mpp_graph_fragment(
         extraction,
@@ -1615,12 +1638,22 @@ def _mpp_fragment(
 
 
 def _validate_commuting_mpp_supports(supports: Sequence[PauliSupport]) -> None:
-    for (left_index, left), (right_index, right) in combinations(enumerate(supports), 2):
-        if not pauli_products_commute(left, right):
-            msg = (
-                f"MPP products within one TICK block must commute; products {left_index} and {right_index} anticommute."
-            )
-            raise ValueError(msg)
+    # Anticommutation needs a shared qubit, so only products overlapping on some
+    # qubit are compared, in the (left, right) order a full pairwise scan would
+    # use; the first anticommuting pair found is the one that scan would report.
+    products_by_qubit: dict[int, list[int]] = {}
+    for index, support in enumerate(supports):
+        for qubit, _pauli in support:
+            products_by_qubit.setdefault(qubit, []).append(index)
+    for left_index, left in enumerate(supports):
+        overlapping = {other for qubit, _pauli in left for other in products_by_qubit[qubit] if other > left_index}
+        for right_index in sorted(overlapping):
+            if not pauli_products_commute(left, supports[right_index]):
+                msg = (
+                    "MPP products within one TICK block must commute; "
+                    f"products {left_index} and {right_index} anticommute."
+                )
+                raise ValueError(msg)
 
 
 def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
@@ -1689,10 +1722,14 @@ def _mpp_flow(
     result: StabilizerGraphStateBuildResult,
 ) -> dict[int, set[int]]:
     xflow: dict[int, set[int]] = {}
-    for qubit in sorted({key[0] for key in result.data_nodes}):
-        layer_nodes = [node for (data_qubit, _layer), node in sorted(result.data_nodes.items()) if data_qubit == qubit]
+    # One global sort by (qubit, layer) groups each qubit's layer chain in order.
+    chains: dict[int, list[int]] = {}
+    for (data_qubit, _layer), node in sorted(result.data_nodes.items()):
+        chains.setdefault(data_qubit, []).append(node)
+    meas_bases = result.graph.meas_bases
+    for layer_nodes in chains.values():
         for current_node, next_node in pairwise(layer_nodes):
-            if current_node in result.graph.meas_bases:
+            if current_node in meas_bases:
                 xflow[current_node] = {next_node}
     return xflow
 
