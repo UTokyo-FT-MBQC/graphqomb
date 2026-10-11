@@ -22,13 +22,19 @@ from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.graphstate import GraphState
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
 
 _TYPE_II_CHAIN_LENGTH = 3
 _MIN_ANCILLA_COLLISION_CLEARANCE = 0.5
 _ANCILLA_COLLISION_CLEARANCE_RATIO = 0.05
 _COORDINATE_TOLERANCE = 1e-9
+# Cell width of the XY occupancy index; must exceed ``_COORDINATE_TOLERANCE`` so that
+# two points within the tolerance always fall into the same or adjacent cells.
+_OCCUPANCY_CELL_WIDTH = 1e-6
+# Beyond this magnitude ``x / _OCCUPANCY_CELL_WIDTH`` loses the adjacent-cell guarantee,
+# so the index declines to screen and the exact distance scan is used.
+_OCCUPANCY_SAFE_MAGNITUDE = 1e9
 _ANCILLA_ESCAPE_DIRECTIONS = (
     (1.0, 0.0),
     (-1.0, 0.0),
@@ -303,9 +309,12 @@ def _add_ancilla_nodes(
     ancilla_nodes: dict[int, int] = {}
     supports = _stabilizer_supports(code)
     y_meas_basis = AxisMeasBasis(Axis.Y, Sign.PLUS)
+    occupancy = _CoordinateOccupancy.from_graph(graph)
     for stabilizer, support in enumerate(supports):
         explicit_ancilla_coord = _explicit_ancilla_coordinate(code, stabilizer)
         ancilla_node = graph.add_node(coordinate=explicit_ancilla_coord)
+        if explicit_ancilla_coord is not None:
+            occupancy.add(explicit_ancilla_coord)
         has_odd_y_support = len(support.hx & support.hz) % 2 == 1
         ancilla_meas_basis = (
             y_meas_basis if data_layer_plan.y_foliation is YFoliation.TYPE_I and has_odd_y_support else meas_basis
@@ -324,7 +333,9 @@ def _add_ancilla_nodes(
         if explicit_ancilla_coord is None:
             inferred_coord = _average_node_coordinates(graph, connected_data_nodes)
             if inferred_coord is not None:
-                graph.set_coordinate(ancilla_node, _avoid_occupied_coordinate(graph, inferred_coord))
+                placed_coord = _avoid_occupied_coordinate(graph, inferred_coord, occupancy)
+                graph.set_coordinate(ancilla_node, placed_coord)
+                occupancy.add(placed_coord)
 
     twisted_pairs = _twisted_stabilizer_pairs(
         supports,
@@ -531,15 +542,76 @@ def _average_node_coordinates(graph: GraphState, nodes: list[int]) -> tuple[floa
     )
 
 
+def _finite_xy(coordinate: tuple[float, ...]) -> bool:
+    return math.isfinite(coordinate[0]) and math.isfinite(coordinate[1])
+
+
+def _occupancy_cell(coordinate: tuple[float, ...]) -> tuple[int, int]:
+    return (
+        math.floor(coordinate[0] / _OCCUPANCY_CELL_WIDTH),
+        math.floor(coordinate[1] / _OCCUPANCY_CELL_WIDTH),
+    )
+
+
+class _CoordinateOccupancy:
+    """Finite XY coordinates already assigned in a graph, indexed by cells for O(1) collision screening.
+
+    ``may_collide`` is an exact screen: it returns ``False`` only when no indexed
+    point can lie within ``_COORDINATE_TOLERANCE`` of the query, so the caller
+    can skip the distance scan. A ``True`` answer still requires the exact scan.
+    """
+
+    __slots__ = ("_cells", "coordinates")
+
+    def __init__(self, coordinates: Iterable[tuple[float, ...]]) -> None:
+        self.coordinates: list[tuple[float, ...]] = []
+        self._cells: set[tuple[int, int]] = set()
+        for coordinate in coordinates:
+            self.add(coordinate)
+
+    @classmethod
+    def from_graph(cls, graph: GraphState) -> _CoordinateOccupancy:
+        """Index every finite coordinate currently assigned in ``graph``.
+
+        Returns
+        -------
+        `_CoordinateOccupancy`
+            The occupancy index.
+        """
+        return cls(graph.coordinates.values())
+
+    def add(self, coordinate: tuple[float, ...]) -> None:
+        """Record a newly assigned coordinate; non-finite XY values are ignored like the exact scan does."""
+        if not _finite_xy(coordinate):
+            return
+        self.coordinates.append(coordinate)
+        self._cells.add(_occupancy_cell(coordinate))
+
+    def may_collide(self, coordinate: tuple[float, ...]) -> bool:
+        """Return whether an indexed point might lie within the tolerance of ``coordinate``.
+
+        Returns
+        -------
+        `bool`
+            ``False`` only when the exact scan is guaranteed to find no collision.
+        """
+        if abs(coordinate[0]) > _OCCUPANCY_SAFE_MAGNITUDE or abs(coordinate[1]) > _OCCUPANCY_SAFE_MAGNITUDE:
+            return True
+        cell_x, cell_y = _occupancy_cell(coordinate)
+        return any((cell_x + dx, cell_y + dy) in self._cells for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+
+
 def _avoid_occupied_coordinate(
     graph: GraphState,
     coordinate: tuple[float, float, float],
+    occupancy: _CoordinateOccupancy | None = None,
 ) -> tuple[float, float, float]:
     r"""Move an inferred ancilla coordinate aside when its centroid is occupied.
 
     The temporal coordinate is preserved. Candidate positions expand
     deterministically in the data plane until one has enough clearance from
-    every node whose coordinate has already been assigned.
+    every node whose coordinate has already been assigned. ``occupancy`` is the
+    index of those coordinates; when omitted it is built from ``graph``.
 
     Returns
     -------
@@ -551,12 +623,15 @@ def _avoid_occupied_coordinate(
     ValueError
         If no finite candidate can be found within the bounded search.
     """
-    if not all(math.isfinite(value) for value in coordinate[:2]):
+    if not _finite_xy(coordinate):
         return coordinate
 
-    occupied_coordinates = tuple(
-        occupied for occupied in graph.coordinates.values() if all(math.isfinite(value) for value in occupied[:2])
-    )
+    if occupancy is None:
+        occupancy = _CoordinateOccupancy.from_graph(graph)
+    if not occupancy.may_collide(coordinate):
+        return coordinate
+
+    occupied_coordinates = occupancy.coordinates
     if not any(math.dist(coordinate[:2], occupied[:2]) <= _COORDINATE_TOLERANCE for occupied in occupied_coordinates):
         return coordinate
 

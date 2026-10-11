@@ -502,3 +502,73 @@ def test_build_graph_state_rejects_non_integer_z_base() -> None:
 
     with pytest.raises(TypeError, match="z_base must be an integer"):
         build_graph_state(code, z_base=0.5)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
+def test_build_graph_state_skips_distance_scan_when_centroid_is_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A free centroid is accepted from the occupancy index without a distance scan over all nodes."""
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0]]),
+        qubit_coords={0: (0.0, 0.0), 1: (1.0, 0.0)},
+    )
+
+    def fail(*_args: object) -> float:
+        pytest.fail("free centroid must not trigger math.dist over occupied coordinates")
+
+    monkeypatch.setattr(math, "dist", fail)
+    result = build_graph_state(code)
+
+    assert result.graph.coordinates[result.ancilla_nodes[0]] == (0.5, 0.0, 1.0)
+
+
+def test_build_graph_state_detects_collision_within_tolerance_across_rounding_cells() -> None:
+    """Points closer than the tolerance collide even when they round to different index cells."""
+    centroid_x = 1.0 - 2e-10
+    occupied_x = centroid_x + 8e-10
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0, 0, 0]]),
+        qubit_coords={
+            0: (centroid_x - 1.0, 0.0),
+            1: (centroid_x + 1.0, 0.0),
+            2: (occupied_x, 0.0),
+        },
+    )
+
+    result = build_graph_state(code)
+    ancilla = result.graph.coordinates[result.ancilla_nodes[0]]
+
+    assert not math.isclose(ancilla[0], centroid_x, abs_tol=1e-9)
+    assert math.isclose(ancilla[0], centroid_x + 0.5)
+    assert ancilla[1:] == (0.0, 1.0)
+
+
+def test_build_graph_state_keeps_centroid_beyond_tolerance_in_same_rounding_cell() -> None:
+    """A neighbor farther than the tolerance does not displace the ancilla."""
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0, 0, 0]]),
+        qubit_coords={
+            0: (0.0, 0.0),
+            1: (1.0, 0.0),
+            2: (0.5 + 5e-7, 0.0),
+        },
+    )
+
+    result = build_graph_state(code)
+
+    assert result.graph.coordinates[result.ancilla_nodes[0]] == (0.5, 0.0, 1.0)
+
+
+def test_build_graph_state_separates_ancillas_sharing_a_centroid() -> None:
+    """Previously placed ancillas count as occupied for later stabilizers of the same block."""
+    code = StabilizerCode(
+        _matrix([[1, 1, 0, 0], [0, 0, 1, 1]]),
+        qubit_coords={0: (0.0, 0.0), 1: (1.0, 0.0)},
+    )
+
+    result = build_graph_state(code, y_foliation=YFoliation.TYPE_I)
+    coords = result.graph.coordinates
+    ancilla_xy = [coords[result.ancilla_nodes[row]][:2] for row in range(2)]
+    data_xy = {coords[node][:2] for node in result.data_nodes.values()}
+
+    assert ancilla_xy[0] == (0.5, 0.0)
+    assert ancilla_xy[1] != ancilla_xy[0]
+    assert ancilla_xy[1] not in data_xy
