@@ -319,11 +319,15 @@ def is_close_angle(angle: float, target: float, atol: float = 1e-9) -> bool:
     `bool`
         `True` if the angle is close to the target angle
     """
+    if not (math.isfinite(angle) and math.isfinite(target)):
+        return False
     diff_angle = (angle - target) % (2 * math.pi)
 
     if diff_angle > math.pi:
         diff_angle = 2 * math.pi - diff_angle
-    return bool(np.isclose(diff_angle, 0, atol=atol))
+    # Same predicate as ``numpy.isclose(diff_angle, 0, atol=atol)`` for finite
+    # scalars (``rtol`` is multiplied by zero), without the array machinery.
+    return diff_angle <= atol
 
 
 def is_clifford_angle(angle: float, atol: float = 1e-9) -> bool:
