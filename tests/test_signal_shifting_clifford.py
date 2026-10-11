@@ -188,8 +188,8 @@ def test_cancelled_pauli_cflow_edge_does_not_create_a_dependency_cycle() -> None
     zflow: dict[int, set[int]] = {}
     cflow = {0: {1: ca.X}}
     pattern = qompile(graph, xflow, zflow, cflow=cflow)
-    assert pattern.clifford_frame.cflow == {}
-    assert pattern.clifford_frame.xflow == {0: set(), 1: {0}}
+    assert pattern.frame.cflow == {}
+    assert pattern.frame.xflow == {0: set(), 1: {0}}
     assert signal_shifting(graph, xflow, zflow, cflow=cflow) == (xflow, zflow)
 
 
@@ -200,8 +200,8 @@ def test_cancelled_pauli_cflow_still_protects_its_record_control() -> None:
     zflow = {0: {1}}
     cflow = {1: {2: ca.X}}
     pattern = qompile(graph, xflow, zflow, cflow=cflow)
-    assert pattern.clifford_frame.cflow == {}
-    assert pattern.clifford_frame.xflow == {1: set(), 2: {3}}
+    assert pattern.frame.cflow == {}
+    assert pattern.frame.xflow == {1: set(), 2: {3}}
     assert signal_shifting(graph, xflow, zflow, cflow=cflow) == (xflow, zflow)
     assert propagate_correction_map(1, graph, xflow, zflow, cflow=cflow) == (xflow, zflow)
 
