@@ -14,6 +14,7 @@ This module provides:
 from __future__ import annotations
 
 import itertools
+import math
 from typing import TYPE_CHECKING
 
 from graphqomb.feedforward import TOPO_ORDER_CYCLE_ERROR_MSG, inverse_dag_from_dag, topo_order_from_inv_dag
@@ -65,14 +66,16 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
         If the scheduling cannot proceed due to cyclic dependencies
         or if the max_qubit_count constraint is too tight to allow any progress.
     """
+    # graph.nodes copies the node set on every access; take it once.
+    nodes = graph.nodes
     unmeasured_outputs = unmeasured_output_nodes(graph)
-    unmeasured = graph.nodes - unmeasured_outputs
+    unmeasured = nodes - unmeasured_outputs
     input_nodes = set(graph.input_node_indices.keys())
 
-    inv_dag = inverse_dag_from_dag(dag, graph.nodes)
+    inv_dag = inverse_dag_from_dag(dag, nodes)
 
     # Cache neighbors to avoid repeated set constructions in tight loops
-    neighbors_map = {node: graph.neighbors(node) for node in graph.nodes}
+    neighbors_map = {node: graph.neighbors(node) for node in nodes}
 
     # Single implementation for both bounded and unbounded capacity modes.
     prepare_time: dict[int, int] = {}
@@ -85,14 +88,14 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
     prepared: set[int] = set(input_nodes)
     alive: set[int] = set(input_nodes)
 
-    effective_max_qubit_count = max_qubit_count if max_qubit_count is not None else len(graph.nodes)
+    effective_max_qubit_count = max_qubit_count if max_qubit_count is not None else len(nodes)
 
     if len(alive) > effective_max_qubit_count:
         msg = "Initial number of active qubits exceeds max_qubit_count."
         raise RuntimeError(msg)
 
     # Compute criticality for prioritizing preparations
-    criticality = _compute_criticality(dag, unmeasured_outputs)
+    criticality = _compute_criticality(dag, unmeasured_outputs, inv_dag=inv_dag)
 
     current_time = 0
 
@@ -109,7 +112,7 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
         )
         prepared_in_phase2 = _phase2_prepare_nodes_with_slack(
             current_time,
-            nodes=graph.nodes,
+            nodes=nodes,
             max_qubit_count=effective_max_qubit_count,
             inv_dag=inv_dag_mut,
             neighbors_map=neighbors_map,
@@ -148,13 +151,13 @@ def greedy_minimize_time(  # ruff:ignore[too-many-locals]
         current_time += 1
 
         # Safety check for infinite loops
-        if current_time > len(graph.nodes) * 2:
+        if current_time > len(nodes) * 2:
             msg = "Scheduling did not converge; possible cyclic dependency."
             raise RuntimeError(msg)
 
     _prepare_remaining_nodes_at_tail(
         current_time,
-        nodes=graph.nodes,
+        nodes=nodes,
         input_nodes=input_nodes,
         max_qubit_count=effective_max_qubit_count,
         prepared=prepared,
@@ -275,8 +278,8 @@ def _phase2_prepare_nodes_with_slack(  # ruff:ignore[too-many-arguments]
     if free_capacity <= 0:
         return False
 
-    unprepared = nodes - prepared
-    if not unprepared:
+    # prepared is a subset of nodes, so comparing sizes avoids a set difference over all nodes.
+    if len(prepared) >= len(nodes):
         return False
 
     prep_candidates = _get_prep_candidates_with_priority(
@@ -303,13 +306,18 @@ def _phase2_prepare_nodes_with_slack(  # ruff:ignore[too-many-arguments]
 def _compute_criticality(
     dag: Mapping[int, AbstractSet[int]],
     unmeasured_outputs: AbstractSet[int],
+    inv_dag: Mapping[int, AbstractSet[int]] | None = None,
 ) -> dict[int, int]:
     # Compute criticality (remaining DAG depth) for each node.
     # Nodes with higher criticality should be prioritized for unblocking.
+    # A caller may pass its inverse DAG (possibly keyed by every node); isolated
+    # nodes get criticality 1, which equals the default used by lookups.
     criticality: dict[int, int] = {}
 
     # For criticality we need children first, so reverse dependency-first topo order.
-    topo_order = topo_order_from_inv_dag(inverse_dag_from_dag(dag))
+    if inv_dag is None:
+        inv_dag = inverse_dag_from_dag(dag)
+    topo_order = topo_order_from_inv_dag(inv_dag)
     topo_order.reverse()
 
     for node in topo_order:
@@ -331,37 +339,31 @@ def _get_prep_candidates_with_priority(
     criticality: Mapping[int, int],
 ) -> list[tuple[int, float]]:
     # Get preparation candidates sorted by priority score.
-    # Priority is based on how much preparing a node helps unblock measurements.
-    # Find nodes that are DAG-ready but blocked by missing neighbors
-    dag_ready_blocked: set[int] = set()
-    missing_map: dict[int, set[int]] = {}
+    # Priority is based on how much preparing a node helps unblock measurements:
+    # each DAG-ready node blocked by missing neighbors (or by itself being
+    # unprepared) spreads its criticality evenly over those missing nodes.
+    # Accumulating along these incidences is the same sum as scoring every
+    # (candidate, blocked node) pair, but linear in the frontier; math.fsum
+    # makes each total independent of the accumulation order.
+    contributions: dict[int, list[float]] = {}
 
     for node in unmeasured:
         if inv_dag[node]:
             continue  # Not DAG-ready
-        missing = set(neighbors_map[node]) - set(prepared)
+        # Small neighbor set minus the (large) prepared set: proportional to the degree.
+        missing = neighbors_map[node] - prepared
         # Also check if the node itself needs preparation
-        if node not in prepared:
-            missing.add(node)
-        if missing:
-            dag_ready_blocked.add(node)
-            missing_map[node] = missing
+        needs_self = node not in prepared
+        count = len(missing) + needs_self
+        if not count:
+            continue
+        contribution = criticality.get(node, 1) / count
+        for candidate in missing:
+            contributions.setdefault(candidate, []).append(contribution)
+        if needs_self:
+            contributions.setdefault(node, []).append(contribution)
 
-    if not dag_ready_blocked:
-        return []
-
-    useful_candidates = set().union(*missing_map.values())
-
-    # Score each unprepared node
-    scores: list[tuple[int, float]] = []
-    for candidate in useful_candidates:
-        score = 0.0
-        for blocked_node in dag_ready_blocked:
-            if candidate in missing_map[blocked_node]:
-                crit = criticality.get(blocked_node, 1)
-                score += crit / len(missing_map[blocked_node])
-
-        scores.append((candidate, score))
+    scores = [(candidate, math.fsum(values)) for candidate, values in contributions.items()]
 
     # Sort by score descending (higher score = higher priority).
     # Break ties by node id for deterministic schedules.
