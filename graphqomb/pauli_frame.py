@@ -18,7 +18,7 @@ import typing_extensions
 
 from graphqomb import clifford_algebra
 from graphqomb.common import Axis, determine_pauli_axis
-from graphqomb.feedforward import check_flow
+from graphqomb.feedforward import Feedforward, _expand_parity_supports, _normalize_cflow, check_flow
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -29,32 +29,6 @@ if TYPE_CHECKING:
 
 
 _EMPTY_CFLOW: Mapping[int, Mapping[int, C1Element]] = MappingProxyType({})
-
-
-def _normalize_cflow(
-    xflow: dict[int, set[int]],
-    zflow: dict[int, set[int]],
-    cflow: Mapping[int, Mapping[int, C1Element]] | None,
-) -> dict[int, dict[int, C1Element]]:
-    """Fold Pauli factors into the owned flows and return nontrivial cosets.
-
-    Returns
-    -------
-    `dict`
-        Normalized Clifford flow, containing nontrivial cosets only.
-    """
-    normalized: dict[int, dict[int, C1Element]] = {}
-    if cflow:
-        for source, targets in cflow.items():
-            for target, element in targets.items():
-                coset, x_bit, z_bit = clifford_algebra.decompose(element)
-                if x_bit:
-                    xflow.setdefault(source, set()).symmetric_difference_update({target})
-                if z_bit:
-                    zflow.setdefault(source, set()).symmetric_difference_update({target})
-                if coset != clifford_algebra.IDENTITY:
-                    normalized.setdefault(source, {})[target] = coset
-    return normalized
 
 
 class PauliFrame:
@@ -95,8 +69,6 @@ class PauliFrame:
     logical_observables: dict[int, set[int]]
     inv_xflow: dict[int, set[int]]
     inv_zflow: dict[int, set[int]]
-    _pauli_axis_cache: dict[int, Axis | None]
-    _chain_cache: dict[int, frozenset[int]]
 
     def __init__(  # ruff:ignore[too-many-arguments]
         self,
@@ -134,16 +106,6 @@ class PauliFrame:
 
         self._build_inverse_flows()
 
-        # Pre-compute Pauli axes for performance optimization.
-        # NOTE: if non-Pauli measurements are involved, the stim_compile func will error out earlier
-        self._pauli_axis_cache = (
-            {node: determine_pauli_axis(meas_basis) for node, meas_basis in graphstate.meas_bases.items()}
-            if parity_check_group or logical_observables
-            else {}
-        )
-        # Cache for memoization of dependent chains
-        self._chain_cache = {}
-
     @property
     def cflow(self) -> Mapping[int, Mapping[int, C1Element]]:
         """Empty Clifford flow for Pauli-only frames.
@@ -154,6 +116,24 @@ class PauliFrame:
             An immutable empty mapping. No Clifford state is stored on this frame.
         """
         return _EMPTY_CFLOW
+
+    @property
+    def feedforward(self) -> Feedforward:
+        """Copy the static maps and parities, without live frame state.
+
+        Returns
+        -------
+        Feedforward
+            Independent IR suitable for transformation and recompilation.
+        """
+        return Feedforward(
+            self.xflow,
+            self.zflow,
+            self.cflow,
+            parity_check_group=self.parity_check_group,
+            logical_observables=self.logical_observables,
+            parity_check_tags=self.parity_check_tags,
+        )
 
     def _check_flow(self) -> None:
         """Validate the Pauli correction dependencies."""
@@ -238,22 +218,23 @@ class PauliFrame:
         return self.inv_xflow.get(node, set()) | self.inv_zflow.get(node, set())
 
     def detector_groups(self) -> list[set[int]]:
-        r"""Get the parity check groups.
+        r"""Expand detector supports into nominal-basis records.
+
+        The legacy Stim export path and determinism checks use this view. Stored
+        ``parity_check_group`` supports refer to this frame's adapted records.
+        Use ``feedforward.backpropagate(graphstate)`` to transform both the maps
+        and their parities before recompiling. Clifford-influenced raw-record
+        expansion and certification remain unsupported.
+
+        Frame-side compilation is retained for compatibility; deprecation is
+        planned for v0.8.0. No deprecation warning is emitted yet.
 
         Returns
         -------
         `list`\[`set`\[`int`\]\]
             The parity check groups.
         """
-        groups: list[set[int]] = []
-
-        for syndrome_group in self.parity_check_group:
-            mbqc_group: set[int] = set()
-            for node in syndrome_group:
-                mbqc_group ^= self._collect_dependent_chain(node)
-            groups.append(mbqc_group)
-
-        return groups
+        return self._nominal_parity_groups(self.parity_check_group)
 
     def detector_stabilizers(self) -> list[dict[int, Axis]]:
         r"""Get the graph-state stabilizer associated with each detector.
@@ -397,86 +378,82 @@ class PauliFrame:
         return stabilizer
 
     def logical_observable_groups(self) -> dict[int, set[int]]:
-        r"""Get all logical observable groups after dependent-chain expansion.
+        r"""Expand all indexed logical observables into nominal-basis records.
+
+        Retained for legacy Stim export, with deprecation planned for v0.8.0.
+        New workflows transform maps and supports together using
+        ``feedforward.backpropagate(graphstate)``. This method does not mutate
+        the frame or absorb retained corrections into its stored supports.
 
         Returns
         -------
-        `dict`\[`int`, `set`\[`int`\]\]
-            The expanded logical observable groups keyed by logical index.
+        dict[int, set[int]]
+            Independent expanded supports keyed by logical index.
         """
-        return {
-            logical_idx: self.logical_observables_group(target_nodes)
-            for logical_idx, target_nodes in self.logical_observables.items()
-        }
+        groups = self._nominal_parity_groups(list(self.logical_observables.values()))
+        return dict(zip(self.logical_observables, groups, strict=True))
 
     def logical_observables_group(self, target_nodes: Collection[int]) -> set[int]:
-        r"""Get the logical observables group for the given target nodes.
+        r"""Expand one logical-observable support into nominal-basis records.
+
+        Retained for compatibility, with deprecation planned for v0.8.0.
+        Clifford-influenced nominal-basis expansion remains unsupported.
 
         Parameters
         ----------
-        target_nodes : `collections.abc.Collection`\[`int`\]
-            The target nodes to get the logical observables group for.
+        target_nodes : Collection[int]
+            Observable seed nodes.
 
         Returns
         -------
-        `set`\[`int`\]
-            The logical observables group for the given target nodes.
+        set[int]
+            An independent expanded support.
         """
-        group: set[int] = set()
-        for node in target_nodes:
-            group ^= self._collect_dependent_chain(node=node)
+        return self._nominal_parity_groups([set(target_nodes)])[0]
 
-        return group
+    def _nominal_parity_groups(self, groups: Sequence[AbstractSet[int]]) -> list[set[int]]:
+        """Build fixed-axis dependencies for nominal-basis diagnostic queries.
 
-    def _collect_dependent_chain(self, node: int) -> set[int]:
-        r"""Generalized dependent-chain collector that respects measurement planes.
-
-        Uses recursive memoization to correctly XOR nodes reached via multiple paths.
-
-        Parameters
-        ----------
-        node : `int`
-            The starting node.
+        Legacy export and determinism checks use this view. Validate the entire reached
+        closure, even when some paths later cancel, before affine substitution.
 
         Returns
         -------
-        `set`\[`int`\]
-            The set of dependent nodes in the chain.
+        list[set[int]]
+            Supports over nominal-basis records for diagnostics and certification.
 
         Raises
         ------
         ValueError
-            If an unexpected output basis or measurement plane is encountered.
+            If a participating node is not measured along an exact Pauli axis.
+        NotImplementedError
+            If the reached closure contains a Clifford target.
         """
-        # Check memoization cache
-        if node in self._chain_cache:
-            return set(self._chain_cache[node])
-
-        chain: set[int] = {node}
-
-        # Use pre-computed Pauli axis from cache
-        axis = self._pauli_axis_cache[node]
-
-        # NOTE: might have to support plane instead of axis
-        if axis == Axis.X:
-            parents = self.inv_zflow[node]
-        elif axis == Axis.Y:
-            parents = self.inv_xflow[node].symmetric_difference(self.inv_zflow[node])
-        elif axis == Axis.Z:
-            parents = self.inv_xflow[node]
-        else:
-            msg = f"Unexpected measurement axis: {axis}"
-            raise ValueError(msg)
-
-        # Recursively collect and XOR parent chains
-        for parent in parents:
-            parent_chain = self._collect_dependent_chain(parent)
-            chain ^= parent_chain
-
-        # Store result in cache for future calls
-        self._chain_cache[node] = frozenset(chain)
-
-        return chain
+        clifford_targets = {target for source, targets in self.cflow.items() for target in targets if target != source}
+        meas_bases = self.graphstate.meas_bases
+        pending = [node for group in groups for node in group]
+        dependencies: dict[int, set[int]] = {}
+        while pending:
+            node = pending.pop()
+            if node in dependencies:
+                continue
+            if node in clifford_targets:
+                msg = f"Node {node} is subject to Clifford feedforward (cflow); nominal-basis analysis is unsupported."
+                raise NotImplementedError(msg)
+            basis = meas_bases.get(node)
+            axis = determine_pauli_axis(basis) if basis is not None else None
+            if axis is Axis.X:
+                parents = set(self.inv_zflow.get(node, ()))
+            elif axis is Axis.Y:
+                parents = self.inv_xflow.get(node, set()) ^ self.inv_zflow.get(node, set())
+            elif axis is Axis.Z:
+                parents = set(self.inv_xflow.get(node, ()))
+            else:
+                msg = f"Unexpected measurement axis at node {node}: {axis}"
+                raise ValueError(msg)
+            dependencies[node] = parents
+            pending.extend(parents - dependencies.keys())
+        return _expand_parity_supports(groups, dependencies)
 
 
 class CliffordFrame(PauliFrame):
@@ -714,30 +691,6 @@ class CliffordFrame(PauliFrame):
             The set of parent nodes.
         """
         return super().parents(node) | self.inv_cflow.get(node, {}).keys()
-
-    @typing_extensions.override
-    def _collect_dependent_chain(self, node: int) -> set[int]:
-        """Expand Pauli dependencies, rejecting Clifford-influenced nodes.
-
-        Returns
-        -------
-        `set`
-            The expanded dependent chain.
-
-        Raises
-        ------
-        NotImplementedError
-            If the node is subject to Clifford feedforward.
-        """
-        if self.cflow and (
-            self.inv_cflow.get(node) or self.coset.get(node, clifford_algebra.IDENTITY) != clifford_algebra.IDENTITY
-        ):
-            msg = (
-                f"Node {node} is subject to Clifford feedforward (cflow); symbolic detector and observable "
-                "certification over a Clifford frame is future work."
-            )
-            raise NotImplementedError(msg)
-        return super()._collect_dependent_chain(node)
 
 
 def make_frame(  # ruff:ignore[too-many-arguments]

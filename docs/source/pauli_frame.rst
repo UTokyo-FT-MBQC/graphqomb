@@ -83,6 +83,22 @@ General determinism criteria for branch-dependent measurement labels are
 future work. No Lambda-flow theorem or finder is implemented or claimed.
 Causality and the existing Pauli detector checks keep their separate meanings.
 
+Signal shifting can optimize Pauli regions outside the causal past of cflow
+targets while retaining the Clifford boundaries. See
+:doc:`feedforward` for the static boundary rule and the unchanged cflow
+argument required when compiling the optimized maps. Detector and observable
+compilation is performed before lowering with
+``Feedforward.backpropagate(graph)``. It stops at protected records and retains
+their Clifford and Pauli dependencies. See :doc:`feedforward`.
+The frame's ``detector_groups`` supplies nominal-basis supports for detector
+certification, which remains separate and rejects Clifford-influenced
+nominal-basis analysis. The ``logical_observable_groups`` and
+``logical_observables_group`` methods remain available for legacy observable
+compilation and default Stim export. Deprecation of frame-side compilation and
+the legacy export path is planned for v0.8.0, with no warning emitted yet.
+Use ``Feedforward`` for new compilation workflows and export their stored
+supports with ``stim_compile(pattern, backpropagate=False)``.
+
 Frame Factory
 -------------
 

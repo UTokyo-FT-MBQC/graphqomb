@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Stim Export Paths**: `stim_compile(pattern)` retains the legacy frame-side detector/observable expansion by default (`backpropagate=True`). Use `backpropagate=False` to serialize stored supports and execute retained Pauli feedback as record-controlled gates, including on quantum outputs, after compiling `Feedforward` before lowering. The legacy export path and frame-side compilation methods remain available; their deprecation is planned for v0.8.0, with no warnings emitted yet.
 - **Large-Graph Compile Scaling**: Removed the quadratic hot spots in `GraphState` registration and canonical-form checks, `build_graph_state` ancilla placement, Stim MPP block import, `rewrite_syndrome_rounds`, and the greedy scheduler's candidate scoring, so million-node graphs compile in minutes instead of hours. Compiled patterns are unchanged. `GraphState` gains read-only `input_q_index_to_node` and `output_q_index_to_node` views.
 - **Pauli Frame Compatibility**: Use `Pattern(frame=...)` and `pattern.frame` for either correction type. Restored `pauli_frame` and retained `clifford_frame` as aliases referring to the same instance. Their constructor keywords now emit `DeprecationWarning` and will be removed in v0.8.0; migrate to `frame=`. The read-only property aliases remain available. The stored dataclass field is `frame`; use `dataclasses.replace(pattern, frame=...)` when replacing it. `PauliFrame` is again a dedicated X/Z tracker and `CliffordFrame` extends it. The public `graphqomb.pauli_frame.make_frame` factory, compilation, and `.ptn` loading choose the lightweight Pauli frame when normalized corrections have no nontrivial cosets; explicit `CliffordFrame` construction retains its type. Pass `cflow=` to `make_frame` for automatic selection or to `CliffordFrame` to retain that type. Pauli frames expose an immutable empty `cflow` mapping for compatibility; `inv_cflow`, `coset`, and `correction_events` remain available only on `CliffordFrame`.
 
@@ -23,10 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Frame Closure Caches**: Removed the recursive dependent-chain collector, persistent axis/closure caches, and separate Clifford collector override. Legacy frame-side compilation, Feedforward compilation, and detector diagnostics share iterative affine substitution.
 - **Previous Stim MPP Rewriter**: Removed `rewrite_to_mpp`, `MppRewriteResult`, `CheckMapping`, and `UnsupportedSyndromeCircuitError`, including runtime flow-generator contraction. Use `rewrite_syndrome_rounds(source).circuit` for supported closed extraction windows, or import the source circuit directly to retain all physical quantum outputs.
 
 ### Added
 
+- **Steane Logical T Example**: Added an encoded T-injection example with two syndrome rounds, Clifford feedforward, X/Z readout or quantum outputs, and a figure of its 56-node resource. It compiles `Feedforward` before lowering and evaluates the stored parity supports. Statevector checks cover all sampled injection branches and every single-qubit Pauli fault at the data correction boundary. PTN exports preserve the residual maps, supports, schedules, and 3D coordinates; the encoded input states are supplied separately in Python.
+- **Feedforward IR and Offline Backpropagation**: `Feedforward` groups correction maps with detector/observable supports and detector tags. Its non-mutating `backpropagate(graph)` compiles removable Pauli corrections into parities and preserves Clifford boundaries, their full dependency ancestors, quantum outputs, and non-Pauli measurements. Lower the result with `qompile(graph, feedforward)`; `pattern.frame.feedforward` provides an independent static snapshot. Export with `stim_compile(pattern, backpropagate=False)` to serialize stored supports and execute retained Pauli feedback. Existing map-based compilation, frame-side compilation APIs, and detector determinism diagnostics remain available; nontrivial cflow export and general Clifford-dependent determinism certification remain unsupported.
+- **Signal Shifting with Clifford Boundaries**: `signal_shifting` and
+  `propagate_correction_map` now accept `cflow`, preserving its targets and
+  their causal past while optimizing later and independent Pauli regions.
+  The functions retain their X/Z-map return values; compile them with the
+  original cflow. The boundary preserves control records and noncommuting
+  correction order without distributing Clifford gates over XOR controls.
+  Statevector tests cover all branches of a magic-state T teleportation
+  before and after shifting. Parity compilation uses the separate joint IR
+  transformation above; Pauli simplification with cflow remains unsupported.
 - **Round-preserving Stim MPP Extraction**: `rewrite_syndrome_rounds` factors closed reset/interaction/readout probes into time-ordered MPP layers while preserving the arbitrary-input instrument on remaining wires and all source records. It retains data preparation, readout, residual Clifford blocks, native MPP layers, and Pauli feedback; record permutations update annotations and controls. The rule tracks signed controlled-Pauli products and inter-probe phases without runtime flow-generator verification. This structural pass requires no external data labels and does not promise preservation of quantum outputs on discarded probes.
 
 - **Clifford feedforward (Phase 1)**: `qompile(..., cflow=...)` accepts classically-controlled single-qubit Clifford corrections, tracked by `CliffordFrame` (a subclass of the Pauli-only `PauliFrame`) and simulated exactly; `.ptn` v5 serializes them, while Stim export and detector certification remain Pauli-frame-only (#285).

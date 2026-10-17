@@ -60,9 +60,7 @@ def simple_pauli_frame(
         A simple PauliFrame instance
     """
     graph, xflow, zflow = simple_graph_with_flows
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
-    return PauliFrame(graph, xflow, zflow, parity_check_group)
+    return PauliFrame(graph, xflow, zflow)
 
 
 @pytest.fixture
@@ -110,8 +108,7 @@ def x_axis_pauli_frame() -> PauliFrame:
     xflow = {n0: {n1}, n1: {n2}}
     zflow: dict[int, set[int]] = {}
 
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
+    parity_check_group = [{n1}]
     return PauliFrame(graph, xflow, zflow, parity_check_group)
 
 
@@ -142,8 +139,7 @@ def y_axis_pauli_frame() -> PauliFrame:
     xflow = {n0: {n1}, n1: {n2}}
     zflow = {n0: {n0}}
 
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
+    parity_check_group = [{n1}]
     return PauliFrame(graph, xflow, zflow, parity_check_group)
 
 
@@ -174,8 +170,7 @@ def z_axis_pauli_frame() -> PauliFrame:
     xflow = {n0: {n1}, n1: {n2}}
     zflow: dict[int, set[int]] = {}
 
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
+    parity_check_group = [{n1}]
     return PauliFrame(graph, xflow, zflow, parity_check_group)
 
 
@@ -262,85 +257,19 @@ def test_parents(simple_pauli_frame: PauliFrame, simple_nodes: list[int]) -> Non
     assert n1 in parents_n2
 
 
-def test_pauli_axis_cache_initialization(simple_pauli_frame: PauliFrame, simple_nodes: list[int]) -> None:
-    """Test that Pauli axis cache is correctly initialized."""
-    pframe = simple_pauli_frame
-    n0, n1 = simple_nodes[0], simple_nodes[1]
-
-    # n0 has Z measurement (XZ plane, angle 0)
-    assert n0 in pframe._pauli_axis_cache
-    assert pframe._pauli_axis_cache[n0] == Axis.Z
-
-    # n1 has X measurement (XY plane, angle 0)
-    assert n1 in pframe._pauli_axis_cache
-    assert pframe._pauli_axis_cache[n1] == Axis.X
+def test_nominal_detector_groups_x_axis(x_axis_pauli_frame: PauliFrame) -> None:
+    """X corrections do not relabel an X measurement."""
+    assert x_axis_pauli_frame.detector_groups() == [{1}]
 
 
-def test_pauli_axis_cache_not_initialized_without_observables(
-    simple_graph_with_flows: tuple[GraphState, dict[int, set[int]], dict[int, set[int]]],
-) -> None:
-    """Cache should stay empty when neither parity checks nor logical observables are provided."""
-    graph, xflow, zflow = simple_graph_with_flows
-    pframe = PauliFrame(graph, xflow, zflow)
-
-    assert pframe._pauli_axis_cache == {}
+def test_nominal_detector_groups_y_axis(y_axis_pauli_frame: PauliFrame) -> None:
+    """An X correction relabels a Y measurement."""
+    assert y_axis_pauli_frame.detector_groups() == [{0, 1}]
 
 
-def test_chain_cache_memoization(simple_pauli_frame: PauliFrame, simple_nodes: list[int]) -> None:
-    """Test that chain cache memoization works correctly."""
-    pframe = simple_pauli_frame
-    n1 = simple_nodes[1]
-
-    # First call should compute and cache
-    chain1 = pframe._collect_dependent_chain(n1)
-    assert n1 in pframe._chain_cache
-
-    # Second call should return cached result
-    chain2 = pframe._collect_dependent_chain(n1)
-    assert chain1 == chain2
-
-    # Verify cache hit by checking the cached value
-    cached_value = pframe._chain_cache[n1]
-    assert set(cached_value) == chain1
-
-
-def test_collect_dependent_chain_x_axis(x_axis_pauli_frame: PauliFrame) -> None:
-    """Test dependent chain collection for X axis measurement."""
-    pframe = x_axis_pauli_frame
-    # Node 1 is the second node in the graph
-    nodes = list(pframe.graphstate.nodes)
-    n1 = nodes[1]
-
-    # For X axis, parents come from inv_zflow
-    chain = pframe._collect_dependent_chain(n1)
-    assert isinstance(chain, set)
-    assert n1 in chain
-
-
-def test_collect_dependent_chain_y_axis(y_axis_pauli_frame: PauliFrame) -> None:
-    """Test dependent chain collection for Y axis measurement."""
-    pframe = y_axis_pauli_frame
-    # Node 1 is the second node in the graph
-    nodes = list(pframe.graphstate.nodes)
-    n1 = nodes[1]
-
-    # For Y axis, parents come from symmetric difference of inv_xflow and inv_zflow
-    chain = pframe._collect_dependent_chain(n1)
-    assert isinstance(chain, set)
-    assert n1 in chain
-
-
-def test_collect_dependent_chain_z_axis(z_axis_pauli_frame: PauliFrame) -> None:
-    """Test dependent chain collection for Z axis measurement."""
-    pframe = z_axis_pauli_frame
-    # Node 1 is the second node in the graph
-    nodes = list(pframe.graphstate.nodes)
-    n1 = nodes[1]
-
-    # For Z axis, parents come from inv_xflow
-    chain = pframe._collect_dependent_chain(n1)
-    assert isinstance(chain, set)
-    assert n1 in chain
+def test_nominal_detector_groups_z_axis(z_axis_pauli_frame: PauliFrame) -> None:
+    """An X correction relabels a Z measurement."""
+    assert z_axis_pauli_frame.detector_groups() == [{0, 1}]
 
 
 def test_detector_groups() -> None:
@@ -630,109 +559,25 @@ def test_detector_determinism_matches_stim(edges: tuple[tuple[int, int], ...]) -
             _assert_determinism_matches_stim(edges, init_axes, meas_axes, groups)
 
 
-def test_logical_observables_group() -> None:
-    """Test logical observables group generation."""
+def test_legacy_observable_compilation_preserves_indices_and_stored_supports() -> None:
     graph = GraphState()
-    n0 = graph.add_node()
-    n1 = graph.add_node()
-    n2 = graph.add_node()
+    for index in range(3):
+        node = graph.add_node()
+        graph.register_input(node, index)
+        graph.assign_meas_basis(node, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    frame = PauliFrame(graph, {0: {1}, 1: {2}}, {}, logical_observables={7: {2}, 3: {1}})
 
-    graph.register_input(n0, 0)
-    graph.register_output(n2, 0)
+    groups = frame.logical_observable_groups()
 
-    graph.add_edge(n0, n1)
-    graph.add_edge(n1, n2)
-
-    graph.assign_meas_basis(n0, PlannerMeasBasis(Plane.XY, 0.0))
-    graph.assign_meas_basis(n1, PlannerMeasBasis(Plane.XY, 0.0))
-    graph.assign_meas_basis(n2, PlannerMeasBasis(Plane.XY, 0.0))
-
-    xflow = {n0: {n1}, n1: {n2}}
-    zflow: dict[int, set[int]] = {n0: {n0, n2}}
-
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
-    pframe = PauliFrame(graph, xflow, zflow, parity_check_group)
-
-    # Get logical observables group
-    target_nodes = [n2]
-    group = pframe.logical_observables_group(target_nodes)
-    assert isinstance(group, set)
-    assert group == {n0, n2}  # n0 is included via dependent chain
+    assert groups == {7: {0, 1, 2}, 3: {0, 1}}
+    assert frame.logical_observables_group([2]) == {0, 1, 2}
+    assert frame.logical_observables_group([0, 2]) == {1, 2}
+    groups[7].clear()
+    assert frame.logical_observables == {7: {2}, 3: {1}}
+    assert frame.logical_observable_groups() == {7: {0, 1, 2}, 3: {0, 1}}
 
 
-def test_logical_observable_groups() -> None:
-    """Test closure expansion for all indexed logical observables."""
-    graph = GraphState()
-    n0 = graph.add_node()
-    n1 = graph.add_node()
-    n2 = graph.add_node()
-
-    graph.register_input(n0, 0)
-    graph.register_output(n2, 0)
-
-    graph.add_edge(n0, n1)
-    graph.add_edge(n1, n2)
-
-    graph.assign_meas_basis(n0, PlannerMeasBasis(Plane.XY, 0.0))
-    graph.assign_meas_basis(n1, PlannerMeasBasis(Plane.XY, 0.0))
-    graph.assign_meas_basis(n2, PlannerMeasBasis(Plane.XY, 0.0))
-
-    xflow = {n0: {n1}, n1: {n2}}
-    zflow: dict[int, set[int]] = {n0: {n0, n2}}
-    logical_observables = {3: {n1}, 7: {n2}}
-
-    pframe = PauliFrame(graph, xflow, zflow, logical_observables=logical_observables)
-
-    assert pframe.logical_observable_groups() == {
-        3: {n1},
-        7: {n0, n2},
-    }
-
-
-def test_collect_dependent_chain_cache_hit() -> None:
-    """Test that cache is correctly used when same node is queried multiple times."""
-    graph = GraphState()
-    n0 = graph.add_node()
-    n1 = graph.add_node()
-    n2 = graph.add_node()
-    n3 = graph.add_node()
-
-    graph.register_input(n0, 0)
-    graph.register_output(n3, 0)
-
-    graph.add_edge(n0, n1)
-    graph.add_edge(n1, n2)
-    graph.add_edge(n2, n3)
-
-    # Mix of X and Z measurements
-    graph.assign_meas_basis(n0, PlannerMeasBasis(Plane.XZ, 0.0))  # Z
-    graph.assign_meas_basis(n1, PlannerMeasBasis(Plane.XY, 0.0))  # X
-    graph.assign_meas_basis(n2, PlannerMeasBasis(Plane.XZ, 0.0))  # Z
-
-    xflow = {n0: {n1}, n1: {n2}, n2: {n3}}
-    zflow = {n0: {n0}}
-
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
-    pframe = PauliFrame(graph, xflow, zflow, parity_check_group)
-
-    # First call to n2
-    chain1 = pframe._collect_dependent_chain(n2)
-    assert n2 in pframe._chain_cache
-
-    # Clear internal cache to test that memoization returns correct result
-    cached_result = pframe._chain_cache[n2]
-
-    # Second call should use cache
-    chain2 = pframe._collect_dependent_chain(n2)
-
-    # Results should be identical
-    assert chain1 == chain2
-    assert set(cached_result) == chain1
-
-
-def test_collect_dependent_chain_diamond_cancellation() -> None:
+def test_nominal_detector_groups_diamond_cancellation() -> None:
     """Test that nodes reached via multiple paths are correctly XOR'd.
 
     Diamond graph structure (5 nodes with n4 as output):
@@ -773,23 +618,10 @@ def test_collect_dependent_chain_diamond_cancellation() -> None:
     xflow = {n0: {n1, n2}, n1: {n3}, n2: {n3}, n3: {n4}}
     zflow: dict[int, set[int]] = {}
 
-    # Provide parity_check_group to enable _pauli_axis_cache initialization
-    parity_check_group = [set(graph.nodes)]
+    parity_check_group = [{n3}, {n1}, {n2}]
     pframe = PauliFrame(graph, xflow, zflow, parity_check_group)
 
-    # Verify the chain for n3
-    chain_n3 = pframe._collect_dependent_chain(n3)
-
-    # n0 should be canceled out (reached via n1 and n2)
-    assert n0 not in chain_n3, f"n0 should be canceled out but chain is {chain_n3}"
-    assert chain_n3 == {n1, n2, n3}, f"Expected {{n1, n2, n3}} but got {chain_n3}"
-
-    # Also verify intermediate chains
-    chain_n1 = pframe._collect_dependent_chain(n1)
-    assert chain_n1 == {n0, n1}, f"Expected {{n0, n1}} but got {chain_n1}"
-
-    chain_n2 = pframe._collect_dependent_chain(n2)
-    assert chain_n2 == {n0, n2}, f"Expected {{n0, n2}} but got {chain_n2}"
+    assert pframe.detector_groups() == [{n1, n2, n3}, {n0, n1}, {n0, n2}]
 
 
 def _two_group_frame_args() -> tuple[GraphState, dict[int, set[int]], dict[int, set[int]], list[set[int]]]:
