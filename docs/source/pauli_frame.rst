@@ -92,8 +92,12 @@ compilation is performed before lowering with
 their Clifford and Pauli dependencies. See :doc:`feedforward`.
 The frame's ``detector_groups`` supplies nominal-basis supports for detector
 certification, which remains separate and rejects Clifford-influenced
-nominal-basis analysis. Observable compilation belongs to ``Feedforward``;
-the former frame observable-expansion methods have been removed.
+nominal-basis analysis. The ``logical_observable_groups`` and
+``logical_observables_group`` methods remain available for legacy observable
+compilation and default Stim export. Deprecation of frame-side compilation and
+the legacy export path is planned for v0.8.0, with no warning emitted yet.
+Use ``Feedforward`` for new compilation workflows and export their stored
+supports with ``stim_compile(pattern, backpropagate=False)``.
 
 Frame Factory
 -------------

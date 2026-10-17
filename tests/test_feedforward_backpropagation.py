@@ -196,7 +196,7 @@ def test_ptn_roundtrip_and_stim_export_do_not_backpropagate_again() -> None:
 
     assert restored.frame.parity_check_group == [{0, 1}, {0, 1, 2}]
     assert restored.frame.logical_observables == {5: {0, 1, 2}}
-    circuit = stim.Circuit(stim_compile(restored))
+    circuit = stim.Circuit(stim_compile(restored, backpropagate=False))
     assert circuit.num_detectors == 2
     assert circuit.num_observables == 6
     assert all("rec[" not in str(op) for op in circuit if op.name in {"CX", "CZ"})
@@ -210,18 +210,32 @@ def test_retained_pauli_feedback_is_executed_by_stim_instead_of_expanding_annota
         graph.register_input(node, index, init=Initialization(Axis.X if index == 0 else Axis.Z))
         graph.assign_meas_basis(node, AxisMeasBasis(Axis.Z, Sign.PLUS))
     original = Feedforward({0: {1}, 1: {2}}, {}, parity_check_group=[{0, 2}], logical_observables={0: {0, 2}})
-    circuit = stim.Circuit(stim_compile(qompile(graph, original)))
+    pattern = qompile(graph, original)
+    circuit = stim.Circuit(stim_compile(pattern, backpropagate=False))
 
     assert str(circuit).count("CX rec[-1]") == 2
     detector = next(op for op in circuit if op.name == "DETECTOR")
     assert isinstance(detector, stim.CircuitInstruction)
     assert {target.value for target in detector.targets_copy()} == {-3, -1}
-    compiled_circuit = stim.Circuit(stim_compile(qompile(graph, original.backpropagate(graph))))
+    compiled_circuit = stim.Circuit(stim_compile(qompile(graph, original.backpropagate(graph)), backpropagate=False))
+    legacy_circuit = stim.Circuit(stim_compile(pattern))
+    assert legacy_circuit == stim.Circuit(stim_compile(pattern, backpropagate=True))
+    assert all("rec[" not in str(op) for op in legacy_circuit if op.name in {"CX", "CZ"})
+    legacy_detector = next(op for op in legacy_circuit if op.name == "DETECTOR")
+    assert isinstance(legacy_detector, stim.CircuitInstruction)
+    assert {target.value for target in legacy_detector.targets_copy()} == {-2, -1}
+    legacy_observable = next(op for op in legacy_circuit if op.name == "OBSERVABLE_INCLUDE")
+    assert isinstance(legacy_observable, stim.CircuitInstruction)
+    assert {target.value for target in legacy_observable.targets_copy()} == {-2, -1}
     # A random Z readout on qubit 0 is copied through the two |0> targets.
     assert circuit.has_flow(stim.Flow("1 -> rec[-3] xor rec[-1]"))
     assert compiled_circuit.has_flow(stim.Flow("1 -> rec[-2] xor rec[-1]"))
+    assert legacy_circuit.has_flow(stim.Flow("1 -> rec[-2] xor rec[-1]"))
     assert circuit.detector_error_model().num_detectors == 1
     assert compiled_circuit.detector_error_model().num_detectors == 1
+    assert legacy_circuit.detector_error_model().num_detectors == 1
+    assert pattern.frame.parity_check_group == [{0, 2}]
+    assert pattern.frame.logical_observables == {0: {0, 2}}
 
 
 def test_stim_executes_retained_feedback_on_a_quantum_output() -> None:
@@ -233,7 +247,7 @@ def test_stim_executes_retained_feedback_on_a_quantum_output() -> None:
     graph.assign_meas_basis(source, AxisMeasBasis(Axis.Z, Sign.PLUS))
     compiled = Feedforward({source: {output}}, {}).backpropagate(graph)
 
-    circuit = stim.Circuit(stim_compile(qompile(graph, compiled)))
+    circuit = stim.Circuit(stim_compile(qompile(graph, compiled), backpropagate=False))
 
     assert compiled.xflow == {source: {output}}
     assert circuit.has_flow(stim.Flow("1 -> Z1 xor rec[-1]"))

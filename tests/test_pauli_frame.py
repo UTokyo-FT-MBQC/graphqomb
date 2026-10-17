@@ -559,6 +559,24 @@ def test_detector_determinism_matches_stim(edges: tuple[tuple[int, int], ...]) -
             _assert_determinism_matches_stim(edges, init_axes, meas_axes, groups)
 
 
+def test_legacy_observable_compilation_preserves_indices_and_stored_supports() -> None:
+    graph = GraphState()
+    for index in range(3):
+        node = graph.add_node()
+        graph.register_input(node, index)
+        graph.assign_meas_basis(node, AxisMeasBasis(Axis.Z, Sign.PLUS))
+    frame = PauliFrame(graph, {0: {1}, 1: {2}}, {}, logical_observables={7: {2}, 3: {1}})
+
+    groups = frame.logical_observable_groups()
+
+    assert groups == {7: {0, 1, 2}, 3: {0, 1}}
+    assert frame.logical_observables_group([2]) == {0, 1, 2}
+    assert frame.logical_observables_group([0, 2]) == {1, 2}
+    groups[7].clear()
+    assert frame.logical_observables == {7: {2}, 3: {1}}
+    assert frame.logical_observable_groups() == {7: {0, 1, 2}, 3: {0, 1}}
+
+
 def test_nominal_detector_groups_diamond_cancellation() -> None:
     """Test that nodes reached via multiple paths are correctly XOR'd.
 

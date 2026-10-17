@@ -126,7 +126,9 @@ pattern = qompile(graphstate, compiled)
 
 The transformation returns residual flows and rewritten supports together. It retains Clifford targets and their dependency ancestors, along with dependencies needed by quantum outputs and non-Pauli measurements. It absorbs only removed Pauli corrections into the parities, so retained feedforward is not counted twice. Input objects are unchanged. Stored supports refer to the records reported by the resulting pattern; individual records can be relabelled by the transformation.
 
-Stim export emits these stored supports directly and executes retained Pauli corrections. Backpropagation is independent of Stim, and nontrivial Clifford feedback remains outside the Stim export contract. The existing map-based `qompile` calls remain supported; `pattern.frame.feedforward` returns a static IR copy for transformation and recompilation.
+Export this pattern with `stim_compile(pattern, backpropagate=False)` to emit stored supports directly and execute retained Pauli corrections. Backpropagation is independent of Stim, and nontrivial Clifford feedback remains outside the Stim export contract. The existing map-based `qompile` calls remain supported; `pattern.frame.feedforward` returns a static IR copy for transformation and recompilation.
+
+For compatibility, `stim_compile(pattern)` defaults to the legacy frame-side support expansion (`backpropagate=True`), without executing retained correction maps. The frame's `detector_groups()`, `logical_observable_groups()`, and `logical_observables_group(...)` remain available. Deprecation of frame-side compilation and the legacy export path is planned for v0.8.0; they do not emit deprecation warnings yet.
 
 ## Documentation
 

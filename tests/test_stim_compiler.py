@@ -434,7 +434,7 @@ def test_stim_compile_with_heralded_noise_updates_detectors() -> None:
 
     actual_meas_order, total_measurements = _parse_stim_measurements(stim_str)
 
-    check_groups = pattern.frame.parity_check_group
+    check_groups = pattern.frame.detector_groups()
     expected_detectors = {
         _normalize_detector(
             f"DETECTOR {' '.join(f'rec[{actual_meas_order[check] - total_measurements}]' for check in checks)}"

@@ -124,6 +124,7 @@ def test_detector_certification_raises_for_cflow_influenced_nodes() -> None:
         zflow={},
         cflow={0: {1: ca.S}},
         parity_check_group=[{1}],
+        logical_observables={0: {1}},
     )
     with pytest.raises(NotImplementedError, match="Clifford feedforward"):
         frame.detector_groups()
@@ -131,6 +132,10 @@ def test_detector_certification_raises_for_cflow_influenced_nodes() -> None:
         frame.detector_stabilizers()
     with pytest.raises(NotImplementedError, match="Clifford feedforward"):
         frame.detector_determinism()
+    with pytest.raises(NotImplementedError, match="Clifford feedforward"):
+        frame.logical_observables_group({1})
+    with pytest.raises(NotImplementedError, match="Clifford feedforward"):
+        frame.logical_observable_groups()
 
 
 def test_detector_certification_still_works_for_uninfluenced_nodes() -> None:

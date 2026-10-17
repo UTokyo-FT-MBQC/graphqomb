@@ -81,7 +81,8 @@ GraphQOMB is most useful in the middle of a broader MBQC toolchain:
   GraphQOMB handles feedforward validation, schedule construction, pattern lowering, simulation, and pattern-level metrics.
 - **Downstream**
   Compatible patterns can be exported with :func:`graphqomb.stim_glue.compiler.stim_compile` for Stim-oriented workflows.
-  Export serializes stored parity supports and executes retained Pauli
-  feedback; it does not perform backpropagation.
+  With ``backpropagate=False``, export serializes stored parity supports and
+  executes retained Pauli feedback. The default ``backpropagate=True`` keeps
+  legacy frame-side support compilation, planned for deprecation in v0.8.0.
 
 This separation is the main reason the package is documented as a compiler framework rather than a thin wrapper around another MBQC package.

@@ -54,18 +54,25 @@ The stored ``frame.parity_check_group`` and ``frame.logical_observables``
 are the supports over that pattern's reported records. The frame's
 ``detector_groups`` method provides nominal-basis supports for determinism
 diagnostics; it is not a compilation step and rejects Clifford-influenced
-raw-record expansion. The former ``logical_observable_groups`` and
-``logical_observables_group`` methods have been removed: transform observables
-together with the correction maps using ``Feedforward.backpropagate``.
+raw-record expansion. The frame's ``logical_observable_groups`` and
+``logical_observables_group`` methods also remain available for legacy
+nominal-basis compilation. Frame-side compilation and the legacy Stim export
+path are scheduled for deprecation in v0.8.0; no warning is emitted yet.
+New workflows transform observables together with correction maps using
+``Feedforward.backpropagate``.
 
 Parity expansion uses one iterative affine-substitution implementation for
 compilation and diagnostics, without recursive closures or persistent frame
 caches.
 
-Stim export serializes stored supports directly and executes any retained
-Pauli feedforward as record-controlled corrections at measurement/output
-boundaries. It performs no implicit backpropagation. Patterns with nontrivial
-cflow still cannot be exported to Stim.
+``stim_compile(pattern, backpropagate=False)`` serializes stored supports
+directly and executes any retained Pauli feedforward as record-controlled
+corrections at measurement/output boundaries, without further backpropagation.
+For compatibility, ``stim_compile(pattern)`` defaults to ``backpropagate=True``:
+it expands supports through the frame's legacy methods and emits nominal
+measurements without executing retained correction maps. In particular, the
+legacy path leaves quantum-output corrections implicit. Both paths reject
+nontrivial cflow.
 
 .. autoclass:: graphqomb.feedforward.Feedforward
    :members:

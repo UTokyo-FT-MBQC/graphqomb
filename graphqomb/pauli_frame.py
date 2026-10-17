@@ -21,7 +21,7 @@ from graphqomb.common import Axis, determine_pauli_axis
 from graphqomb.feedforward import Feedforward, _expand_parity_supports, _normalize_cflow, check_flow
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
     from collections.abc import Set as AbstractSet
 
     from graphqomb.clifford_algebra import C1Element
@@ -218,13 +218,16 @@ class PauliFrame:
         return self.inv_xflow.get(node, set()) | self.inv_zflow.get(node, set())
 
     def detector_groups(self) -> list[set[int]]:
-        r"""Expand detector supports into nominal-basis records for certification.
+        r"""Expand detector supports into nominal-basis records.
 
-        This raw-record view is not used by execution or Stim export. Stored
+        The legacy Stim export path and determinism checks use this view. Stored
         ``parity_check_group`` supports refer to this frame's adapted records.
         Use ``feedforward.backpropagate(graphstate)`` to transform both the maps
         and their parities before recompiling. Clifford-influenced raw-record
         expansion and certification remain unsupported.
+
+        Frame-side compilation is retained for compatibility; deprecation is
+        planned for v0.8.0. No deprecation warning is emitted yet.
 
         Returns
         -------
@@ -374,10 +377,44 @@ class PauliFrame:
             stabilizer[node] = Axis.Y if has_x and has_z else Axis.X if has_x else Axis.Z
         return stabilizer
 
+    def logical_observable_groups(self) -> dict[int, set[int]]:
+        r"""Expand all indexed logical observables into nominal-basis records.
+
+        Retained for legacy Stim export, with deprecation planned for v0.8.0.
+        New workflows transform maps and supports together using
+        ``feedforward.backpropagate(graphstate)``. This method does not mutate
+        the frame or absorb retained corrections into its stored supports.
+
+        Returns
+        -------
+        dict[int, set[int]]
+            Independent expanded supports keyed by logical index.
+        """
+        groups = self._nominal_parity_groups(list(self.logical_observables.values()))
+        return dict(zip(self.logical_observables, groups, strict=True))
+
+    def logical_observables_group(self, target_nodes: Collection[int]) -> set[int]:
+        r"""Expand one logical-observable support into nominal-basis records.
+
+        Retained for compatibility, with deprecation planned for v0.8.0.
+        Clifford-influenced nominal-basis expansion remains unsupported.
+
+        Parameters
+        ----------
+        target_nodes : Collection[int]
+            Observable seed nodes.
+
+        Returns
+        -------
+        set[int]
+            An independent expanded support.
+        """
+        return self._nominal_parity_groups([set(target_nodes)])[0]
+
     def _nominal_parity_groups(self, groups: Sequence[AbstractSet[int]]) -> list[set[int]]:
         """Build fixed-axis dependencies for nominal-basis diagnostic queries.
 
-        Execution and export do not use this view. Validate the entire reached
+        Legacy export and determinism checks use this view. Validate the entire reached
         closure, even when some paths later cancel, before affine substitution.
 
         Returns
