@@ -2,6 +2,7 @@
 
 This module provides:
 
+- `Feedforward`: Correction maps and parity definitions, transformed before lowering.
 - `dag_from_flow`: Construct a directed acyclic graph (DAG) from a flowlike object.
 - `inverse_dag_from_dag`: Construct an inverse DAG (node -> dependencies).
 - `topo_order_from_inv_dag`: Construct a topological order from an inverse DAG.
@@ -16,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from graphlib import CycleError, TopologicalSorter
+from heapq import heapify, heappop, heappush
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import typing_extensions
@@ -25,11 +27,200 @@ from graphqomb.common import Axis, Plane, determine_pauli_axis
 from graphqomb.graphstate import BaseGraphState, odd_neighbors, unmeasured_output_nodes
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Sequence
 
     from graphqomb.clifford_algebra import C1Element
 
 TOPO_ORDER_CYCLE_ERROR_MSG = "No nodes can be measured; possible cyclic dependency or incomplete preparation."
+
+
+class Feedforward:
+    """Static correction maps and detector/observable parities.
+
+    Parities refer to the measurement records produced with these maps in
+    effect. ``backpropagate`` returns new maps and parities together; its
+    result can be passed directly to ``qompile(graph, feedforward)``.
+    Construction and transformation copy caller-owned maps and supports.
+
+    Parameters
+    ----------
+    xflow : Mapping[int, Set[int]]
+        Conditional X corrections, source to targets.
+    zflow : Mapping[int, Set[int]] | None
+        Conditional Z corrections; None derives them from odd neighborhoods.
+    cflow : Mapping[int, Mapping[int, C1Element]] | None
+        Conditional single-qubit Clifford correcting gates.
+    parity_check_group : Sequence[Set[int]] | None
+        Detector supports in the current measurement-record convention.
+    logical_observables : Mapping[int, Set[int]] | None
+        Observable supports keyed by logical index.
+    parity_check_tags : Sequence[str] | None
+        Detector tags, aligned with parity_check_group.
+    """
+
+    def __init__(  # ruff:ignore[too-many-arguments]
+        self,
+        xflow: Mapping[int, AbstractSet[int]],
+        zflow: Mapping[int, AbstractSet[int]] | None = None,
+        cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
+        *,
+        parity_check_group: Sequence[AbstractSet[int]] | None = None,
+        logical_observables: Mapping[int, AbstractSet[int]] | None = None,
+        parity_check_tags: Sequence[str] | None = None,
+    ) -> None:
+        self.xflow = {source: set(targets) for source, targets in xflow.items()}
+        self.zflow = None if zflow is None else {source: set(targets) for source, targets in zflow.items()}
+        self.cflow = {source: dict(targets) for source, targets in (cflow or {}).items()}
+        self.parity_check_group = [set(group) for group in parity_check_group or ()]
+        self.logical_observables = {index: set(group) for index, group in (logical_observables or {}).items()}
+        if parity_check_tags is not None and len(parity_check_tags) != len(self.parity_check_group):
+            msg = "parity_check_tags must have one tag per parity check group."
+            raise ValueError(msg)
+        self.parity_check_tags = (
+            list(parity_check_tags) if parity_check_tags is not None else [""] * len(self.parity_check_group)
+        )
+
+    def backpropagate(self, graph: BaseGraphState) -> Feedforward:  # ruff:ignore[complex-structure, too-many-locals]
+        """Compile removable Pauli feedforward into parity supports.
+
+        Protect Clifford targets and all their ancestors in the combined
+        correction DAG, preserving both control bits and event order. Quantum
+        outputs and non-Pauli measurements receive the same protection.
+        Elsewhere, remove incoming Pauli corrections and absorb their outcome
+        relabelings into every detector and logical observable. Expansion stops
+        on protected records, which retain their runtime adaptation; retained
+        corrections are never counted a second time in the parity supports.
+
+        Individual measurement records can be relabelled. The preserved
+        quantities are detector/observable values, retained adaptive behavior,
+        and corrected quantum outputs. This is not a determinism certificate.
+
+        Parameters
+        ----------
+        graph : BaseGraphState
+            Resource graph, measurement labels, and quantum outputs.
+
+        Returns
+        -------
+        Feedforward
+            New residual flows and parity supports in their record convention.
+
+        Raises
+        ------
+        ValueError
+            If flows are cyclic or annotations reference unmeasured nodes.
+        """
+        graph.check_canonical_form()
+        xflow = {source: set(targets) for source, targets in self.xflow.items()}
+        zflow = (
+            {source: odd_neighbors(targets, graph) for source, targets in self.xflow.items()}
+            if self.zflow is None
+            else {source: set(targets) for source, targets in self.zflow.items()}
+        )
+        cflow = _normalize_cflow(xflow, zflow, self.cflow)
+        dag = dag_from_flow(graph, xflow, zflow, cflow)
+        check_dag(dag)
+        measured = graph.meas_bases.keys()
+        for group in (*self.parity_check_group, *self.logical_observables.values()):
+            if not group <= measured:
+                msg = f"Parity support contains unmeasured node(s): {sorted(group - measured)}"
+                raise ValueError(msg)
+        graph_nodes = graph.nodes
+        if any(target not in graph_nodes for targets in dag.values() for target in targets):
+            msg = "Correction targets must belong to the resource graph."
+            raise ValueError(msg)
+
+        axes = {node: determine_pauli_axis(basis) for node, basis in graph.meas_bases.items()}
+        protected = unmeasured_output_nodes(graph) | {node for node, axis in axes.items() if axis is None}
+        protected.update(target for source, targets in cflow.items() for target in targets if target != source)
+        inverse = inverse_dag_from_dag(dag)
+        pending = list(protected)
+        while pending:
+            for parent in inverse.get(pending.pop(), ()):
+                if parent not in protected:
+                    protected.add(parent)
+                    pending.append(parent)
+
+        # Only removed corrections contribute to the change of record variables.
+        dependencies: dict[int, set[int]] = {}
+        remaining: list[dict[int, set[int]]] = []
+        for flow, sensitive_axes in ((xflow, {Axis.Y, Axis.Z}), (zflow, {Axis.X, Axis.Y})):
+            retained: dict[int, set[int]] = {}
+            for source, targets in flow.items():
+                kept = {target for target in targets if target in protected or target == source}
+                if kept:
+                    retained[source] = kept
+                for target in targets - kept:
+                    if axes[target] in sensitive_axes:
+                        dependencies.setdefault(target, set()).symmetric_difference_update({source})
+            remaining.append(retained)
+
+        num_detectors = len(self.parity_check_group)
+        supports = _expand_parity_supports([*self.parity_check_group, *self.logical_observables.values()], dependencies)
+        return Feedforward(
+            remaining[0],
+            remaining[1],
+            cflow,
+            parity_check_group=supports[:num_detectors],
+            logical_observables=dict(zip(self.logical_observables, supports[num_detectors:], strict=True)),
+            parity_check_tags=self.parity_check_tags,
+        )
+
+
+def _expand_parity_supports(
+    groups: Iterable[AbstractSet[int]], dependencies: Mapping[int, AbstractSet[int]]
+) -> list[set[int]]:
+    """Substitute affine bit dependencies in reverse causal order.
+
+    Returns
+    -------
+    list[set[int]]
+        Independent expanded supports, preserving group order.
+    """
+    ranks = {node: -rank for rank, node in enumerate(TopologicalSorter(dependencies).static_order())}
+    expanded: list[set[int]] = []
+    for group in groups:
+        support = set(group)
+        queued = set(group)
+        work = [(ranks[node], node) for node in group if dependencies.get(node)]
+        heapify(work)
+        while work:
+            _, node = heappop(work)
+            if node not in support:
+                continue
+            parents = dependencies[node]
+            support.symmetric_difference_update(parents)
+            for parent in parents - queued:
+                queued.add(parent)
+                if dependencies.get(parent):
+                    heappush(work, (ranks[parent], parent))
+        expanded.append(support)
+    return expanded
+
+
+def _normalize_cflow(
+    xflow: dict[int, set[int]],
+    zflow: dict[int, set[int]],
+    cflow: Mapping[int, Mapping[int, C1Element]] | None,
+) -> dict[int, dict[int, C1Element]]:
+    """Fold same-source Pauli factors into owned flows and return nontrivial cosets.
+
+    Returns
+    -------
+    dict[int, dict[int, C1Element]]
+        Normalized Clifford correction map.
+    """
+    normalized: dict[int, dict[int, C1Element]] = {}
+    for source, targets in (cflow or {}).items():
+        for target, element in targets.items():
+            coset, x_bit, z_bit = clifford_algebra.decompose(element)
+            if x_bit:
+                xflow.setdefault(source, set()).symmetric_difference_update({target})
+            if z_bit:
+                zflow.setdefault(source, set()).symmetric_difference_update({target})
+            if coset != clifford_algebra.IDENTITY:
+                normalized.setdefault(source, {})[target] = coset
+    return normalized
 
 
 def _is_flow(flowlike: Mapping[int, Any]) -> TypeGuard[Mapping[int, int]]:
@@ -248,19 +439,6 @@ def check_flow(
     check_dag(dag)
 
 
-def _reject_cflow(cflow: Mapping[int, Mapping[int, C1Element]] | None, operation: str) -> None:
-    """Raise for a nonempty Clifford correction flow.
-
-    Raises
-    ------
-    NotImplementedError
-        If any cflow correction is present.
-    """
-    if cflow and any(targets for targets in cflow.values()):
-        msg = f"{operation} over Clifford feedforward (cflow) is not supported yet."
-        raise NotImplementedError(msg)
-
-
 def _normalized_correction_dag(
     graph: BaseGraphState,
     xflow: Mapping[int, AbstractSet[int]],
@@ -276,16 +454,7 @@ def _normalized_correction_dag(
     """
     normalized_x = {source: set(targets) for source, targets in xflow.items()}
     normalized_z = {source: set(targets) for source, targets in zflow.items()}
-    normalized_c: dict[int, dict[int, C1Element]] = {}
-    for source, targets in cflow.items():
-        for target, gate in targets.items():
-            coset, x_bit, z_bit = clifford_algebra.decompose(gate)
-            if x_bit:
-                normalized_x.setdefault(source, set()).symmetric_difference_update({target})
-            if z_bit:
-                normalized_z.setdefault(source, set()).symmetric_difference_update({target})
-            if coset != clifford_algebra.IDENTITY:
-                normalized_c.setdefault(source, {})[target] = coset
+    normalized_c = _normalize_cflow(normalized_x, normalized_z, cflow)
     return dag_from_flow(graph, normalized_x, normalized_z, normalized_c)
 
 
@@ -520,8 +689,15 @@ def pauli_simplification(  # ruff:ignore[complex-structure, too-many-branches]
     -------
     `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `dict`\[`int`, `set`\[`int`\]\]\]
         Updated correction maps for X and Z after simplification.
+
+    Raises
+    ------
+    NotImplementedError
+        If any cflow correction is present.
     """
-    _reject_cflow(cflow, "Pauli simplification")
+    if cflow and any(cflow.values()):
+        msg = "Pauli simplification over Clifford feedforward (cflow) is not supported yet."
+        raise NotImplementedError(msg)
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
 

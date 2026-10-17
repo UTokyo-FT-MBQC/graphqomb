@@ -434,7 +434,7 @@ def test_stim_compile_with_heralded_noise_updates_detectors() -> None:
 
     actual_meas_order, total_measurements = _parse_stim_measurements(stim_str)
 
-    check_groups = pattern.frame.detector_groups()
+    check_groups = pattern.frame.parity_check_group
     expected_detectors = {
         _normalize_detector(
             f"DETECTOR {' '.join(f'rec[{actual_meas_order[check] - total_measurements}]' for check in checks)}"
@@ -713,7 +713,7 @@ def _cz_slices_from_stim(stim_str: str) -> dict[tuple[int, int], int]:
     for line in stim_str.splitlines():
         if line == "TICK":
             ticks += 1
-        elif line.startswith("CZ "):
+        elif line.startswith("CZ ") and "rec[" not in line:
             _, q1, q2 = line.split()
             cz_slice[int(q1), int(q2)] = ticks
     return cz_slice

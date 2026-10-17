@@ -87,7 +87,13 @@ Signal shifting can optimize Pauli regions outside the causal past of cflow
 targets while retaining the Clifford boundaries. See
 :doc:`feedforward` for the static boundary rule and the unchanged cflow
 argument required when compiling the optimized maps. Detector and observable
-backpropagation through Clifford-affected nodes remains unsupported.
+compilation is performed before lowering with
+``Feedforward.backpropagate(graph)``. It stops at protected records and retains
+their Clifford and Pauli dependencies. See :doc:`feedforward`.
+The frame's ``detector_groups`` supplies nominal-basis supports for detector
+certification, which remains separate and rejects Clifford-influenced
+nominal-basis analysis. Observable compilation belongs to ``Feedforward``;
+the former frame observable-expansion methods have been removed.
 
 Frame Factory
 -------------

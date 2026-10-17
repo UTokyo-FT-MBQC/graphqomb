@@ -10,21 +10,24 @@ import numpy as np
 import pytest
 
 from graphqomb import clifford_algebra as ca
-from graphqomb.common import Plane, PlannerMeasBasis
+from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign
 from graphqomb.feedforward import propagate_correction_map, signal_shifting
 from graphqomb.graphstate import GraphState
 from graphqomb.qompiler import qompile
+from graphqomb.scheduler import Scheduler
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from numpy.typing import NDArray
+
     from graphqomb.common import MeasBasis
 
 
 class _BornBranchRng:
-    """Select either branch of the balanced teleportation measurements."""
+    """Select either Born branch of balanced measurements."""
 
     def __init__(self, outcomes: Iterable[bool]) -> None:
         self._outcomes = iter(outcomes)
@@ -45,37 +48,48 @@ def _measured_chain(num_nodes: int) -> GraphState:
 
 
 @pytest.mark.parametrize("shifted", [False, True])
-@pytest.mark.parametrize("outcomes", list(itertools.product([False, True], repeat=4)))
-def test_t_teleportation_all_branches(
-    shifted: bool, outcomes: tuple[bool, ...], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("outcomes", list(itertools.product([False, True], repeat=2)))
+@pytest.mark.parametrize("input_amplitudes", [(1, 0), (0, 1), (1, 1), (0.3 + 0.1j, 0.7 - 0.2j)])
+def test_zz_t_injection_all_branches(  # ruff:ignore[too-many-statements, too-many-locals]
+    shifted: bool,
+    outcomes: tuple[bool, bool],
+    input_amplitudes: tuple[complex, complex],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A complete graph realization of T accepts every branch, before and after shifting."""
-    graph = _measured_chain(5)
-    graph.register_input(0, 0)
-    graph.register_input(2, 1)
-    xflow = {node: {node + 1} for node in range(4)}
-    zflow = {0: {2}, 1: {3}, 2: {4}}
-    cflow = {1: {2: ca.S}}
+    """A ZZ projection consumes a separate magic input and corrects the retained data to T|psi>."""
+    graph = GraphState()
+    data, magic, probe = [graph.add_node() for _ in range(3)]
+    graph.register_input(data, 0)
+    graph.register_input(magic, 1)
+    graph.register_output(data, 0)
+    for node in (data, magic):
+        graph.add_edge(probe, node)
+    for node in (probe, magic):
+        graph.assign_meas_basis(node, AxisMeasBasis(Axis.X, Sign.PLUS))
+    xflow: dict[int, set[int]] = {}
+    zflow = {magic: {data}}
+    cflow = {probe: {data: ca.S}}
     if shifted:
         xflow, zflow = signal_shifting(graph, xflow, zflow, cflow=cflow)
-        # The source and target of S keep their incoming dependencies. The
-        # final Pauli-only teleportation shifts its outcome relabeling away.
-        assert zflow[0] == {2}
-        assert zflow[1] == set()
-        assert xflow[1] == {2, 4}
+        # Both measurement records feed the Clifford target, so neither is shifted.
+        assert xflow == {}
+        assert zflow == {magic: {data}}
 
-    pattern = qompile(graph, xflow, zflow, cflow=cflow)
+    scheduler = Scheduler(graph, xflow, zflow, cflow=cflow)
+    scheduler.manual_schedule(prepare_time={probe: 0}, measure_time={probe: 1, magic: 2})
+    pattern = qompile(graph, xflow, zflow, cflow=cflow, scheduler=scheduler)
     simulator = PatternSimulator(pattern, SimulatorBackend.StateVector, calc_prob=True)
     t_gate = np.diag([1.0, np.exp(1j * math.pi / 4)])
-    psi = np.asarray([0.3 + 0.1j, 0.7 - 0.2j], dtype=np.complex128)
+    psi = np.asarray(input_amplitudes, dtype=np.complex128)
     psi /= np.linalg.norm(psi)
     magic_state = t_gate @ (np.ones(2, dtype=np.complex128) / math.sqrt(2))
     simulator.state = StateVector.from_product_states([psi, magic_state])
 
     # Record Born probabilities before each actual sampled measurement. This
     # checks that the forced branches are possible and no postselection hides
-    # a failure; all four teleportations have probability 1/2 per outcome.
+    # a failure. Capture the post-measurement states before output correction.
     branch_probabilities: list[float] = []
+    branch_states: list[NDArray[np.complex128]] = []
     original_sample_measure = StateVector.sample_measure
 
     def record_sample_measure(state: StateVector, qubit: int, basis: MeasBasis, rng: np.random.Generator) -> bool:
@@ -84,14 +98,33 @@ def test_t_teleportation_all_branches(
         prob_zero = float(np.linalg.norm(projected) ** 2 / np.linalg.norm(vector) ** 2)
         outcome = original_sample_measure(state, qubit, basis, rng)
         branch_probabilities.append(1.0 - prob_zero if outcome else prob_zero)
+        branch_states.append(state.state().ravel().copy())
         return outcome
 
     monkeypatch.setattr(StateVector, "sample_measure", record_sample_measure)
     simulator.simulate(cast("np.random.Generator", _BornBranchRng(outcomes)))
-    assert simulator.results == dict(enumerate(outcomes))
-    assert branch_probabilities == pytest.approx([0.5] * 4)
-    assert math.prod(branch_probabilities) == pytest.approx(1 / 16)
+    p, m = outcomes
+    assert simulator.results == {probe: p, magic: m}
+    assert simulator.node_indices == [data]
+    assert branch_probabilities == pytest.approx([0.5, 0.5])
+    assert math.prod(branch_probabilities) == pytest.approx(1 / 4)
+
+    # Measuring the probe must enact the nondestructive ZZ projector on the inputs.
+    z_gate = np.diag([1.0, -1.0])
+    zz_projector = (np.eye(4) + (-1) ** p * np.kron(z_gate, z_gate)) / 2
+    projected = zz_projector @ np.kron(psi, magic_state)
+    projected /= np.linalg.norm(projected)
+    assert branch_states[0].shape == (4,)
+    assert abs(np.vdot(projected, branch_states[0])) == pytest.approx(1.0)
+
+    # Consuming the magic input leaves Z^m T^(+/-1)|psi> before S^p Z^m correction.
+    raw_expected = (t_gate.conj().T if p else t_gate) @ psi
+    if m:
+        raw_expected = z_gate @ raw_expected
+    assert branch_states[1].shape == (2,)
+    assert abs(np.vdot(raw_expected, branch_states[1])) == pytest.approx(1.0)
     output = np.asarray(simulator.state.state()).ravel()
+    assert output.shape == (2,)
     assert abs(np.vdot(t_gate @ psi, output)) == pytest.approx(1.0)
 
 

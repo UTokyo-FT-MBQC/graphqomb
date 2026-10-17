@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from graphqomb.command import TICK, Command, E, M, N
-from graphqomb.feedforward import dag_from_flow
+from graphqomb.feedforward import Feedforward, dag_from_flow
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import Pattern
 from graphqomb.pauli_frame import PauliFrame, make_frame
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 def qompile(  # ruff:ignore[too-many-arguments]
     graph: BaseGraphState,
-    xflow: Mapping[int, AbstractSet[int]],
+    xflow: Mapping[int, AbstractSet[int]] | Feedforward,
     zflow: Mapping[int, AbstractSet[int]] | None = None,
     cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
     *,
@@ -43,8 +43,10 @@ def qompile(  # ruff:ignore[too-many-arguments]
     ----------
     graph : `BaseGraphState`
         graph state
-    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
-        x correction flow
+    xflow : Mapping[int, Set[int]] | Feedforward
+        X correction map, or a complete feedforward IR including parities.
+        Transform the IR with ``backpropagate(graph)`` before lowering when
+        Pauli corrections should be compiled into detector/observable supports.
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         z correction flow
         if `None`, it is generated from xflow by odd neighbors
@@ -75,8 +77,22 @@ def qompile(  # ruff:ignore[too-many-arguments]
     `Pattern`
         Compiled pattern with a PauliFrame unless normalized cflow contains
         nontrivial cosets, in which case it carries a CliffordFrame.
+
+    Raises
+    ------
+    TypeError
+        If a Feedforward object is combined with separate maps or parity metadata.
     """
     graph.check_canonical_form()
+    if isinstance(xflow, Feedforward):
+        if any(arg is not None for arg in (zflow, cflow, parity_check_group, logical_observables, parity_check_tags)):
+            msg = "A Feedforward object already supplies correction maps and parity metadata; do not mix arguments."
+            raise TypeError(msg)
+        feedforward = xflow
+        xflow, zflow, cflow = feedforward.xflow, feedforward.zflow, feedforward.cflow
+        parity_check_group = feedforward.parity_check_group
+        logical_observables = feedforward.logical_observables
+        parity_check_tags = feedforward.parity_check_tags
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) for node in xflow}
 

@@ -6,6 +6,71 @@ Feedforward
 
 .. automodule:: graphqomb.feedforward
 
+Parity compilation before lowering
+----------------------------------
+
+``Feedforward`` owns correction maps together with detector supports,
+logical-observable supports, and detector tags. A support always refers to
+the measurement records produced while its maps are in effect. Backpropagation
+is an explicit transformation of this IR, before scheduling and lowering::
+
+    from graphqomb.feedforward import Feedforward
+    from graphqomb.qompiler import qompile
+
+    feedforward = Feedforward(
+        xflow, zflow, cflow,
+        parity_check_group=detector_seeds,
+        logical_observables=observable_seeds,
+        parity_check_tags=detector_tags,
+    )
+    compiled = feedforward.backpropagate(graph)
+    pattern = qompile(graph, compiled)
+
+``backpropagate`` normalizes Pauli factors of cflow, then protects every
+nontrivial Clifford target and all its ancestors in the combined correction
+DAG. Quantum outputs and non-Pauli measurements, with their ancestors, are
+protected too. Incoming corrections on protected nodes remain executable.
+This preserves the original Clifford control bits and noncommuting event order.
+
+Outside that region, incoming Pauli corrections are removed. Their outcome
+relabelings are compiled into each detector and observable by XOR substitution:
+X measurements inherit Z controls, Z measurements inherit X controls, and Y
+measurements inherit the symmetric difference of both. Substitution stops at
+protected records. Retained corrections are not absorbed into the parities a
+second time. Clifford feedback remains in the returned IR, rather than being
+expressed as a static XOR over nominal-basis records.
+
+The input object is unchanged. Reapplying backpropagation is idempotent.
+Individual records can change convention; detector/observable values,
+retained adaptive behavior, and corrected quantum outputs are preserved.
+This transformation does not certify detector determinism, including for
+encoded inputs or branch-dependent Clifford measurements.
+
+``qompile(graph, compiled)`` copies the residual maps and supports into the
+runtime frame. It does not apply another parity transformation. The existing
+map-based qompile arguments remain available. ``pattern.frame.feedforward``
+returns an independent static IR snapshot for transformation and recompilation.
+The stored ``frame.parity_check_group`` and ``frame.logical_observables``
+are the supports over that pattern's reported records. The frame's
+``detector_groups`` method provides nominal-basis supports for determinism
+diagnostics; it is not a compilation step and rejects Clifford-influenced
+raw-record expansion. The former ``logical_observable_groups`` and
+``logical_observables_group`` methods have been removed: transform observables
+together with the correction maps using ``Feedforward.backpropagate``.
+
+Parity expansion uses one iterative affine-substitution implementation for
+compilation and diagnostics, without recursive closures or persistent frame
+caches.
+
+Stim export serializes stored supports directly and executes any retained
+Pauli feedforward as record-controlled corrections at measurement/output
+boundaries. It performs no implicit backpropagation. Patterns with nontrivial
+cflow still cannot be exported to Stim.
+
+.. autoclass:: graphqomb.feedforward.Feedforward
+   :members:
+   :member-order: bysource
+
 Signal shifting with Clifford feedforward
 -----------------------------------------
 
@@ -50,13 +115,20 @@ require ordered Clifford events with parity-valued controls: in general
 
 As with Pauli-only signal shifting, records in rewritten regions are
 relabelled. These functions do not transform detector or logical-observable
-seeds. Clifford-dependent parity backpropagation remains unsupported, and
-``pauli_simplification`` still requires an empty cflow.
+seeds. Use the joint IR transformation above to compile parity supports while
+retaining Clifford boundaries. ``pauli_simplification`` still requires an empty
+cflow. Do not run a map-only record-relabeling pass after parity compilation
+without updating the associated supports.
 
-The :doc:`gallery/t_gate_teleportation` example compiles a complete magic-state
-T injection, applies this pass, and simulates the result with the statevector
-backend. It supplies the magic state through the simulator's input state;
-graph input initialization metadata remains restricted to Pauli eigenstates.
+The :doc:`gallery/t_gate_teleportation` example implements T injection by
+measuring ZZ between separate data and magic inputs, then measuring the magic
+input in X. A third node, prepared in ``|+>`` and CZ-coupled to both inputs,
+implements the ZZ measurement through its own X measurement. The data remains
+the output and receives conditional S and Z corrections. Signal shifting
+leaves this minimal gadget unchanged because both records are in the causal
+past of the data output, a Clifford target. The example supplies the magic
+state through the statevector simulator's input state; graph input
+initialization metadata remains restricted to Pauli eigenstates.
 
 Functions
 ---------

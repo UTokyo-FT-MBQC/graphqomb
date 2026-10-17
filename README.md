@@ -18,7 +18,7 @@ This design makes GraphQOMB useful both as an executable MBQC compiler and as a 
 GraphQOMB is organized around three explicit compiler interfaces:
 
 - **Labelled graph state**: the resource state, measurement bases, and I/O registration.
-- **Feedforward maps**: explicit `xflow` and optional `zflow`/`cflow` describing classical dependencies.
+- **Feedforward**: correction maps together with detector/observable supports and detector tags, represented by `Feedforward`.
 - **Scheduler**: preparation, entanglement, and measurement order for executable slices.
 
 These are lowered with `qompile(...)` into a `Pattern` carrying:
@@ -106,6 +106,27 @@ print(simulator.state.state())
 ```
 
 If you already have a graph-state design and explicit feedforward maps, you can skip `circuit2graph(...)` and call `qompile(...)` directly.
+
+For fault-tolerant workflows, compile Pauli feedforward into detector and logical-observable supports before lowering:
+
+```python
+from graphqomb.feedforward import Feedforward
+
+feedforward = Feedforward(
+    xflow,
+    zflow,
+    cflow,
+    parity_check_group=detector_seeds,
+    logical_observables=observable_seeds,
+    parity_check_tags=detector_tags,
+)
+compiled = feedforward.backpropagate(graphstate)
+pattern = qompile(graphstate, compiled)
+```
+
+The transformation returns residual flows and rewritten supports together. It retains Clifford targets and their dependency ancestors, along with dependencies needed by quantum outputs and non-Pauli measurements. It absorbs only removed Pauli corrections into the parities, so retained feedforward is not counted twice. Input objects are unchanged. Stored supports refer to the records reported by the resulting pattern; individual records can be relabelled by the transformation.
+
+Stim export emits these stored supports directly and executes retained Pauli corrections. Backpropagation is independent of Stim, and nontrivial Clifford feedback remains outside the Stim export contract. The existing map-based `qompile` calls remain supported; `pattern.frame.feedforward` returns a static IR copy for transformation and recompilation.
 
 ## Documentation
 

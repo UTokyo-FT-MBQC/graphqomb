@@ -89,6 +89,8 @@ class _StimCompiler:
     def compile(self) -> str:
         self._emit_input_nodes()
         self._process_commands()
+        for node in self._pattern.output_node_indices.keys() - self._meas_order.keys():
+            self._emit_pauli_corrections(node)
         total = self._rec_index
         self._emit_detectors(total)
         if self._pframe.logical_observables:
@@ -96,13 +98,13 @@ class _StimCompiler:
         return self._stim_io.getvalue().strip()
 
     def _emit_detectors(self, total_measurements: int) -> None:
-        for checks, tag in zip(self._pframe.detector_groups(), self._pframe.parity_check_tags, strict=True):
+        for checks, tag in zip(self._pframe.parity_check_group, self._pframe.parity_check_tags, strict=True):
             targets = [f"rec[{self._meas_order[c] - total_measurements}]" for c in checks]
             tag_suffix = f"[{escape_tag(tag)}]" if tag else ""
             self._stim_io.write(f"DETECTOR{tag_suffix} {' '.join(targets)}\n")
 
     def _emit_observables(self, total_measurements: int) -> None:
-        for log_idx, group in sorted(self._pframe.logical_observable_groups().items()):
+        for log_idx, group in sorted(self._pframe.logical_observables.items()):
             targets = [f"rec[{self._meas_order[n] - total_measurements}]" for n in group]
             self._stim_io.write(f"OBSERVABLE_INCLUDE({log_idx}) {' '.join(targets)}\n")
 
@@ -165,6 +167,13 @@ class _StimCompiler:
         self._touched_nodes.update(nodes)
         self._rec_index += self._emit_noise_ops(ops, NoisePlacement.AFTER, default_placement)
 
+    def _emit_pauli_corrections(self, node: int) -> None:
+        """Execute retained feedback; parity compilation belongs before lowering."""
+        for gate, inverse in (("CX", self._pframe.inv_xflow), ("CZ", self._pframe.inv_zflow)):
+            for source in sorted(inverse.get(node, ())):
+                offset = self._meas_order[source] - self._rec_index
+                self._stim_io.write(f"{gate} rec[{offset}] {node}\n")
+
     def _handle_measure(self, node: int, meas_basis: MeasBasis) -> None:
         axis = determine_pauli_axis(meas_basis)
         if axis is None:
@@ -183,6 +192,8 @@ class _StimCompiler:
 
         default_placement = default_noise_placement(event)
         self._rec_index += self._emit_noise_ops(other_ops, NoisePlacement.BEFORE, default_placement)
+
+        self._emit_pauli_corrections(node)
 
         # Emit measurement with optional flip probability
         meas_instr = {Axis.X: "MX", Axis.Y: "MY", Axis.Z: "MZ"}[axis]
@@ -307,6 +318,12 @@ def stim_compile(
     Stim only supports Clifford gates, therefore this compiler only supports
     Pauli measurements (X, Y, Z basis) which correspond to Clifford operations.
     Non-Pauli measurements will raise a ValueError.
+
+    Detector and observable supports are serialized as stored, in the record
+    convention of the retained feedforward maps. Remaining Pauli corrections
+    are emitted as record-controlled gates at measurement/output boundaries.
+    To absorb them into parities instead, call ``Feedforward.backpropagate``
+    before ``qompile``. Export performs no implicit backpropagation.
 
     Each parity check group compiles to a ``DETECTOR`` instruction, and the
     group's tag from `graphqomb.pauli_frame.PauliFrame.parity_check_tags` is
