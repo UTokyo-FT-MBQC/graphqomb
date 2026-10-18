@@ -134,9 +134,10 @@ placement; execution times are stored independently in the pattern schedule.
 
 Two-qubit measurements are parity measurements and are lowered to equivalent
 unsigned ``MPP`` products. Inverted targets in ``MXX``, ``MYY``, and ``MZZ``
-are rejected by the direct importer; the rewriter can normalize them to signed
-``MPP`` products. Signed ``MPP`` is supported: its product sign changes the
-ancilla measurement basis. The Type-I Y construction also contributes its
+are rejected by the importer and retained unchanged by ``rewrite_syndrome_rounds``.
+Express these measurements as signed ``MPP`` products before import; for example,
+replace ``MXX !0 1`` with ``MPP !X0*X1``. Signed ``MPP`` is supported: its
+product sign changes the ancilla measurement basis. The Type-I Y construction also contributes its
 own phase correction. Extraction ``supports`` and check matrices describe
 unsigned support; the pattern retains the measurement sign.
 
