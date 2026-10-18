@@ -74,11 +74,11 @@ class SteaneShot:
 
 
 def steane_basis() -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
-    """Build logical zero from the simplex row space, and its complement coset.
+    r"""Build logical zero from the simplex row space, and its complement coset.
 
     Returns
     -------
-    tuple[numpy.ndarray, numpy.ndarray]
+    `tuple`\[`numpy.ndarray`, `numpy.ndarray`\]
         The normalized 128-component logical zero and one states.
     """
     zero = np.zeros(128, dtype=np.complex128)
@@ -99,7 +99,7 @@ def steane_input(logical_state: NDArray[np.complex128]) -> NDArray[np.complex128
 
     Returns
     -------
-    numpy.ndarray
+    `numpy.ndarray`
         A normalized 14-qubit state in the pattern's input-qubit order.
 
     Raises
@@ -117,11 +117,11 @@ def steane_input(logical_state: NDArray[np.complex128]) -> NDArray[np.complex128
 
 
 def _append_memory(circuit: stim.Circuit, offset: int, *, end_round: bool = True) -> tuple[int, ...]:
-    """Append an ideal Steane memory round and return its six record indices.
+    r"""Append an ideal Steane memory round and return its six record indices.
 
     Returns
     -------
-    tuple[int, ...]
+    `tuple`\[`int`, ...\]
         X-check records followed by Z-check records.
     """
     records = []
@@ -147,7 +147,7 @@ def build_steane_circuit(readout_axis: Axis | None) -> SteaneSource:  # ruff:ign
 
     Returns
     -------
-    SteaneSource
+    `SteaneSource`
         Circuit and absolute measurement indices used for cflow and validation.
 
     Raises
@@ -240,7 +240,7 @@ def build_steane_pattern(readout_axis: Axis | None) -> SteanePattern:  # ruff:ig
 
     Returns
     -------
-    SteanePattern
+    `SteanePattern`
         Transversal-CNOT teleportation with memory on both initial blocks.
 
     Raises
@@ -345,7 +345,7 @@ def run_steane_shot(
 
     Returns
     -------
-    SteaneShot
+    `SteaneShot`
         The teleportation bit, compiled detector values, and logical readout.
 
     Raises

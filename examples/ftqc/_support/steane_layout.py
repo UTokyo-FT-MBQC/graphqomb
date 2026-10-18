@@ -28,7 +28,7 @@ def plot_steane_injection(steane: SteanePattern) -> Figure:
 
     Returns
     -------
-    matplotlib.figure.Figure
+    `matplotlib.figure.Figure`
         Spatial and temporal coordinates with no temporal displacement in XY.
     """
     fig = plt.figure(figsize=(16, 13))

@@ -99,7 +99,7 @@ class StimImportResult:
     stim_to_final_qubit : `dict`\[`int`, `int`\]
         Original Stim qubit id to the internal qubit index of its last
         lifetime.
-    record_to_node : dict[int, int]
+    record_to_node : `dict`\[`int`, `int`\]
         Absolute source measurement-record index to its graph measurement node.
         Deterministic padding records omitted during idealization have no node.
     """

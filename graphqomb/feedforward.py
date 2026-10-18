@@ -35,7 +35,7 @@ TOPO_ORDER_CYCLE_ERROR_MSG = "No nodes can be measured; possible cyclic dependen
 
 
 class Feedforward:
-    """Static correction maps and detector/observable parities.
+    r"""Static correction maps and detector/observable parities.
 
     Parities refer to the measurement records produced with these maps in
     effect. ``backpropagate`` returns new maps and parities together; its
@@ -44,17 +44,17 @@ class Feedforward:
 
     Parameters
     ----------
-    xflow : Mapping[int, Set[int]]
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
         Conditional X corrections, source to targets.
-    zflow : Mapping[int, Set[int]] | None
-        Conditional Z corrections; None derives them from odd neighborhoods.
-    cflow : Mapping[int, Mapping[int, C1Element]] | None
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
+        Conditional Z corrections; `None` derives them from odd neighborhoods.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
         Conditional single-qubit Clifford correcting gates.
-    parity_check_group : Sequence[Set[int]] | None
+    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
         Detector supports in the current measurement-record convention.
-    logical_observables : Mapping[int, Set[int]] | None
+    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Observable supports keyed by logical index.
-    parity_check_tags : Sequence[str] | None
+    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
         Detector tags, aligned with parity_check_group.
     """
 
@@ -97,12 +97,12 @@ class Feedforward:
 
         Parameters
         ----------
-        graph : BaseGraphState
+        graph : `BaseGraphState`
             Resource graph, measurement labels, and quantum outputs.
 
         Returns
         -------
-        Feedforward
+        `Feedforward`
             New residual flows and parity supports in their record convention.
 
         Raises
@@ -170,11 +170,11 @@ class Feedforward:
 def _expand_parity_supports(
     groups: Iterable[AbstractSet[int]], dependencies: Mapping[int, AbstractSet[int]]
 ) -> list[set[int]]:
-    """Substitute affine bit dependencies in reverse causal order.
+    r"""Substitute affine bit dependencies in reverse causal order.
 
     Returns
     -------
-    list[set[int]]
+    `list`\[`set`\[`int`\]\]
         Independent expanded supports, preserving group order.
     """
     ranks = {node: -rank for rank, node in enumerate(TopologicalSorter(dependencies).static_order())}
@@ -203,11 +203,11 @@ def _normalize_cflow(
     zflow: dict[int, set[int]],
     cflow: Mapping[int, Mapping[int, C1Element]] | None,
 ) -> dict[int, dict[int, C1Element]]:
-    """Fold same-source Pauli factors into owned flows and return nontrivial cosets.
+    r"""Fold same-source Pauli factors into owned flows and return nontrivial cosets.
 
     Returns
     -------
-    dict[int, dict[int, C1Element]]
+    `dict`\[`int`, `dict`\[`int`, `C1Element`\]\]
         Normalized Clifford correction map.
     """
     normalized: dict[int, dict[int, C1Element]] = {}

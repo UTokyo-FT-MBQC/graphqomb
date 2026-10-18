@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Docstring Type Links**: Restored cross-reference backticks on parameter, return, and attribute types added or changed by the feedforward and Steane example updates.
 - **FTQC Example Exports**: Save Steane patterns and figures before opening the blocking plot window, so exports are available while inspecting the graph.
 - **Stim Terminal-Readout Coordinates**: Terminal readout blocks no longer advance continuing wires to an idle Z layer. Measurements followed by quantum reuse still create a new continuation layer.
 - **Eliminated Probe Coordinates**: `rewrite_syndrome_rounds` drops coordinate targets for eliminated probes with no remaining operation or Pauli-observable reference, preventing isolated output wires. It preserves coordinates for other lifetimes and originally idle wires, and no longer interprets `MPAD` bits as qubit references.

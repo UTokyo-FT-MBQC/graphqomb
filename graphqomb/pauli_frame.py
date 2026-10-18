@@ -123,7 +123,7 @@ class PauliFrame:
 
         Returns
         -------
-        Feedforward
+        `Feedforward`
             Independent IR suitable for transformation and recompilation.
         """
         return Feedforward(
@@ -387,7 +387,7 @@ class PauliFrame:
 
         Returns
         -------
-        dict[int, set[int]]
+        `dict`\[`int`, `set`\[`int`\]\]
             Independent expanded supports keyed by logical index.
         """
         groups = self._nominal_parity_groups(list(self.logical_observables.values()))
@@ -401,25 +401,25 @@ class PauliFrame:
 
         Parameters
         ----------
-        target_nodes : Collection[int]
+        target_nodes : `collections.abc.Collection`\[`int`\]
             Observable seed nodes.
 
         Returns
         -------
-        set[int]
+        `set`\[`int`\]
             An independent expanded support.
         """
         return self._nominal_parity_groups([set(target_nodes)])[0]
 
     def _nominal_parity_groups(self, groups: Sequence[AbstractSet[int]]) -> list[set[int]]:
-        """Build fixed-axis dependencies for nominal-basis diagnostic queries.
+        r"""Build fixed-axis dependencies for nominal-basis diagnostic queries.
 
         Legacy export and determinism checks use this view. Validate the entire reached
         closure, even when some paths later cancel, before affine substitution.
 
         Returns
         -------
-        list[set[int]]
+        `list`\[`set`\[`int`\]\]
             Supports over nominal-basis records for diagnostics and certification.
 
         Raises

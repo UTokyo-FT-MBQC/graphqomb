@@ -43,7 +43,7 @@ def qompile(  # ruff:ignore[too-many-arguments]
     ----------
     graph : `BaseGraphState`
         graph state
-    xflow : Mapping[int, Set[int]] | Feedforward
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `Feedforward`
         X correction map, or a complete feedforward IR including parities.
         Transform the IR with ``backpropagate(graph)`` before lowering when
         Pauli corrections should be compiled into detector/observable supports.

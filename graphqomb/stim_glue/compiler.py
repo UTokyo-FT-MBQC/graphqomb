@@ -299,7 +299,7 @@ def stim_compile(
     ----------
     pattern : `Pattern`
         The pattern to compile.
-    backpropagate : bool, optional
+    backpropagate : `bool`, optional
         True retains legacy frame-side parity compilation and nominal Pauli
         measurements, without executing the retained correction maps. False
         serializes stored parity supports and executes retained Pauli feedback,
