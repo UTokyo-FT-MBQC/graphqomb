@@ -15,7 +15,7 @@ This design makes GraphQOMB useful both as an executable MBQC compiler and as a 
 
 ## Core Workflow
 
-GraphQOMB compiles static MBQC patterns through three interfaces:
+GraphQOMB compiles MBQC patterns through three interfaces:
 
 - **Labelled graph state**: the resource state, measurement bases, and I/O registration.
 - **Feedforward**: correction maps together with detector/observable supports and detector tags, represented by `Feedforward`.

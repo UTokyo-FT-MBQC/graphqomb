@@ -50,7 +50,8 @@ GraphQOMB assumes that feedforward dependencies are causally executable.
 - An optional ``cflow`` maps a measured node to conditional single-qubit Clifford corrections on its targets; at compile time each value is normalized into a Pauli part (folded into `xflow`/`zflow`) and a coset representative. Ordered correcting events then update the residual by right multiplication with the inverse gate.
 - The lowering path validates the dependency structure by building a dependency DAG and rejecting cyclic feedforward.
 
-This makes the library suitable for static, branch-free MBQC patterns. Deterministic semantics still depend on the feedforward structure you provide: standard flow, gflow, or related stabilizer-derived constructions remain the usual way to guarantee deterministic execution.
+Patterns support measurement-dependent Pauli and single-qubit Clifford feedforward on a fixed graph and schedule.
+Deterministic semantics still depend on the feedforward structure you provide: standard flow, gflow, or related stabilizer-derived constructions remain the usual way to guarantee deterministic execution.
 
 Scheduling and `TICK`
 ---------------------
