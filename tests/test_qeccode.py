@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def _matrix(data: list[list[int]]) -> csr_array[Any, tuple[int, int]]:
-    return csr_array(np.asarray(data))
+    return csr_array(data, shape=(len(data), len(data[0])))
 
 
 def _assert_axis_meas_basis(meas_basis: object, axis: Axis) -> None:
