@@ -1,4 +1,4 @@
-"""Steane logical T injection, compiled parities, and logical/fault checks."""
+"""Steane logical T gate teleportation with a supplied encoded magic state."""
 
 from __future__ import annotations
 
@@ -93,7 +93,9 @@ def steane_basis() -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
 
 
 def steane_input(logical_state: NDArray[np.complex128]) -> NDArray[np.complex128]:
-    """Encode the data and append an encoded T magic state.
+    """Construct encoded data and T-state input vectors directly.
+
+    This supplies the initial state, without simulating a preparation circuit.
 
     Returns
     -------

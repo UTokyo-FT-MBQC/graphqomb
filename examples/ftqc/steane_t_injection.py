@@ -1,5 +1,5 @@
-r"""Logical T Injection in the Steane Code
-======================================
+r"""Logical T Gate Teleportation in the Steane Code
+===============================================
 
 Run the example from the repository root:
 
@@ -7,7 +7,12 @@ Run the example from the repository root:
 
     uv run --extra stim python -m examples.ftqc.steane_t_injection
 
-Encoded data and an encoded magic state occupy two ``[[7,1,3]]`` Steane blocks.
+This example draws and simulates the logical T gate teleportation circuit
+using a supplied encoded magic state. Encoded data and ``|T_L>`` are given
+directly as statevector inputs; T-state preparation and distillation circuits
+are outside the simulation.
+
+The two inputs occupy ``[[7,1,3]]`` Steane blocks.
 Both input blocks have a parallel initial memory round. Seven transversal
 CNOTs use the magic block as control and the data block as target. Destructive
 data Z readout transfers the logical state to the magic block. Its conditional
@@ -112,7 +117,8 @@ stored separately in the pattern schedule. Solid edges are CZ; the seven
 orange cross-block edges come from the transversal CNOTs. Dashed arrows show
 classical parity aggregation and conditional S. Colored faces define code supports.
 
-Panel (a) shows the protocol, panel (b) the imported graph, panel (c) the
+Panel (a) draws the logical gate teleportation circuit starting from the
+supplied encoded T state. Panel (b) shows the imported graph, panel (c) the
 seven couplings in XY without 3D occlusion, and panel (d) the physical
 supports. ``_support/steane_layout.py`` generates the figure with
 DejaVu Sans and editable-text SVG output. Patch geometry follows
@@ -233,7 +239,7 @@ for readout, steane in (("X", steane_x), ("Z", steane_z)):
     print("  Retained Clifford controls:", sorted(frame.cflow))
 
 # %%
-# Prepare arbitrary encoded data and the encoded magic state.
+# Supply arbitrary encoded data and an already prepared encoded T state.
 logical_state = np.asarray([0.3 + 0.1j, 0.7 - 0.2j], dtype=np.complex128)
 logical_state /= np.linalg.norm(logical_state)
 zero_l, one_l = steane_basis()

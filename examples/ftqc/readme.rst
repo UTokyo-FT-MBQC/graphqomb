@@ -1,8 +1,10 @@
 Fault-tolerant quantum computing
 ================================
 
-This example provides an encoded T-injection pattern and reference checks
-for its quantum output, detectors, and logical readout.
+This example draws and simulates logical T gate teleportation using a supplied
+encoded magic state. T-state preparation and distillation circuits are outside
+the simulation. Reference checks cover quantum output, detectors, and logical
+readout.
 
 ``steane_t_injection.py`` applies a logical T gate to a ``[[7,1,3]]`` Steane
 block using an encoded magic state, seven transversal CNOTs, destructive

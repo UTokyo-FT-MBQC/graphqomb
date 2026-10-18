@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 def plot_steane_injection(steane: SteanePattern) -> Figure:
-    """Show the logical protocol, a Z-stacked resource, and its XY code patch.
+    """Draw logical gate teleportation from a supplied encoded T state.
 
     Returns
     -------
@@ -51,7 +51,7 @@ def _draw_logical_protocol(ax: Axes) -> None:
     ax.plot([0.0, 4.7], [1.0, 1.0], color="black")
     ax.plot([0.0, 10.7], [0.0, 0.0], color="black")
     ax.text(-0.15, 1.0, r"Data $|\psi_L\rangle$", ha="right", va="center")
-    ax.text(-0.15, 0.0, r"Magic $|T_L\rangle$", ha="right", va="center")
+    ax.text(-0.15, 0.0, r"Input $|T_L\rangle$", ha="right", va="center")
     for y in (0.0, 1.0):
         ax.text(1.0, y, "Memory", ha="center", va="center", bbox={"facecolor": "#EAF2F8", "edgecolor": "#34495E"})
     ax.plot([3.0, 3.0], [0.0, 1.0], color="#D55E00", linewidth=1.4)
@@ -82,7 +82,7 @@ def _draw_logical_protocol(ax: Axes) -> None:
     )
     ax.set_xlim(-1.8, 12.1)
     ax.set_ylim(-1.0, 1.9)
-    ax.set_title("(a) T teleportation: conditional S, then r = d memory rounds and logical readout", loc="left")
+    ax.set_title("(a) Logical T gate teleportation with a supplied encoded T state", loc="left")
     ax.axis("off")
 
 
