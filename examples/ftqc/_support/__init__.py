@@ -1,1 +1,1 @@
-"""Reusable builders and validation oracles for the FTQC gallery."""
+"""Builders and plotting helpers for the FTQC gallery."""

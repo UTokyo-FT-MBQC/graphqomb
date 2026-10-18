@@ -13,6 +13,11 @@ and Pauli measurement blocks separated by ``TICK``. The supported Pauli
 measurement instructions are ``M``/``MZ``, ``MX``, ``MY``, ``MXX``, ``MYY``,
 ``MZZ``, and ``MPP``.
 
+``StimImportResult.record_to_node`` maps absolute source measurement-record
+indices to graph measurement nodes, enabling external conditional-Clifford
+feedforward to use source record identities after import. Records removed as
+deterministic zero padding have no graph node and are omitted from the mapping.
+
 Every unitary block is normalized by :mod:`graphqomb.stim_glue.transpiler` to the four
 Clifford ``J(angle)`` gates (``H = J(0)``, ``HS = J(pi/2)``, ``HZ = J(pi)``,
 ``HS_DAG = J(-pi/2)``, corresponding to X+/Y-/X-/Y+ measurements) plus ``CZ``
@@ -121,6 +126,11 @@ chain is spread across that same interval. A live qubit with no operation in
 the block remains a single input/output node and is relocated directly to the
 common output layer; this adds no graph node or edge and does not change the
 circuit semantics.
+
+Terminal single-qubit readouts and classical Pauli feedback introduce no new
+graph layers on continuing wires. Only measurements followed by quantum reuse
+need a continuation node on a new layer. Resource Z coordinates describe graph
+placement; execution times are stored independently in the pattern schedule.
 
 Two-qubit measurements are parity measurements and are lowered to equivalent
 unsigned ``MPP`` products. Inverted targets in ``MXX``, ``MYY``, and ``MZZ``

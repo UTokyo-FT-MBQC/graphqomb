@@ -8,56 +8,67 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from scipy.sparse import csr_array
+import stim
 
 from graphqomb import clifford_algebra as ca
 from graphqomb.command import M
-from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
-from graphqomb.feedforward import Feedforward
-from graphqomb.graphstate import compose_into, odd_neighbors
-from graphqomb.qeccode import StabilizerCode, build_graph_state
+from graphqomb.common import Axis
+from graphqomb.feedforward import Feedforward, dag_from_flow, inverse_dag_from_dag
 from graphqomb.qompiler import qompile
 from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
+from graphqomb.stim_glue.importer import stim_circuit_to_pattern
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from graphqomb.pattern import Pattern
-    from graphqomb.qeccode import StabilizerGraphStateBuildResult
 
 STEANE_SUPPORTS = ((0, 1, 2, 3), (0, 1, 4, 5), (0, 2, 4, 6))
 LOGICAL_SUPPORT = (4, 5, 6)
-_INJECTION_LAYER = 2
+CODE_DISTANCE = 3
+MEMORY_ROUNDS = CODE_DISTANCE
+MAGIC_PATCH_OFFSET = (5.4, -1.6)
 # Three quadrilateral plaquettes meet at q0; q4/q5/q6 form the lower boundary.
 PATCH_VERTICES = ((0.0, 0.0), (-0.9, 0.52), (0.9, 0.52), (0.0, 2.08), (0.0, -1.04), (-1.8, -1.04), (1.8, -1.04))
-DATA_LAYER_Z = (0.0, 1.0, 2.0, 3.5, 5.0)
+
+
+@dataclass(frozen=True)
+class SteaneSource:
+    """Clifford Stim circuit and the records defining encoded teleportation."""
+
+    circuit: stim.Circuit
+    before_records: tuple[int, ...]
+    magic_records: tuple[int, ...]
+    after_records: tuple[tuple[int, ...], ...]
+    consumed_records: tuple[int, ...]
 
 
 @dataclass(frozen=True)
 class SteanePattern:
-    """Resource node identities for encoded ZZ-based T injection."""
+    """Resource node identities for transversal-CNOT T teleportation."""
 
     pattern: Pattern
+    source: SteaneSource
     data_nodes: tuple[int, ...]
-    data_layers: tuple[tuple[int, ...], ...]
+    data_input_nodes: tuple[int, ...]
+    magic_input_nodes: tuple[int, ...]
     before_nodes: tuple[int, ...]
-    after_nodes: tuple[int, ...]
-    magic_nodes: tuple[int, ...]
-    probe_node: int
+    magic_before_nodes: tuple[int, ...]
+    after_nodes: tuple[tuple[int, ...], ...]
+    correction_nodes: tuple[int, ...]
+    cnot_edges: tuple[tuple[int, int], ...]
+    consumed_nodes: tuple[int, ...]
     control_node: int
     readout_axis: Axis | None
 
 
 @dataclass(frozen=True)
 class SteaneShot:
-    """Injection bits, both syndrome rounds, final detectors, and logical bit."""
+    """Teleportation control, compiled detectors, and logical bit."""
 
-    injection: tuple[bool, bool]
-    correction_control: bool
-    before: tuple[bool, ...]
-    after: tuple[bool, ...]
+    teleportation_bit: bool
     detectors: tuple[bool, ...]
     observable: bool
 
@@ -82,12 +93,12 @@ def steane_basis() -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
 
 
 def steane_input(logical_state: NDArray[np.complex128]) -> NDArray[np.complex128]:
-    """Encode the data, append an encoded T magic state, and a zero control.
+    """Encode the data and append an encoded T magic state.
 
     Returns
     -------
     numpy.ndarray
-        A normalized 15-qubit state in the pattern's input-qubit order.
+        A normalized 14-qubit state in the pattern's input-qubit order.
 
     Raises
     ------
@@ -100,157 +111,224 @@ def steane_input(logical_state: NDArray[np.complex128]) -> NDArray[np.complex128
     zero, one = steane_basis()
     data = logical_state[0] * zero + logical_state[1] * one
     magic = (zero + np.exp(1j * np.pi / 4) * one) / np.sqrt(2)
-    return np.asarray(np.kron(np.kron(data, magic), [1.0, 0.0]), dtype=np.complex128)
+    return np.asarray(np.kron(data, magic), dtype=np.complex128)
 
 
-def _syndrome_round(z_base: int) -> tuple[StabilizerGraphStateBuildResult, Scheduler, dict[int, set[int]]]:
-    """Build and schedule one Steane round with at most eight live qubits.
+def _append_memory(circuit: stim.Circuit, offset: int, *, end_round: bool = True) -> tuple[int, ...]:
+    """Append an ideal Steane memory round and return its six record indices.
 
     Returns
     -------
-    tuple
-        The graph builder result, sequential schedule, and data teleportation flow.
+    tuple[int, ...]
+        X-check records followed by Z-check records.
     """
-    rows = [[int(qubit in support) for qubit in range(7)] for support in STEANE_SUPPORTS]
-    matrix = [row + [0] * 7 for row in rows] + [[0] * 7 + row for row in rows]
-    resource = build_graph_state(
-        StabilizerCode(csr_array(np.asarray(matrix, dtype=np.uint8))), z_base=z_base, data_as_io=True
-    )
-    for (qubit, layer), node in resource.data_nodes.items():
-        vertex_x, vertex_y = PATCH_VERTICES[qubit]
-        resource.graph.set_coordinate(node, (vertex_x, vertex_y, DATA_LAYER_Z[layer]))
-    for row, node in resource.ancilla_nodes.items():
-        # X checks attach to the middle data layer; Z checks attach to its input.
-        layer = z_base + (1 if row < len(STEANE_SUPPORTS) else 0)
-        support = STEANE_SUPPORTS[row % len(STEANE_SUPPORTS)]
-        center_x = sum(PATCH_VERTICES[q][0] for q in support) / len(support)
-        center_y = sum(PATCH_VERTICES[q][1] for q in support) / len(support)
-        # Separate extraction from the data plane, and place round 2 after injection.
-        offset_z = 0.75 if layer == _INJECTION_LAYER else 0.25
-        resource.graph.set_coordinate(node, (center_x, center_y, DATA_LAYER_Z[layer] + offset_z))
-    xflow = {
-        resource.data_nodes[qubit, layer]: {resource.data_nodes[qubit, layer + 1]}
-        for qubit in range(7)
-        for layer in (z_base, z_base + 1)
-    }
-    scheduler = Scheduler(resource.graph, xflow)
-    scheduler.solve_schedule(ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE))
-    return resource, scheduler, xflow
+    records = []
+    for axis in (stim.target_x, stim.target_z):
+        for support in STEANE_SUPPORTS:
+            targets: list[stim.GateTarget] = []
+            for qubit in support:
+                if targets:
+                    targets.append(stim.target_combiner())
+                targets.append(axis(offset + qubit))
+            records.append(circuit.num_measurements)
+            circuit.append("MPP", targets)
+    if end_round:
+        circuit.append("TICK", [])
+    return tuple(records)
 
 
-def build_steane_pattern(readout_axis: Axis | None) -> SteanePattern:  # ruff:ignore[too-many-statements, too-many-locals]
-    """Compile two syndrome rounds, logical T injection, and optional readout.
+def build_steane_circuit(readout_axis: Axis | None) -> SteaneSource:  # ruff:ignore[complex-structure, too-many-branches]
+    """Describe the Clifford part of encoded T teleportation in Stim.
 
-    Transform the feedforward IR before lowering while retaining the
-    sequential schedule.
+    Encoded inputs and the conditional S correction are supplied separately.
+    MPP represents ideal syndrome extraction, not a physical FT extraction circuit.
 
     Returns
     -------
-    SteanePattern
-        A 56-node pattern with encoded data/magic inputs and a delayed S control.
+    SteaneSource
+        Circuit and absolute measurement indices used for cflow and validation.
 
     Raises
     ------
     ValueError
-        If the readout is neither X, Z, nor an unmeasured quantum output.
+        If the readout axis is unsupported.
     """
     if readout_axis not in {Axis.X, Axis.Z, None}:
         msg = "The Steane demo supports X, Z, or quantum output."
         raise ValueError(msg)
-    before, before_schedule, xflow = _syndrome_round(0)
-    graph = before.graph
-    injection_data = tuple(before.data_nodes[qubit, 2] for qubit in range(7))
-    # Rotate the second 2D patch so the logical-Z boundaries face one another.
-    magic_nodes = tuple(graph.add_node(coordinate=(-x, -4.5 - y, 2.5)) for x, y in PATCH_VERTICES)
-    for qubit, node in enumerate(magic_nodes):
-        graph.register_input(node, 7 + qubit)
-        graph.assign_meas_basis(node, AxisMeasBasis(Axis.X, Sign.PLUS))
-    probe = graph.add_node(coordinate=(0.0, -2.25, 2.25))
-    graph.assign_meas_basis(probe, AxisMeasBasis(Axis.X, Sign.PLUS))
-    for qubit in LOGICAL_SUPPORT:
-        graph.add_edge(probe, injection_data[qubit])
-        graph.add_edge(probe, magic_nodes[qubit])
-    control = graph.add_node(coordinate=(3.8, -2.25, 4.5))
-    graph.register_input(control, 14, init=Initialization(Axis.Z))
-    graph.assign_meas_basis(control, AxisMeasBasis(Axis.Z, Sign.PLUS))
-
-    after, after_schedule, after_xflow = _syndrome_round(2)
-    node_map = compose_into(graph, after.graph)
-    xflow.update(
-        {node_map[source]: {node_map[target] for target in targets} for source, targets in after_xflow.items()}
-    )
-    data = tuple(node_map[after.data_nodes[qubit, 4]] for qubit in range(7))
-    before_nodes = tuple(before.ancilla_nodes[row] for row in range(6))
-    after_nodes = tuple(node_map[after.ancilla_nodes[row]] for row in range(6))
+    circuit = stim.Circuit()
+    for block in range(2):
+        for qubit, (x, y) in enumerate(PATCH_VERTICES):
+            coordinate = (x, y, 0.0) if block == 0 else (x + MAGIC_PATCH_OFFSET[0], y + MAGIC_PATCH_OFFSET[1], 0.0)
+            circuit.append("QUBIT_COORDS", [7 * block + qubit], coordinate)
+    before_records = _append_memory(circuit, 0, end_round=False)
+    magic_records = _append_memory(circuit, 7)
+    circuit.append("CX", [node for qubit in range(7) for node in (7 + qubit, qubit)])
+    circuit.append("TICK", [])
+    consumed_records = []
+    for qubit in range(6):
+        consumed_records.append(circuit.num_measurements)
+        circuit.append("M", [qubit])
+    circuit.append("TICK", [])
+    # Relabel the last consumed Z result by the other logical-Z support bits.
+    # This computes m with classical readout feedback, without a quantum relay.
+    for qubit in LOGICAL_SUPPORT[:-1]:
+        circuit.append("CX", [stim.target_rec(consumed_records[qubit] - circuit.num_measurements), 6])
+    consumed_records.append(circuit.num_measurements)
+    circuit.append("M", [6])
+    circuit.append("TICK", [])
+    # X^tensor7 is logical X. The Z factor of physical S-dagger is
+    # included here; its S coset is attached as cflow after import.
+    for qubit in range(7):
+        circuit.append("CX", [stim.target_rec(consumed_records[6] - circuit.num_measurements), 7 + qubit])
+        circuit.append("CZ", [stim.target_rec(consumed_records[6] - circuit.num_measurements), 7 + qubit])
+    circuit.append("TICK", [])
+    after_records = tuple(_append_memory(circuit, 7) for _ in range(MEMORY_ROUNDS))
+    output_records: tuple[int, ...] = ()
     if readout_axis is not None:
-        for node in data:
-            graph.assign_meas_basis(node, AxisMeasBasis(readout_axis, Sign.PLUS))
+        start = circuit.num_measurements
+        circuit.append("MX" if readout_axis == Axis.X else "M", list(range(7, 14)))
+        output_records = tuple(range(start, start + 7))
 
-    # Copy the logical ZZ bit into a |0> control with X feedforward. Its Z
-    # measurement can be delayed until every syndrome-round Pauli event is over.
-    xflow[probe] = {control}
-    zflow = {source: odd_neighbors(targets, graph) for source, targets in xflow.items()}
-    for qubit in LOGICAL_SUPPORT:
-        zflow.setdefault(magic_nodes[qubit], set()).update(data[index] for index in LOGICAL_SUPPORT)
-    earlier = (set(graph.meas_bases) - set(data)) - {control}
-    for source in earlier:
-        zflow.setdefault(source, set()).add(control)
-    # Physical S^dagger on all seven qubits implements logical S for this basis:
-    # simplex words have weight 0/4; the logical-one coset has weight 3/7.
-    cflow = {control: dict.fromkeys(data, ca.inverse(ca.S))}
+    def detector(records: set[int], tag: str) -> None:
+        circuit.append(
+            "DETECTOR", [stim.target_rec(index - circuit.num_measurements) for index in sorted(records)], tag=tag
+        )
 
-    # Keep the injection and both rounds in causal order. Reuse the sequential
-    # round schedules so the seven-qubit magic register never causes a wide
-    # simultaneous preparation of syndrome ancillas and teleportation targets.
-    prepare = {node: time for node, time in before_schedule.prepare_time.items() if time is not None}
-    measure = {node: time for node, time in before_schedule.measure_time.items() if time is not None}
-    entangle = {edge: time for edge, time in before_schedule.entangle_time.items() if time is not None}
-    injection_time = before_schedule.num_slices()
-    prepare[probe] = injection_time
-    measure[probe] = injection_time + 1
-    measure.update(dict.fromkeys(magic_nodes, injection_time + 2))
-    entangle.update({edge: injection_time for edge in graph.edges if probe in edge})
-    offset = injection_time + 3
-    prepare.update(
-        {node_map[node]: offset + time for node, time in after_schedule.prepare_time.items() if time is not None}
-    )
-    measure.update(
-        {node_map[node]: offset + time for node, time in after_schedule.measure_time.items() if time is not None}
-    )
-    entangle.update(
-        {
-            (node_map[a], node_map[b]): offset + time
-            for (a, b), time in after_schedule.entangle_time.items()
-            if time is not None
-        }
-    )
-    control_time = offset + after_schedule.num_slices()
-    measure[control] = control_time
+    for block_name, records in (("data", before_records), ("magic", magic_records)):
+        for row, record in enumerate(records):
+            detector(
+                {record},
+                f"initial_{block_name}_{'X' if row < len(STEANE_SUPPORTS) else 'Z'}_{row % len(STEANE_SUPPORTS)}",
+            )
+    # The correction preserves the codespace. Its first memory round checks
+    # that space directly; subsequent rounds compare corresponding syndromes.
+    # Across conditional S, an X-check transfer relation would depend on m
+    # times the earlier Z syndrome and cannot be stored as an affine parity.
+    for round_index, records in enumerate(after_records):
+        for row, record in enumerate(records):
+            group = {record}
+            if round_index:
+                group.add(after_records[round_index - 1][row])
+            axis = "X" if row < len(STEANE_SUPPORTS) else "Z"
+            detector(group, f"memory_{round_index + 1}_{axis}_{row % len(STEANE_SUPPORTS)}")
     if readout_axis is not None:
-        measure.update(dict.fromkeys(data, control_time + 1))
-    scheduler = Scheduler(graph, xflow, zflow, cflow=cflow)
-    scheduler.manual_schedule(prepare, measure, entangle)
-    detectors = [{a, b} for a, b in zip(before_nodes, after_nodes, strict=True)]
-    detector_tags = [f"repeat_{axis.name}_{row}" for axis in (Axis.X, Axis.Z) for row in range(3)]
-    if readout_axis is not None:
-        detectors.extend({data[qubit] for qubit in support} for support in STEANE_SUPPORTS)
-        detector_tags.extend(f"data_{readout_axis.name}_{row}" for row in range(3))
-    # All seven magic X records participate in the three X-stabilizer checks.
-    detectors.extend({magic_nodes[qubit] for qubit in support} for support in STEANE_SUPPORTS)
-    detector_tags.extend(f"magic_X_{row}" for row in range(3))
+        for row, support in enumerate(STEANE_SUPPORTS):
+            group = {output_records[q] for q in support}
+            group.add(after_records[-1][row + (0 if readout_axis == Axis.X else 3)])
+            detector(group, f"data_{readout_axis.name}_{row}")
+        circuit.append(
+            "OBSERVABLE_INCLUDE",
+            [stim.target_rec(output_records[q] - circuit.num_measurements) for q in LOGICAL_SUPPORT],
+            0,
+        )
+    # Z_data(out)=Z_data(in) Z_magic(in). Undo the pivot's parity relabelling.
+    parity_inputs = {consumed_records[q] for q in LOGICAL_SUPPORT[:-1]}
+    for row, support in enumerate(STEANE_SUPPORTS):
+        group = {consumed_records[q] for q in support}
+        if consumed_records[6] in group:
+            group ^= parity_inputs
+        group ^= {before_records[row + 3], magic_records[row + 3]}
+        detector(group, f"consumed_Z_{row}")
+    return SteaneSource(circuit, before_records, magic_records, after_records, tuple(consumed_records))
+
+
+def build_steane_pattern(readout_axis: Axis | None) -> SteanePattern:  # ruff:ignore[too-many-locals, complex-structure]
+    """Import the Stim circuit, attach conditional S, and compile Feedforward.
+
+    Returns
+    -------
+    SteanePattern
+        Transversal-CNOT teleportation with memory on both initial blocks.
+
+    Raises
+    ------
+    ValueError
+        If the correction and round-order constraints cannot be scheduled.
+    """
+    source = build_steane_circuit(readout_axis)
+    imported = stim_circuit_to_pattern(source.circuit, coord_dims=3)
+    frame = imported.pattern.frame
+    graph = frame.graphstate
+    outputs = {qubit: node for node, qubit in graph.output_node_indices.items()}
+    data = tuple(outputs[imported.stim_to_final_qubit[7 + qubit]] for qubit in range(7))
+    initial = {qubit: node for node, qubit in graph.input_node_indices.items()}
+    data_inputs = tuple(initial[imported.stim_to_qubit[qubit]] for qubit in range(7))
+    magic_inputs = tuple(initial[imported.stim_to_qubit[7 + qubit]] for qubit in range(7))
+    consumed = tuple(imported.record_to_node[record] for record in source.consumed_records)
+    after_nodes = tuple(
+        tuple(imported.record_to_node[record] for record in records) for records in source.after_records
+    )
+    control = consumed[6]
+    # The source Pauli feedback targets the seven wires immediately before
+    # the post-correction memory. S times its Z factor gives physical S-dagger,
+    # implementing logical S in this Steane basis; X precedes both factors.
+    correction_nodes = tuple(sorted(frame.xflow[control]))
+    zflow = {node: set(targets) for node, targets in frame.zflow.items()}
+    # Earlier Pauli events must precede S. Commuting Z dependencies can order
+    # them before the consumed Z readout without changing its reported bit.
+    inverse = inverse_dag_from_dag(dag_from_flow(graph, frame.xflow, zflow))
+    # First-round Z-check ancillas are future extraction events. Their Pauli
+    # updates must follow S in the Clifford frame even though their graph
+    # measurements precede the first data-wire measurements of that round.
+    future_checks = {node for nodes in after_nodes for node in nodes}
+    earlier: set[int] = set()
+    pending = list(correction_nodes)
+    while pending:
+        for parent in inverse.get(pending.pop(), ()):
+            if parent != control and parent not in future_checks and parent not in earlier:
+                earlier.add(parent)
+                pending.append(parent)
+    for node in earlier:
+        zflow.setdefault(node, set()).add(control)
     feedforward = Feedforward(
-        xflow,
+        frame.xflow,
         zflow,
-        cflow=cflow,
-        parity_check_group=detectors,
-        parity_check_tags=detector_tags,
-        logical_observables={0: {data[qubit] for qubit in LOGICAL_SUPPORT}} if readout_axis is not None else {},
-    )
-    pattern = qompile(graph, feedforward.backpropagate(graph), scheduler=scheduler)
-    data_layers = tuple(tuple(before.data_nodes[q, layer] for q in range(7)) for layer in range(_INJECTION_LAYER + 1))
-    data_layers += tuple(tuple(node_map[after.data_nodes[q, layer]] for q in range(7)) for layer in (3, 4))
+        {control: dict.fromkeys(correction_nodes, ca.S)},
+        parity_check_group=frame.parity_check_group,
+        parity_check_tags=frame.parity_check_tags,
+        logical_observables=frame.logical_observables,
+    ).backpropagate(graph)
+    scheduler = Scheduler(graph, feedforward.xflow, feedforward.zflow, cflow=feedforward.cflow)
+    # Keep the requested round order even where offline Pauli compilation
+    # would permit measurements to move across source-circuit TICKs.
+    # cflow is applied to the output frame when the control is measured.
+    # Its target nodes also serve as the first memory round's input nodes.
+    stages = [(control,), *after_nodes]
+    if readout_axis is not None:
+        stages.append(data)
+    for previous, following in itertools.pairwise(stages):
+        for node in previous:
+            scheduler.dag.setdefault(node, set()).update(following)
+    if not scheduler.solve_schedule(ScheduleConfig(strategy=Strategy.MINIMIZE_SPACE)):
+        msg = "Cannot schedule the conditional correction followed by Steane memory rounds."
+        raise ValueError(msg)
+    pattern = qompile(graph, feedforward, scheduler=scheduler)
+    # Identify only the seven cross-block CZs produced by the CX transpilation.
+    positions = {
+        tuple(graph.coordinates[node][:2]): (block, qubit)
+        for block, nodes in enumerate((data_inputs, magic_inputs))
+        for qubit, node in enumerate(nodes)
+    }
+    cnot_edges = []
+    for edge in graph.edges:
+        pair = [positions.get(tuple(graph.coordinates[node][:2])) for node in edge]
+        if pair[0] is not None and pair[1] is not None and pair[0][0] != pair[1][0] and pair[0][1] == pair[1][1]:
+            cnot_edges.append(edge)
     return SteanePattern(
-        pattern, data, data_layers, before_nodes, after_nodes, magic_nodes, probe, control, readout_axis
+        pattern=pattern,
+        source=source,
+        data_nodes=data,
+        data_input_nodes=data_inputs,
+        magic_input_nodes=magic_inputs,
+        before_nodes=tuple(imported.record_to_node[record] for record in source.before_records),
+        magic_before_nodes=tuple(imported.record_to_node[record] for record in source.magic_records),
+        after_nodes=after_nodes,
+        correction_nodes=correction_nodes,
+        cnot_edges=tuple(cnot_edges),
+        consumed_nodes=consumed,
+        control_node=control,
+        readout_axis=readout_axis,
     )
 
 
@@ -266,7 +344,7 @@ def run_steane_shot(
     Returns
     -------
     SteaneShot
-        The two injection bits, syndrome records, and readout parities.
+        The teleportation bit, compiled detector values, and logical readout.
 
     Raises
     ------
@@ -283,107 +361,13 @@ def run_steane_shot(
     simulator.state = StateVector(steane_input(logical_state))
     rng = np.random.default_rng(seed)
     for command in steane.pattern:
-        if fault is not None and isinstance(command, M) and command.node == steane.control_node:
+        if fault is not None and isinstance(command, M) and command.node == steane.data_nodes[fault[0]]:
             qubit, axis = fault
             operator = ca.to_matrix({Axis.X: ca.X, Axis.Y: ca.Y, Axis.Z: ca.Z}[axis])
             simulator.state.evolve(operator, simulator.node_indices.index(steane.data_nodes[qubit]))
         simulator.apply_cmd(command, rng=rng)
     records = simulator.results
-    p = records[steane.probe_node]
-    m = False
-    for qubit in LOGICAL_SUPPORT:
-        m ^= records[steane.magic_nodes[qubit]]
-    before = tuple(records[node] for node in steane.before_nodes)
-    after = tuple(records[node] for node in steane.after_nodes)
     frame = steane.pattern.frame
     detectors = tuple(bool(sum(records[node] for node in group) % 2) for group in frame.parity_check_group)
     observable = bool(sum(records[node] for node in frame.logical_observables[0]) % 2)
-    return SteaneShot((p, m), records[steane.control_node], before, after, detectors, observable)
-
-
-def validate_steane() -> dict[str, int]:
-    """Compare quantum outputs with logical T and check all boundary Pauli faults.
-
-    Returns
-    -------
-    dict[str, int]
-        Numbers of quantum-state and single-Pauli-fault executions verified.
-
-    Raises
-    ------
-    AssertionError
-        If fidelity, correction control, or detector response is incorrect.
-    """
-    quantum = build_steane_pattern(None)
-    logical = np.asarray([0.3 + 0.1j, 0.7 - 0.2j], dtype=np.complex128)
-    logical /= np.linalg.norm(logical)
-    zero, one = steane_basis()
-    expected = logical[0] * zero + np.exp(1j * np.pi / 4) * logical[1] * one
-    branches: set[tuple[bool, bool]] = set()
-    for seed in range(16):
-        simulator = PatternSimulator(deepcopy(quantum.pattern), SimulatorBackend.StateVector, calc_prob=True)
-        simulator.state = StateVector(steane_input(logical))
-        simulator.simulate(np.random.default_rng(seed))
-        fidelity = abs(np.vdot(expected, np.asarray(simulator.state.state()).ravel())) ** 2
-        p = simulator.results[quantum.probe_node]
-        m = False
-        for qubit in LOGICAL_SUPPORT:
-            m ^= simulator.results[quantum.magic_nodes[qubit]]
-        branches.add((p, m))
-        if not np.isclose(fidelity, 1.0, rtol=0.0, atol=1e-12) or simulator.results[quantum.control_node] != p:
-            msg = f"Incorrect logical T output at seed={seed}: fidelity={fidelity}, p={p}"
-            raise AssertionError(msg)
-        if any(simulator.results[node] for node in (*quantum.before_nodes, *quantum.after_nodes)):
-            msg = f"Nonzero ideal Steane syndrome at seed={seed}"
-            raise AssertionError(msg)
-        for support in STEANE_SUPPORTS:
-            if sum(simulator.results[quantum.magic_nodes[q]] for q in support) % 2:
-                msg = f"Nonzero ideal magic X stabilizer at seed={seed}, support={support}"
-                raise AssertionError(msg)
-    if branches != set(itertools.product((False, True), repeat=2)):
-        msg = f"Validation did not sample all four injection branches: {branches}"
-        raise AssertionError(msg)
-    fault_count = _validate_steane_faults(logical)
-    return {"quantum_output": 16, "injection_branches": len(branches), "single_pauli_fault": fault_count}
-
-
-def _validate_steane_faults(logical: NDArray[np.complex128]) -> int:
-    """Check detector responses for both readouts and all boundary Pauli faults.
-
-    Returns
-    -------
-    int
-        The number of verified fault executions.
-
-    Raises
-    ------
-    AssertionError
-        If a detector or delayed control is incorrect, or a ZZ branch is missing.
-    """
-    fault_count = 0
-    for readout in (Axis.X, Axis.Z):
-        steane = build_steane_pattern(readout)
-        # Both ZZ branches occur among these noiseless seeds. Faults occur after
-        # the probe, so using the same seed preserves the sampled injection bit.
-        controls: set[bool] = set()
-        for seed in range(8):
-            for qubit, axis in itertools.product(range(7), Axis):
-                shot = run_steane_shot(steane, logical, seed=seed, fault=(qubit, axis))
-                p = shot.injection[0]
-                controls.add(p)
-                effective = (Axis.Y if p else Axis.X) if readout == Axis.X else Axis.Z
-                flip = axis != effective
-                expected_detectors = (
-                    (False,) * 6 + tuple(flip and qubit in support for support in STEANE_SUPPORTS) + (False,) * 3
-                )
-                if shot.detectors != expected_detectors or shot.correction_control != p:
-                    msg = (
-                        f"Incorrect Steane fault response: readout={readout}, seed={seed}, "
-                        f"fault={(qubit, axis)}, {shot}"
-                    )
-                    raise AssertionError(msg)
-                fault_count += 1
-        if controls != {False, True}:
-            msg = f"Fault validation did not sample both ZZ branches: {controls}"
-            raise AssertionError(msg)
-    return fault_count
+    return SteaneShot(records[steane.control_node], detectors, observable)

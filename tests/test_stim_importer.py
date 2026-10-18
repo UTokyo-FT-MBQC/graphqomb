@@ -1476,6 +1476,18 @@ def test_stim_text_to_pattern_uses_last_reset_before_reuse() -> None:
     assert not compiled.compile_detector_sampler().sample(shots=32).any()
 
 
+def test_terminal_readout_does_not_add_an_idle_layer_on_continuing_wires() -> None:
+    coordinates = "QUBIT_COORDS(0, 0) 0\nQUBIT_COORDS(4, 0) 1\n"
+    before = "MPP Z1\nTICK\n"
+    after = "MPP Z1\n"
+    baseline = stim_text_to_pattern(coordinates + before + after).pattern.frame.graphstate
+    measured = stim_text_to_pattern(coordinates + before + "M 0\nTICK\n" + after).pattern.frame.graphstate
+    baseline_wire = sorted(coord for coord in baseline.coordinates.values() if coord[:2] == (4.0, 0.0))
+    measured_wire = sorted(coord for coord in measured.coordinates.values() if coord[:2] == (4.0, 0.0))
+    assert measured_wire == baseline_wire
+    assert [coord[2] for coord in measured_wire] == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
 def test_stim_text_to_pattern_rejects_duplicate_qubit_coordinates() -> None:
     with pytest.raises(ValueError, match="distinct XY projections"):
         stim_text_to_pattern("QUBIT_COORDS(0, 0) 0\nQUBIT_COORDS(0, 0) 1\nCZ 0 1")
@@ -2172,3 +2184,12 @@ def test_mpp_flow_chains_each_data_qubit_through_its_layers() -> None:
     assert xflow == expected
     assert list(xflow) == list(expected)
     assert xflow
+
+
+def test_import_exposes_source_record_nodes_without_zero_padding() -> None:
+    circuit = stim.Circuit("RX 0\nTICK\nMPP X0\nTICK\nM 1\nMPAD 0\nDETECTOR rec[-3] rec[-2] rec[-1]")
+    imported = stim_circuit_to_pattern(circuit)
+
+    assert set(imported.record_to_node) == {0, 1}
+    assert set(imported.record_to_node.values()) <= imported.pattern.frame.graphstate.meas_bases.keys()
+    assert imported.pattern.frame.parity_check_group == [{imported.record_to_node[0], imported.record_to_node[1]}]
