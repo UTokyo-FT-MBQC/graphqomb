@@ -82,7 +82,7 @@ def _draw_logical_protocol(ax: Axes) -> None:
     )
     ax.set_xlim(-1.8, 12.1)
     ax.set_ylim(-1.0, 1.9)
-    ax.set_title("(a) Logical T gate teleportation with a supplied encoded T state", loc="left")
+    ax.set_title("(a) Logical T gate teleportation", loc="left")
     ax.axis("off")
 
 
