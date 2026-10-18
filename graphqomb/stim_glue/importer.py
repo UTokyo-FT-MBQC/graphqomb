@@ -99,6 +99,9 @@ class StimImportResult:
     stim_to_final_qubit : `dict`\[`int`, `int`\]
         Original Stim qubit id to the internal qubit index of its last
         lifetime.
+    record_to_node : `dict`\[`int`, `int`\]
+        Absolute source measurement-record index to its graph measurement node.
+        Deterministic padding records omitted during idealization have no node.
     """
 
     pattern: Pattern
@@ -107,6 +110,7 @@ class StimImportResult:
     mpp_extractions: tuple[StimMppExtraction, ...]
     wire_to_stim: dict[int, int]
     stim_to_final_qubit: dict[int, int]
+    record_to_node: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -302,8 +306,9 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     Cliffords ahead of a measurement are folded into the measurement basis
     when the measured qubit is never used again; any remaining mixed block is
     split into internal unitary, measurement, and feedback layers that
-    preserve the original instruction order, each advancing the z coordinate
-    by one layer.
+    preserve the original instruction order. Quantum graph operations advance
+    z; terminal readouts and record-controlled Pauli feedback introduce no
+    extra graph layers on continuing wires.
 
     A Stim qubit may be used again after a direct single-qubit measurement.
     The importer issues a fresh internal qubit index for the post-measurement
@@ -443,6 +448,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         mpp_extractions=fragment.mpp_extractions,
         wire_to_stim={wire_id: reset_split.split_to_original.get(wire_id, wire_id) for wire_id in sorted(stim_ids)},
         stim_to_final_qubit=_final_qubit_by_stim_id(build.stim_to_qubit, reset_split.split_to_original),
+        record_to_node=dict(fragment.record_nodes),
     )
 
 
@@ -1258,7 +1264,8 @@ def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
             elif directly_measured_stim_ids:
                 continuing_stim_ids = live_stim_ids - directly_measured_stim_ids
                 if continuing_stim_ids or reused_measurements:
-                    z_base += 1
+                    if reused_measurements:
+                        z_base += 1
                     graph = GraphState()
                     _add_relocated_io_nodes(
                         graph,

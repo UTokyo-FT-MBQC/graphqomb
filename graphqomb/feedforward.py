@@ -2,6 +2,7 @@
 
 This module provides:
 
+- `Feedforward`: Correction maps and parity definitions, transformed before lowering.
 - `dag_from_flow`: Construct a directed acyclic graph (DAG) from a flowlike object.
 - `inverse_dag_from_dag`: Construct an inverse DAG (node -> dependencies).
 - `topo_order_from_inv_dag`: Construct a topological order from an inverse DAG.
@@ -16,19 +17,210 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from graphlib import CycleError, TopologicalSorter
+from heapq import heapify, heappop, heappush
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import typing_extensions
 
+from graphqomb import clifford_algebra
 from graphqomb.common import Axis, Plane, determine_pauli_axis
 from graphqomb.graphstate import BaseGraphState, odd_neighbors, unmeasured_output_nodes
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Sequence
 
     from graphqomb.clifford_algebra import C1Element
 
 TOPO_ORDER_CYCLE_ERROR_MSG = "No nodes can be measured; possible cyclic dependency or incomplete preparation."
+
+
+class Feedforward:
+    r"""Static correction maps and detector/observable parities.
+
+    Parities refer to the measurement records produced with these maps in
+    effect. ``backpropagate`` returns new maps and parities together; its
+    result can be passed directly to ``qompile(graph, feedforward)``.
+    Construction and transformation copy caller-owned maps and supports.
+
+    Parameters
+    ----------
+    xflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\]
+        Conditional X corrections, source to targets.
+    zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
+        Conditional Z corrections; `None` derives them from odd neighborhoods.
+    cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
+        Conditional single-qubit Clifford correcting gates.
+    parity_check_group : `collections.abc.Sequence`\[`collections.abc.Set`\[`int`\]\] | `None`
+        Detector supports in the current measurement-record convention.
+    logical_observables : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
+        Observable supports keyed by logical index.
+    parity_check_tags : `collections.abc.Sequence`\[`str`\] | `None`
+        Detector tags, aligned with parity_check_group.
+    """
+
+    def __init__(  # ruff:ignore[too-many-arguments]
+        self,
+        xflow: Mapping[int, AbstractSet[int]],
+        zflow: Mapping[int, AbstractSet[int]] | None = None,
+        cflow: Mapping[int, Mapping[int, C1Element]] | None = None,
+        *,
+        parity_check_group: Sequence[AbstractSet[int]] | None = None,
+        logical_observables: Mapping[int, AbstractSet[int]] | None = None,
+        parity_check_tags: Sequence[str] | None = None,
+    ) -> None:
+        self.xflow = {source: set(targets) for source, targets in xflow.items()}
+        self.zflow = None if zflow is None else {source: set(targets) for source, targets in zflow.items()}
+        self.cflow = {source: dict(targets) for source, targets in (cflow or {}).items()}
+        self.parity_check_group = [set(group) for group in parity_check_group or ()]
+        self.logical_observables = {index: set(group) for index, group in (logical_observables or {}).items()}
+        if parity_check_tags is not None and len(parity_check_tags) != len(self.parity_check_group):
+            msg = "parity_check_tags must have one tag per parity check group."
+            raise ValueError(msg)
+        self.parity_check_tags = (
+            list(parity_check_tags) if parity_check_tags is not None else [""] * len(self.parity_check_group)
+        )
+
+    def backpropagate(self, graph: BaseGraphState) -> Feedforward:  # ruff:ignore[complex-structure, too-many-locals]
+        """Compile removable Pauli feedforward into parity supports.
+
+        Protect Clifford targets and all their ancestors in the combined
+        correction DAG, preserving both control bits and event order. Quantum
+        outputs and non-Pauli measurements receive the same protection.
+        Elsewhere, remove incoming Pauli corrections and absorb their outcome
+        relabelings into every detector and logical observable. Expansion stops
+        on protected records, which retain their runtime adaptation; retained
+        corrections are never counted a second time in the parity supports.
+
+        Individual measurement records can be relabelled. The preserved
+        quantities are detector/observable values, retained adaptive behavior,
+        and corrected quantum outputs. This is not a determinism certificate.
+
+        Parameters
+        ----------
+        graph : `BaseGraphState`
+            Resource graph, measurement labels, and quantum outputs.
+
+        Returns
+        -------
+        `Feedforward`
+            New residual flows and parity supports in their record convention.
+
+        Raises
+        ------
+        ValueError
+            If flows are cyclic or annotations reference unmeasured nodes.
+        """
+        graph.check_canonical_form()
+        xflow = {source: set(targets) for source, targets in self.xflow.items()}
+        zflow = (
+            {source: odd_neighbors(targets, graph) for source, targets in self.xflow.items()}
+            if self.zflow is None
+            else {source: set(targets) for source, targets in self.zflow.items()}
+        )
+        cflow = _normalize_cflow(xflow, zflow, self.cflow)
+        dag = dag_from_flow(graph, xflow, zflow, cflow)
+        check_dag(dag)
+        measured = graph.meas_bases.keys()
+        for group in (*self.parity_check_group, *self.logical_observables.values()):
+            if not group <= measured:
+                msg = f"Parity support contains unmeasured node(s): {sorted(group - measured)}"
+                raise ValueError(msg)
+        graph_nodes = graph.nodes
+        if any(target not in graph_nodes for targets in dag.values() for target in targets):
+            msg = "Correction targets must belong to the resource graph."
+            raise ValueError(msg)
+
+        axes = {node: determine_pauli_axis(basis) for node, basis in graph.meas_bases.items()}
+        protected = unmeasured_output_nodes(graph) | {node for node, axis in axes.items() if axis is None}
+        protected.update(target for source, targets in cflow.items() for target in targets if target != source)
+        inverse = inverse_dag_from_dag(dag)
+        pending = list(protected)
+        while pending:
+            for parent in inverse.get(pending.pop(), ()):
+                if parent not in protected:
+                    protected.add(parent)
+                    pending.append(parent)
+
+        # Only removed corrections contribute to the change of record variables.
+        dependencies: dict[int, set[int]] = {}
+        remaining: list[dict[int, set[int]]] = []
+        for flow, sensitive_axes in ((xflow, {Axis.Y, Axis.Z}), (zflow, {Axis.X, Axis.Y})):
+            retained: dict[int, set[int]] = {}
+            for source, targets in flow.items():
+                kept = {target for target in targets if target in protected or target == source}
+                if kept:
+                    retained[source] = kept
+                for target in targets - kept:
+                    if axes[target] in sensitive_axes:
+                        dependencies.setdefault(target, set()).symmetric_difference_update({source})
+            remaining.append(retained)
+
+        num_detectors = len(self.parity_check_group)
+        supports = _expand_parity_supports([*self.parity_check_group, *self.logical_observables.values()], dependencies)
+        return Feedforward(
+            remaining[0],
+            remaining[1],
+            cflow,
+            parity_check_group=supports[:num_detectors],
+            logical_observables=dict(zip(self.logical_observables, supports[num_detectors:], strict=True)),
+            parity_check_tags=self.parity_check_tags,
+        )
+
+
+def _expand_parity_supports(
+    groups: Iterable[AbstractSet[int]], dependencies: Mapping[int, AbstractSet[int]]
+) -> list[set[int]]:
+    r"""Substitute affine bit dependencies in reverse causal order.
+
+    Returns
+    -------
+    `list`\[`set`\[`int`\]\]
+        Independent expanded supports, preserving group order.
+    """
+    ranks = {node: -rank for rank, node in enumerate(TopologicalSorter(dependencies).static_order())}
+    expanded: list[set[int]] = []
+    for group in groups:
+        support = set(group)
+        queued = set(group)
+        work = [(ranks[node], node) for node in group if dependencies.get(node)]
+        heapify(work)
+        while work:
+            _, node = heappop(work)
+            if node not in support:
+                continue
+            parents = dependencies[node]
+            support.symmetric_difference_update(parents)
+            for parent in parents - queued:
+                queued.add(parent)
+                if dependencies.get(parent):
+                    heappush(work, (ranks[parent], parent))
+        expanded.append(support)
+    return expanded
+
+
+def _normalize_cflow(
+    xflow: dict[int, set[int]],
+    zflow: dict[int, set[int]],
+    cflow: Mapping[int, Mapping[int, C1Element]] | None,
+) -> dict[int, dict[int, C1Element]]:
+    r"""Fold same-source Pauli factors into owned flows and return nontrivial cosets.
+
+    Returns
+    -------
+    `dict`\[`int`, `dict`\[`int`, `C1Element`\]\]
+        Normalized Clifford correction map.
+    """
+    normalized: dict[int, dict[int, C1Element]] = {}
+    for source, targets in (cflow or {}).items():
+        for target, element in targets.items():
+            coset, x_bit, z_bit = clifford_algebra.decompose(element)
+            if x_bit:
+                xflow.setdefault(source, set()).symmetric_difference_update({target})
+            if z_bit:
+                zflow.setdefault(source, set()).symmetric_difference_update({target})
+            if coset != clifford_algebra.IDENTITY:
+                normalized.setdefault(source, {})[target] = coset
+    return normalized
 
 
 def _is_flow(flowlike: Mapping[int, Any]) -> TypeGuard[Mapping[int, int]]:
@@ -247,17 +439,73 @@ def check_flow(
     check_dag(dag)
 
 
-def _reject_cflow(cflow: Mapping[int, Mapping[int, C1Element]] | None, operation: str) -> None:
-    """Raise for a nonempty Clifford correction flow.
+def _normalized_correction_dag(
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+    cflow: Mapping[int, Mapping[int, C1Element]],
+) -> dict[int, set[int]]:
+    r"""Use the same-source Pauli cancellation convention of CliffordFrame.
 
-    Raises
-    ------
-    NotImplementedError
-        If any cflow correction is present.
+    Returns
+    -------
+    `dict`\[`int`, `set`\[`int`\]\]
+        Dependency DAG after normalization, without changing the supplied maps.
     """
-    if cflow and any(targets for targets in cflow.values()):
-        msg = f"{operation} over Clifford feedforward (cflow) is not supported yet."
-        raise NotImplementedError(msg)
+    normalized_x = {source: set(targets) for source, targets in xflow.items()}
+    normalized_z = {source: set(targets) for source, targets in zflow.items()}
+    normalized_c = _normalize_cflow(normalized_x, normalized_z, cflow)
+    return dag_from_flow(graph, normalized_x, normalized_z, normalized_c)
+
+
+def _signal_shifting_context(
+    graph: BaseGraphState,
+    xflow: Mapping[int, AbstractSet[int]],
+    zflow: Mapping[int, AbstractSet[int]],
+    cflow: Mapping[int, Mapping[int, C1Element]] | None,
+) -> tuple[dict[int, set[int]], set[int]]:
+    r"""Build the execution DAG and the conservative Clifford boundary.
+
+    A shift advances the target's outgoing Pauli events to its parents. Freezing
+    every cflow target and its ancestors prevents those events from crossing a
+    Clifford correction, even when the shifted node has no incident cflow edge.
+    Pauli-valued cflow entries are also protected because this pass returns only
+    xflow/zflow and cannot rewrite the supplied cflow's control records.
+
+    Use normalized corrections for the execution DAG, as CliffordFrame does.
+    For protection, restore the supplied cflow edges: shifting just the X/Z
+    half of a cancelled correction would break its cancellation with cflow.
+
+    Returns
+    -------
+    `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `set`\[`int`\]\]
+        Normalized dependency DAG and the protected backward closure.
+    """
+    if not cflow:
+        return dag_from_flow(graph, xflow, zflow), set()
+    dag = _normalized_correction_dag(graph, xflow, zflow, cflow)
+
+    protected = {
+        target
+        for source, targets in cflow.items()
+        for target, gate in targets.items()
+        if source != target and gate != clifford_algebra.IDENTITY
+    }
+    if not protected:
+        return dag, protected
+    protection_dag = {source: set(targets) for source, targets in dag.items()}
+    for source, targets in cflow.items():
+        protection_dag.setdefault(source, set()).update(
+            target for target, gate in targets.items() if source != target and gate != clifford_algebra.IDENTITY
+        )
+    inverse_dag = inverse_dag_from_dag(protection_dag)
+    pending = list(protected)
+    while pending:
+        for parent in inverse_dag.get(pending.pop(), set()):
+            if parent not in protected:
+                protected.add(parent)
+                pending.append(parent)
+    return dag, protected
 
 
 def signal_shifting(
@@ -277,18 +525,29 @@ def signal_shifting(
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
     cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
-        Clifford correction flow. Must be empty; shifting it is unsupported.
+        Clifford correction flow, preserved unchanged. Its effective targets
+        and their causal past are excluded from signal shifting.
 
     Returns
     -------
     `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `dict`\[`int`, `set`\[`int`\]\]\]
-        Updated correction maps for X and Z after signal shifting.
+        Updated correction maps for X and Z after signal shifting. Pass the
+        original cflow alongside these maps when compiling the result.
+
+    Notes
+    -----
+    Only Pauli regions outside the backward dependency closure of cflow targets
+    are rewritten. This keeps Clifford control records and noncommuting event
+    order unchanged; it does not distribute Clifford gates over XOR controls.
+    Self-target and identity cflow entries do not create a boundary. Pauli gates
+    supplied through cflow do create one; use xflow/zflow to make them eligible
+    for shifting. Measurement records in rewritten regions are relabelled, as
+    in ordinary signal shifting, so this pass does not update parity seeds.
     """
-    _reject_cflow(cflow, "Signal shifting")
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
 
-    dag = dag_from_flow(graph, xflow, zflow)
+    dag, protected = _signal_shifting_context(graph, xflow, zflow, cflow)
     topo_order = list(TopologicalSorter(dag).static_order())
     topo_order.reverse()  # from parents to children
 
@@ -299,6 +558,10 @@ def signal_shifting(
     new_zflow = {k: set(vs) for k, vs in zflow.items()}
 
     for target_node in topo_order:
+        if target_node in protected:
+            continue
+        # The original protected set is closed under predecessors. A shift
+        # outside it cannot introduce a correction into it, so compute it once.
         new_xflow, new_zflow = propagate_correction_map(target_node, graph, new_xflow, new_zflow)
 
     return new_xflow, new_zflow
@@ -324,7 +587,9 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
     zflow : `collections.abc.Mapping`\[`int`, `collections.abc.Set`\[`int`\]\] | `None`
         Correction map for Z. If `None`, it is generated from xflow by odd neighbors.
     cflow : `collections.abc.Mapping`\[`int`, `collections.abc.Mapping`\[`int`, `C1Element`\]\] | `None`
-        Clifford correction flow. Must be empty; propagating it is unsupported.
+        Clifford correction flow, preserved unchanged. If the target is in
+        the causal past of an effective cflow target (or is one), return copies
+        of the unmodified X and Z maps.
 
     Returns
     -------
@@ -343,14 +608,24 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
     -----
     This function converts the correction maps into more parallel-friendly forms.
     It is equivalent to the signal shifting technique in the measurement calculus.
+    With cflow, the same conservative boundary as `signal_shifting` preserves
+    control records and correction order. Pass cflow on every individual call;
+    it must also accompany the returned maps when compiling the result.
     """
-    _reject_cflow(cflow, "Correction propagation")
     if target_node in graph.output_node_indices:
         msg = "Cannot propagate flow for output nodes."
         raise ValueError(msg)
 
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
+
+    new_xflow = {k: set(vs) for k, vs in xflow.items()}
+    new_zflow = {k: set(vs) for k, vs in zflow.items()}
+    if cflow:
+        dag, protected = _signal_shifting_context(graph, xflow, zflow, cflow)
+        check_dag(dag)
+        if target_node in protected:
+            return new_xflow, new_zflow
 
     inv_xflow: dict[int, set[int]] = {}
     inv_zflow: dict[int, set[int]] = {}
@@ -361,21 +636,18 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
         for v in vs:
             inv_zflow.setdefault(v, set()).add(k)
 
-    new_xflow = {k: set(vs) for k, vs in xflow.items()}
-    new_zflow = {k: set(vs) for k, vs in zflow.items()}
-
     meas_basis = graph.meas_bases[target_node]
 
     if meas_basis.plane == Plane.XY:
-        target_parents = inv_zflow.get(target_node, set())
+        target_parents = inv_zflow.get(target_node, set()) - {target_node}
         for parent in target_parents:
             new_zflow[parent] -= {target_node}
     elif meas_basis.plane == Plane.YZ:
-        target_parents = inv_xflow.get(target_node, set())
+        target_parents = inv_xflow.get(target_node, set()) - {target_node}
         for parent in target_parents:
             new_xflow[parent] -= {target_node}
     elif meas_basis.plane == Plane.XZ:
-        target_parents = inv_xflow.get(target_node, set()) & inv_zflow.get(target_node, set())
+        target_parents = (inv_xflow.get(target_node, set()) & inv_zflow.get(target_node, set())) - {target_node}
         for parent in target_parents:
             new_xflow[parent] -= {target_node}
             new_zflow[parent] -= {target_node}
@@ -384,12 +656,12 @@ def propagate_correction_map(  # ruff:ignore[complex-structure, too-many-branche
         msg = f"Unsupported measurement plane: {meas_basis.plane}"
         raise ValueError(msg)
 
-    for child_x in xflow.get(target_node, set()):
+    for child_x in xflow.get(target_node, set()) - {target_node}:
         for parent in target_parents:
-            new_xflow[parent] ^= {child_x}
-    for child_z in zflow.get(target_node, set()):
+            new_xflow.setdefault(parent, set()).symmetric_difference_update({child_x})
+    for child_z in zflow.get(target_node, set()) - {target_node}:
         for parent in target_parents:
-            new_zflow[parent] ^= {child_z}
+            new_zflow.setdefault(parent, set()).symmetric_difference_update({child_z})
 
     return new_xflow, new_zflow
 
@@ -417,8 +689,15 @@ def pauli_simplification(  # ruff:ignore[complex-structure, too-many-branches]
     -------
     `tuple`\[`dict`\[`int`, `set`\[`int`\]\], `dict`\[`int`, `set`\[`int`\]\]\]
         Updated correction maps for X and Z after simplification.
+
+    Raises
+    ------
+    NotImplementedError
+        If any cflow correction is present.
     """
-    _reject_cflow(cflow, "Pauli simplification")
+    if cflow and any(cflow.values()):
+        msg = "Pauli simplification over Clifford feedforward (cflow) is not supported yet."
+        raise NotImplementedError(msg)
     if zflow is None:
         zflow = {node: odd_neighbors(xflow[node], graph) - {node} for node in xflow}
 

@@ -12,12 +12,18 @@ The main GraphQOMB workflow uses three explicit inputs:
 
 - **Labelled graph state**
   The resource graph together with measurement bases and input/output registration.
-- **Feedforward maps**
-  `xflow` and optional `zflow` record how measurement outcomes propagate as classical corrections; an optional ``cflow`` adds classically-controlled single-qubit Clifford corrections.
+- **Feedforward**
+  :class:`graphqomb.feedforward.Feedforward` groups ``xflow``, optional ``zflow``
+  and ``cflow``, detector supports, logical-observable supports, and detector
+  tags. Its ``backpropagate(graph)`` transformation compiles removable Pauli
+  corrections into the supports while retaining Clifford boundaries and their
+  dependencies. Existing map-based inputs remain available.
 - **Scheduler**
   A schedule that assigns preparation, entanglement, and measurement work to executable slices.
 
 The entry point is :func:`graphqomb.qompiler.qompile`, which lowers those inputs to a :class:`graphqomb.pattern.Pattern`.
+Pass a transformed IR as ``qompile(graph, feedforward)``. Parity compilation
+belongs before this lowering step, independently of the eventual backend.
 
 Lowering output
 ---------------
@@ -44,7 +50,8 @@ GraphQOMB assumes that feedforward dependencies are causally executable.
 - An optional ``cflow`` maps a measured node to conditional single-qubit Clifford corrections on its targets; at compile time each value is normalized into a Pauli part (folded into `xflow`/`zflow`) and a coset representative. Ordered correcting events then update the residual by right multiplication with the inverse gate.
 - The lowering path validates the dependency structure by building a dependency DAG and rejecting cyclic feedforward.
 
-This makes the library suitable for static, branch-free MBQC patterns. Deterministic semantics still depend on the feedforward structure you provide: standard flow, gflow, or related stabilizer-derived constructions remain the usual way to guarantee deterministic execution.
+Patterns support measurement-dependent Pauli and single-qubit Clifford feedforward on a fixed graph and schedule.
+Deterministic semantics still depend on the feedforward structure you provide: standard flow, gflow, or related stabilizer-derived constructions remain the usual way to guarantee deterministic execution.
 
 Scheduling and `TICK`
 ---------------------
@@ -75,5 +82,8 @@ GraphQOMB is most useful in the middle of a broader MBQC toolchain:
   GraphQOMB handles feedforward validation, schedule construction, pattern lowering, simulation, and pattern-level metrics.
 - **Downstream**
   Compatible patterns can be exported with :func:`graphqomb.stim_glue.compiler.stim_compile` for Stim-oriented workflows.
+  With ``backpropagate=False``, export serializes stored parity supports and
+  executes retained Pauli feedback. The default ``backpropagate=True`` keeps
+  legacy frame-side support compilation, planned for deprecation in v0.8.0.
 
 This separation is the main reason the package is documented as a compiler framework rather than a thin wrapper around another MBQC package.

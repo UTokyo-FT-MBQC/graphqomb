@@ -283,7 +283,7 @@ def test_pauli_and_clifford_frames_agree_on_pauli_operations(graph: GraphState) 
         assert frame.children(0) == {1, 2}
         assert frame.parents(1) == {0}
         assert frame.detector_groups() == [{1}]
-        assert frame.logical_observable_groups() == {0: {1}}
+        assert frame.feedforward.backpropagate(graph).logical_observables == {0: {1}}
     pauli, clifford = frames
     assert pauli.detector_stabilizers() == clifford.detector_stabilizers()
     assert pauli.detector_determinism() == clifford.detector_determinism()
