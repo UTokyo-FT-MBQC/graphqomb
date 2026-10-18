@@ -68,18 +68,21 @@ class Gate(ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class SingleGate(Gate):
     """Base class for single qubit macro gates."""
 
     qubit: int
 
 
+@dataclass(frozen=True)
 class TwoQubitGate(Gate):
     """Base class for two qubit macro gates."""
 
     qubits: tuple[int, int]
 
 
+@dataclass(frozen=True)
 class MultiGate(Gate):
     """Base class for multi qubit macro gates."""
 

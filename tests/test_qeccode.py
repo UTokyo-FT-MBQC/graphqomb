@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def _matrix(data: list[list[int]]) -> csr_array[Any, tuple[int, int]]:
-    return cast("csr_array[Any, tuple[int, int]]", csr_array(data))
+    return csr_array(data)
 
 
 def _assert_axis_meas_basis(meas_basis: object, axis: Axis) -> None:
