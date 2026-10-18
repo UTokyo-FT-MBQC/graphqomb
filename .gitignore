@@ -163,6 +163,7 @@ cython_debug/
 
 # Custom stuff
 examples/generated/
+examples/ftqc/output/
 docs/source/gallery
 docs/source/sg_execution_times.rst
 *.png

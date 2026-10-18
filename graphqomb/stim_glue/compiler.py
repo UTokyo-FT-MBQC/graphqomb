@@ -69,12 +69,14 @@ class _StimCompiler:
         self,
         pattern: Pattern,
         *,
+        backpropagate: bool,
         emit_qubit_coords: bool,
         noise_models: Sequence[NoiseModel],
         tick_duration: float,
     ) -> None:
         self._pattern = pattern
         self._pframe = pattern.frame
+        self._backpropagate = backpropagate
         self._coord_lookup = pattern.coordinates
         self._emit_qubit_coords = emit_qubit_coords
         self._noise_models = noise_models
@@ -89,6 +91,9 @@ class _StimCompiler:
     def compile(self) -> str:
         self._emit_input_nodes()
         self._process_commands()
+        if not self._backpropagate:
+            for node in self._pattern.output_node_indices.keys() - self._meas_order.keys():
+                self._emit_pauli_corrections(node)
         total = self._rec_index
         self._emit_detectors(total)
         if self._pframe.logical_observables:
@@ -96,13 +101,15 @@ class _StimCompiler:
         return self._stim_io.getvalue().strip()
 
     def _emit_detectors(self, total_measurements: int) -> None:
-        for checks, tag in zip(self._pframe.detector_groups(), self._pframe.parity_check_tags, strict=True):
+        groups = self._pframe.detector_groups() if self._backpropagate else self._pframe.parity_check_group
+        for checks, tag in zip(groups, self._pframe.parity_check_tags, strict=True):
             targets = [f"rec[{self._meas_order[c] - total_measurements}]" for c in checks]
             tag_suffix = f"[{escape_tag(tag)}]" if tag else ""
             self._stim_io.write(f"DETECTOR{tag_suffix} {' '.join(targets)}\n")
 
     def _emit_observables(self, total_measurements: int) -> None:
-        for log_idx, group in sorted(self._pframe.logical_observable_groups().items()):
+        groups = self._pframe.logical_observable_groups() if self._backpropagate else self._pframe.logical_observables
+        for log_idx, group in sorted(groups.items()):
             targets = [f"rec[{self._meas_order[n] - total_measurements}]" for n in group]
             self._stim_io.write(f"OBSERVABLE_INCLUDE({log_idx}) {' '.join(targets)}\n")
 
@@ -165,6 +172,13 @@ class _StimCompiler:
         self._touched_nodes.update(nodes)
         self._rec_index += self._emit_noise_ops(ops, NoisePlacement.AFTER, default_placement)
 
+    def _emit_pauli_corrections(self, node: int) -> None:
+        """Execute retained feedback when exporting stored parity supports."""
+        for gate, inverse in (("CX", self._pframe.inv_xflow), ("CZ", self._pframe.inv_zflow)):
+            for source in sorted(inverse.get(node, ())):
+                offset = self._meas_order[source] - self._rec_index
+                self._stim_io.write(f"{gate} rec[{offset}] {node}\n")
+
     def _handle_measure(self, node: int, meas_basis: MeasBasis) -> None:
         axis = determine_pauli_axis(meas_basis)
         if axis is None:
@@ -183,6 +197,9 @@ class _StimCompiler:
 
         default_placement = default_noise_placement(event)
         self._rec_index += self._emit_noise_ops(other_ops, NoisePlacement.BEFORE, default_placement)
+
+        if not self._backpropagate:
+            self._emit_pauli_corrections(node)
 
         # Emit measurement with optional flip probability
         meas_instr = {Axis.X: "MX", Axis.Y: "MY", Axis.Z: "MZ"}[axis]
@@ -271,6 +288,7 @@ class _StimCompiler:
 def stim_compile(
     pattern: Pattern,
     *,
+    backpropagate: bool = True,
     emit_qubit_coords: bool = True,
     noise_models: Sequence[NoiseModel] | None = None,
     tick_duration: float = 1.0,
@@ -281,6 +299,12 @@ def stim_compile(
     ----------
     pattern : `Pattern`
         The pattern to compile.
+    backpropagate : `bool`, optional
+        True retains legacy frame-side parity compilation and nominal Pauli
+        measurements, without executing the retained correction maps. False
+        serializes stored parity supports and executes retained Pauli feedback,
+        including corrections on quantum outputs. Defaults to True for
+        compatibility; deprecation of the legacy path is planned for v0.8.0.
     emit_qubit_coords : `bool`, optional
         Whether to emit QUBIT_COORDS instructions for nodes with coordinates,
         by default True.
@@ -307,6 +331,18 @@ def stim_compile(
     Stim only supports Clifford gates, therefore this compiler only supports
     Pauli measurements (X, Y, Z basis) which correspond to Clifford operations.
     Non-Pauli measurements will raise a ValueError.
+
+    The default path expands detector and observable supports using the frame's
+    nominal-basis compilation methods, preserving the historical export path.
+    It leaves corrections implicit, including on unmeasured quantum outputs.
+    This path is retained until its planned deprecation in v0.8.0; no warning
+    is emitted yet.
+
+    For the Feedforward workflow, call ``Feedforward.backpropagate`` before
+    ``qompile`` and export with ``backpropagate=False``. Stored supports are
+    then serialized directly and remaining Pauli corrections are emitted as
+    record-controlled gates at measurement/output boundaries. Retained
+    corrections are not counted a second time in the supports.
 
     Each parity check group compiles to a ``DETECTOR`` instruction, and the
     group's tag from `graphqomb.pauli_frame.PauliFrame.parity_check_tags` is
@@ -339,6 +375,7 @@ def stim_compile(
         raise ValueError(msg)
     compiler = _StimCompiler(
         pattern,
+        backpropagate=backpropagate,
         emit_qubit_coords=emit_qubit_coords,
         noise_models=tuple(() if noise_models is None else noise_models),
         tick_duration=tick_duration,

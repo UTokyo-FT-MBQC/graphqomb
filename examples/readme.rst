@@ -9,4 +9,6 @@ The gallery then branches into:
 
 - lowering from graph-state IRs,
 - scheduler choices and ``TICK``-delimited execution slices,
-- simulation and visualization utilities.
+- simulation and visualization utilities,
+- :doc:`FTQC examples <ftqc/index>` with conditional Clifford frames,
+  syndrome measurements, and detector/observable reference relations.

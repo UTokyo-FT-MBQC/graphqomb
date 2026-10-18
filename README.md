@@ -15,10 +15,10 @@ This design makes GraphQOMB useful both as an executable MBQC compiler and as a 
 
 ## Core Workflow
 
-GraphQOMB is organized around three explicit compiler interfaces:
+GraphQOMB compiles MBQC patterns through three interfaces:
 
 - **Labelled graph state**: the resource state, measurement bases, and I/O registration.
-- **Feedforward maps**: explicit `xflow` and optional `zflow`/`cflow` describing classical dependencies.
+- **Feedforward**: correction maps together with detector/observable supports and detector tags, represented by `Feedforward`.
 - **Scheduler**: preparation, entanglement, and measurement order for executable slices.
 
 These are lowered with `qompile(...)` into a `Pattern` carrying:
@@ -30,10 +30,10 @@ These are lowered with `qompile(...)` into a `Pattern` carrying:
 ## Features
 
 - **Explicit IR boundaries**: work directly with graph-state, feedforward, and schedule objects instead of mixing them into a single representation.
-- **Pattern lowering**: compile MBQC IRs into executable patterns with `TICK`-delimited slices and Pauli-frame tracking.
+- **Pattern lowering**: lower MBQC IRs to `TICK`-delimited patterns with Pauli or conditional single-qubit Clifford feedforward.
 - **Schedule analysis**: compare depth-oriented and space-oriented schedules and inspect resulting resource metrics.
 - **Simulation**: run circuit or pattern simulations with statevector and density-matrix backends.
-- **Stim export**: compile compatible patterns to Stim text for downstream FT-oriented analysis.
+- **Stim export**: export Pauli-only patterns for downstream FT analysis.
 - **Toolchain interoperability**: use GraphQOMB downstream of circuit transpilation and graph-rewrite tooling such as PyZX and flow-finding utilities.
 
 ## Installation
@@ -111,22 +111,15 @@ If you already have a graph-state design and explicit feedforward maps, you can 
 
 - **Getting started**: https://graphqomb.readthedocs.io/en/latest/getting_started.html
 - **Architecture overview**: https://graphqomb.readthedocs.io/en/latest/architecture.html
+- **Feedforward and parity compilation**: [Guide and API reference](docs/source/feedforward.rst).
 - **Example gallery**: https://graphqomb.readthedocs.io/en/latest/gallery/index.html
-- **API reference**: https://graphqomb.readthedocs.io/en/latest/references.html
+- **API reference**: [Overview](docs/source/references.rst), [patterns](docs/source/pattern.rst), [correction frames](docs/source/pauli_frame.rst).
 - **QEC graph-state builder reference**: https://graphqomb.readthedocs.io/en/latest/qeccode.html
 - **Stim MPP import reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/mpp.html
 - **Round-preserving syndrome extraction**: [Local MPP rewriting](docs/source/stim_glue/round_rewriter.rst), preserving successive data chains and measurement instruments.
 - **Stim Clifford transpiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/transpiler.html
 - **Stim circuit import reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/importer.html
 - **Stim compiler reference**: https://graphqomb.readthedocs.io/en/latest/stim_glue/compiler.html
-
-## Current Scope
-
-GraphQOMB currently targets static, branch-free MBQC workflows. It is designed around causal feedforward dependencies and explicit scheduling, which makes it a good fit for pattern generation, simulation, and offline analysis of executable or fault-tolerant MBQC pipelines.
-
-Patterns support classically-controlled single-qubit Clifford feedforward: an optional `cflow` map assigns each measured node a conditional Clifford correction on its targets, whose inverse ordered product is tracked as a residual. `PauliFrame` is a lightweight tracker for X/Z corrections; `CliffordFrame` extends it with Clifford cosets and ordered correction events. `make_frame` (from `graphqomb.pauli_frame`), `qompile`, and `.ptn` loading select `PauliFrame` when the normalized corrections are Pauli-only, including when `cflow` contains only Pauli gates, and `CliffordFrame` when nontrivial cosets remain. Both frame types expose `cflow`; a Pauli frame returns an immutable empty mapping without stored Clifford state. `inv_cflow`, `coset`, and `correction_events` remain Clifford-only attributes. Stim export and detector/observable certification remain Pauli-frame-only for now.
-
-The correction frame is available as `pattern.frame`; construct a pattern with `Pattern(..., frame=frame)`. The backwards-compatible `pattern.pauli_frame` and `pattern.clifford_frame` names refer to the same complete frame, including for Clifford patterns. Their constructor keywords emit `DeprecationWarning` and will be removed in v0.8.0; migrate to `frame=`. Supplying multiple frame arguments raises `TypeError`. `frame` is the stored dataclass field, so use `dataclasses.replace(pattern, frame=frame)` to replace it. Use `PauliFrame(graph, xflow, zflow, ...)` for a Pauli-only frame and `CliffordFrame(graph, xflow, zflow, cflow=...)` for explicit Clifford corrections.
 
 ## Development
 

@@ -713,7 +713,7 @@ def _cz_slices_from_stim(stim_str: str) -> dict[tuple[int, int], int]:
     for line in stim_str.splitlines():
         if line == "TICK":
             ticks += 1
-        elif line.startswith("CZ "):
+        elif line.startswith("CZ ") and "rec[" not in line:
             _, q1, q2 = line.split()
             cz_slice[int(q1), int(q2)] = ticks
     return cz_slice
