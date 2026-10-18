@@ -6,7 +6,7 @@ import operator
 import re
 import warnings
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -2158,7 +2158,7 @@ def test_mpp_block_extraction_receives_only_detectors_touching_its_records(monke
 
 def test_mpp_flow_chains_each_data_qubit_through_its_layers() -> None:
     """The MPP data flow links consecutive layer nodes of every data qubit, in qubit then layer order."""
-    code = StabilizerCode(cast("csr_array[Any, tuple[int, int]]", csr_array([[1, 1, 0, 0, 0, 0], [0, 0, 0, 0, 1, 1]])))
+    code = StabilizerCode(csr_array([[1, 1, 0, 0, 0, 0], [0, 0, 0, 0, 1, 1]]))
     result = build_graph_state(code, y_foliation=YFoliation.TYPE_I, data_as_io=True)
 
     xflow = importer._mpp_flow(result)
