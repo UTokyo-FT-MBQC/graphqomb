@@ -57,7 +57,7 @@ dev = [
     "pyright==1.1.414",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
-    "ruff==0.17.0",
+    "ruff==0.17.1",
     "scipy-stubs>=1.15.3.0",
     "ty==0.0.88",
     "types-networkx==3.6.1.20261018",
