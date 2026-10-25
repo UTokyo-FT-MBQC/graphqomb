@@ -30,7 +30,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --python 3.13 --extra dev --extra pyzx --extra stim
+        run: uv sync --locked --python 3.13 --extra dev --extra pyzx --extra stim --extra clifft
 
       - name: Run pytest with coverage
         run: uv run --no-sync pytest --cov=graphqomb --cov-report=term-missing --cov-report=xml --cov-branch
