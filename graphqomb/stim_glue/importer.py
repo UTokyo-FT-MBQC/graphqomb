@@ -14,7 +14,7 @@ import warnings
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import stim
 
@@ -41,6 +41,7 @@ from graphqomb.stim_glue._parse import (
     record_targets_to_absolute_indices,
     stim_mpp_extraction_from_records,
 )
+from graphqomb.stim_glue._t_gates import T_ANGLES, inject_t_measurements
 from graphqomb.stim_glue.transpiler import STIM_GATE_J_ANGLES, UnsupportedInstructionError, transpile
 
 if TYPE_CHECKING:
@@ -102,6 +103,10 @@ class StimImportResult:
     record_to_node : `dict`\[`int`, `int`\]
         Absolute source measurement-record index to its graph measurement node.
         Deterministic padding records omitted during idealization have no node.
+    preparation_gates : `dict`\[`int`, `str`\]
+        Additional scheduled resource preparations for the Clifford+T injection
+        importer. Pass to ``clifft_compile(preparation_gates=...)``; empty for
+        ordinary Stim import and measurement-based T lowering.
     """
 
     pattern: Pattern
@@ -111,6 +116,7 @@ class StimImportResult:
     wire_to_stim: dict[int, int]
     stim_to_final_qubit: dict[int, int]
     record_to_node: dict[int, int] = field(default_factory=dict)
+    preparation_gates: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -136,6 +142,7 @@ class _ImportContext:
     split_wire_ids: frozenset[int]
     # Inverse of detector_record_indices: record index -> detectors referencing it.
     detectors_by_record: Mapping[int, Sequence[int]] = field(default_factory=dict)
+    allow_t: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,7 +275,7 @@ def stim_text_to_pattern(  # ruff:ignore[too-many-arguments]
     )
 
 
-def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
+def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
     circuit: stim.Circuit,
     *,
     coord_dims: int = 2,
@@ -369,12 +376,31 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     `StimImportResult`
         Imported pattern, qubit mapping, and MPP extraction metadata.
 
-    Raises
-    ------
-    ValueError
-        If the circuit uses unsupported instructions or invalid coordinates,
-        or if schedule_config is given and no schedule is found.
+    Unsupported instructions, invalid coordinates, or an unsatisfiable
+    schedule_config raise ValueError.
     """
+    return _import_circuit(
+        circuit,
+        coord_dims=coord_dims,
+        schedule_strategy=schedule_strategy,
+        y_foliation=y_foliation,
+        merge_safe_ticks=merge_safe_ticks,
+        schedule_config=schedule_config,
+        schedule_timeout=schedule_timeout,
+    )
+
+
+def _import_circuit(  # ruff:ignore[too-many-arguments, too-many-locals]
+    circuit: stim.Circuit,
+    *,
+    coord_dims: int = 2,
+    schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
+    y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
+    schedule_config: ScheduleConfig | None = None,
+    schedule_timeout: int = 60,
+    t_mode: Literal["measurement", "injection"] | None = None,
+) -> StimImportResult:
     if coord_dims not in {2, 3}:
         msg = "coord_dims must be 2 or 3."
         raise ValueError(msg)
@@ -383,7 +409,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
     reset_split = _split_reused_reset_wires(
         _merge_safe_tick_blocks(idealized.circuit) if merge_safe_ticks else idealized.circuit
     )
-    normalized_circuit, stim_ids = _normalize_import_circuit(reset_split.circuit)
+    normalized_circuit, stim_ids = _normalize_import_circuit(reset_split.circuit, allow_t=t_mode is not None)
     analysis = _CircuitAnalyzer().analyze(normalized_circuit)
     annotations = collect_record_annotations(normalized_circuit)
     if analysis.measurement_count == 0 and (annotations.detectors or annotations.logical_observables):
@@ -407,6 +433,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         y_foliation=y_foliation,
         split_wire_ids=frozenset(reset_split.split_to_original),
         detectors_by_record=_detectors_by_record(annotations.detectors),
+        allow_t=t_mode is not None,
     )
 
     build = _fragments_from_blocks(analysis.blocks, context=context)
@@ -422,9 +449,19 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         zero_record_indices=idealized.zero_record_indices,
     )
     xflow, zflow = _flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices)
+    preparation_gates, cflow = (
+        inject_t_measurements(fragment.graph, xflow, zflow) if t_mode == "injection" else ({}, {})
+    )
     scheduler: Scheduler | None = None
-    if schedule_config is not None:
-        scheduler = Scheduler(fragment.graph, xflow, zflow)
+    if schedule_config is not None or preparation_gates:
+        scheduler = Scheduler(fragment.graph, xflow, zflow, cflow=cflow)
+        # These commuting measurements are deliberately ordered ZZ probe ->
+        # magic X readout. Otherwise the scheduler can consume every magic
+        # input at the start, giving the near-Clifford simulator a large
+        # simultaneous magic width even for a sequential T-gate circuit.
+        for magic in preparation_gates:
+            probe = next(iter(fragment.graph.neighbors(magic)))
+            scheduler.dag.setdefault(probe, set()).add(magic)
         if not scheduler.solve_schedule(schedule_config, timeout=schedule_timeout):
             msg = "Scheduling the imported pattern failed with the requested schedule_config."
             raise ValueError(msg)
@@ -432,6 +469,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         fragment.graph,
         xflow,
         zflow,
+        cflow,
         parity_check_group=parity_check_groups,
         logical_observables=logical_observables,
         parity_check_tags=parity_check_tags,
@@ -449,6 +487,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-locals, too-many-arguments]
         wire_to_stim={wire_id: reset_split.split_to_original.get(wire_id, wire_id) for wire_id in sorted(stim_ids)},
         stim_to_final_qubit=_final_qubit_by_stim_id(build.stim_to_qubit, reset_split.split_to_original),
         record_to_node=dict(fragment.record_nodes),
+        preparation_gates=preparation_gates,
     )
 
 
@@ -741,7 +780,7 @@ def _last_quantum_use_indices(instructions: Sequence[stim.CircuitInstruction]) -
     return last_quantum_use
 
 
-def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, frozenset[int]]:
+def _normalize_import_circuit(circuit: stim.Circuit, *, allow_t: bool = False) -> tuple[stim.Circuit, frozenset[int]]:
     instructions = list(iter_instructions(circuit))
     last_quantum_use = _last_quantum_use_indices(instructions)
     result = stim.Circuit()
@@ -751,7 +790,7 @@ def _normalize_import_circuit(circuit: stim.Circuit) -> tuple[stim.Circuit, froz
 
     def flush_block() -> None:
         nonlocal block
-        parts = _normalize_block(block, last_quantum_use=last_quantum_use, block_number=block_number)
+        parts = _normalize_block(block, last_quantum_use=last_quantum_use, block_number=block_number, allow_t=allow_t)
         for part_index, part in enumerate(parts):
             if part_index:
                 result.append("TICK", [])
@@ -779,6 +818,7 @@ def _normalize_block(
     *,
     last_quantum_use: Mapping[int, int],
     block_number: int,
+    allow_t: bool = False,
 ) -> list[stim.Circuit]:
     r"""Normalize one TICK block into unitary-only, measurement-only, and feedback-only parts.
 
@@ -792,13 +832,13 @@ def _normalize_block(
             return _split_mixed_block(block.circuit)
         return [block.circuit]
     if not (block.has_measurement or block.has_measure_reset or block.has_feedback):
-        return [_transpile_tick_block(block.circuit, block_number=block_number)]
+        return [_transpile_tick_block(block.circuit, block_number=block_number, allow_t=allow_t)]
     if block.has_mpp or block.has_measure_reset or block.has_feedback:
         # MPP, measure-reset, and record-controlled instructions cannot pass
         # through the J/CZ optimizer, so split first and transpile only the
         # purely unitary parts.
         return [
-            _transpile_tick_block(part, block_number=block_number)
+            _transpile_tick_block(part, block_number=block_number, allow_t=allow_t)
             if any(
                 isinstance(instruction, stim.CircuitInstruction) and _is_unitary_instruction(instruction)
                 for instruction in part
@@ -815,6 +855,7 @@ def _normalize_block(
         block.circuit,
         block_number=block_number,
         preserved_measurement_qubits=preserved_qubits,
+        allow_t=allow_t,
     )
     return _split_mixed_block(optimized)
 
@@ -824,7 +865,24 @@ def _transpile_tick_block(
     *,
     block_number: int,
     preserved_measurement_qubits: AbstractSet[int] = frozenset(),
+    allow_t: bool = False,
 ) -> stim.Circuit:
+    if allow_t and any(instruction.tag in T_ANGLES for instruction in block):
+        result = stim.Circuit()
+        pending = stim.Circuit()
+        for instruction in block:
+            if instruction.tag in T_ANGLES:
+                result += _transpile_tick_block(
+                    pending, block_number=block_number, preserved_measurement_qubits=preserved_measurement_qubits
+                )
+                pending = stim.Circuit()
+                result.append(instruction)
+            else:
+                pending.append(instruction)
+        result += _transpile_tick_block(
+            pending, block_number=block_number, preserved_measurement_qubits=preserved_measurement_qubits
+        )
+        return result
     try:
         return transpile(
             block,
@@ -1479,7 +1537,7 @@ def _unitary_fragment(  # ruff:ignore[too-many-arguments]
     local_to_global = {local_index: stim_to_qubit[stim_id] for stim_id, local_index in stim_to_local.items()}
     circuit = Circuit(len(ordered_stim_ids))
     for instruction in block:
-        _append_unitary_instruction(circuit, instruction, stim_to_local)
+        _append_unitary_instruction(circuit, instruction, stim_to_local, allow_t=context.allow_t)
 
     local_graph, local_xflow, _ = circuit2graph(circuit, schedule_strategy=context.schedule_strategy)
     graph, node_map = _copy_graph_with_qindices(local_graph, local_to_global)
@@ -1575,12 +1633,17 @@ def _append_unitary_instruction(
     circuit: Circuit,
     instruction: stim.CircuitInstruction,
     stim_to_qubit: Mapping[int, int],
+    *,
+    allow_t: bool = False,
 ) -> None:
     for group in instruction.target_groups():
         qubits = [plain_qubit_target(target, instruction.name) for target in group]
         mapped = [stim_to_qubit[qubit] for qubit in qubits]
         j_angle = STIM_GATE_J_ANGLES.get(instruction.name)
-        if j_angle is not None:
+        if allow_t and instruction.tag in T_ANGLES:
+            circuit.apply_macro_gate(J(mapped[0], T_ANGLES[instruction.tag]))
+            circuit.apply_macro_gate(J(mapped[0], 0.0))
+        elif j_angle is not None:
             circuit.apply_macro_gate(J(mapped[0], j_angle))
         elif instruction.name == "CZ":
             circuit.apply_macro_gate(CZ((mapped[0], mapped[1])))

@@ -15,6 +15,43 @@ Clifford feedforward (cflow) and non-stabilizer inputs such as
 :math:`|T\rangle`. Pass the returned text to ``clifft.compile`` and sample it
 with ``clifft.sample``.
 
+Clifford+T import
+-----------------
+
+The :mod:`graphqomb.stim_glue.clifft_importer` frontend accepts the existing
+Stim-import subset extended by ``T`` and ``T_DAG``. It offers two lowerings:
+
+* ``t_mode="measurement"`` uses XY-plane measurements at
+  :math:`\pm\pi/4`, whose observables :math:`(X\pm Y)/\sqrt{2}` are Hermitian
+  Cliffords. These are non-Pauli measurements. At export, ``clifft_compile``
+  rotates by the negative measurement angle using T/T_DAG and measures X.
+* ``t_mode="injection"`` uses Pauli measurements, scheduled magic resources,
+  ZZ probes, and conditional S/S-dagger corrections. Preparation gates are
+  returned separately and must be passed to ``clifft_compile``.
+
+.. code-block:: python
+
+   import clifft
+   from graphqomb.stim_glue import clifft_file_to_pattern, clifft_compile
+
+   imported = clifft_file_to_pattern("cultivation.stim", t_mode="injection")
+   text = clifft_compile(
+       imported.pattern, preparation_gates=imported.preparation_gates
+   )
+   sample = clifft.sample(clifft.compile(text), shots=4096, seed=17)
+
+Write each T instruction on its own line, including inside REPEAT blocks.
+Other Clifft extensions, such as arbitrary rotations, are not imported.
+Source noise is removed by import. MBQC noise must be supplied separately
+through ``noise_models``. T-basis readout rotations and controlled-Clifford
+correction gadgets are ideal. Scheduled magic preparation gates run after
+the reset and before any preparation noise. The injection scheduler orders
+each ZZ probe before its magic X readout to avoid consuming all resources
+at circuit start; this ordering does not change the ideal instrument.
+For a T-basis measurement, ``MeasureEvent.axis`` denotes the physical X
+readout. BEFORE measurement noise acts before the ideal basis rotation;
+measurement-flip noise acts on the resulting X record.
+
 Clifft does not accept instruction tags on detectors or resets, so they are
 omitted. Detector ``i`` corresponds to
 ``pattern.frame.parity_check_tags[i]``; for example, build a Clifft
@@ -48,5 +85,9 @@ from the Clifford circuit obtained by replacing non-stabilizer inputs with
 stabilizer inputs that make the observable deterministic.
 
 .. automodule:: graphqomb.stim_glue.clifft_compiler
+   :members:
+   :show-inheritance:
+
+.. automodule:: graphqomb.stim_glue.clifft_importer
    :members:
    :show-inheritance:
