@@ -12,12 +12,14 @@ This module provides:
 
 from __future__ import annotations
 
+import math
 import re
 from typing import TYPE_CHECKING
 
 import typing_extensions
 
 from graphqomb import clifford_algebra
+from graphqomb.common import Axis, AxisMeasBasis, MeasBasis, Plane, Sign, determine_pauli_axis, is_close_angle
 from graphqomb.pauli_frame import CliffordFrame
 from graphqomb.stim_glue.compiler import _StimCompiler
 
@@ -176,10 +178,10 @@ def _normalize_fixed_controls(pattern: Pattern, fixed_controls: Mapping[int, boo
     return {node: bool(value) for node, value in (fixed_controls or {}).items()}
 
 
-def _normalize_input_gates(
-    pattern: Pattern, input_gates: Mapping[int, str | Sequence[str]] | None
+def _normalize_preparation_gates(
+    pattern: Pattern, input_gates: Mapping[int, str | Sequence[str]] | None, *, internal: bool = False
 ) -> dict[int, tuple[str, ...]]:
-    r"""Validate the gates applied after input resets.
+    r"""Validate gates applied after input or internal-node resets.
 
     Returns
     -------
@@ -192,9 +194,13 @@ def _normalize_input_gates(
         If a key is not an input node or a gate is not a single-qubit unitary.
     """
     normalized: dict[int, tuple[str, ...]] = {}
+    allowed = (
+        pattern.frame.graphstate.nodes - pattern.input_node_indices.keys() if internal else pattern.input_node_indices
+    )
     for node, gates in (input_gates or {}).items():
-        if node not in pattern.input_node_indices:
-            msg = f"Input gates target node {node}, which is not an input node of the pattern."
+        if node not in allowed:
+            kind = "internal" if internal else "input"
+            msg = f"Input gates target node {node}, which is not an {kind} node of the pattern."
             raise ValueError(msg)
         sequence = (gates,) if isinstance(gates, str) else tuple(gates)
         for gate in sequence:
@@ -272,7 +278,7 @@ class _ClifftCompiler(_StimCompiler):
         self._ancilla = max(qubits, default=-1) + 1
 
     @typing_extensions.override
-    def _emit_input_state(self, node: int) -> None:
+    def _emit_prepared_state(self, node: int) -> None:
         for gate in self._input_gates.get(node, ()):
             self._stim_io.write(f"{gate} {node}\n")
 
@@ -281,6 +287,32 @@ class _ClifftCompiler(_StimCompiler):
         super()._emit_input_nodes()
         if self._input_circuit:
             self._stim_io.write(f"{self._input_circuit}\n")
+
+    @typing_extensions.override
+    def _measurement_axis(self, meas_basis: MeasBasis) -> Axis:
+        axis = determine_pauli_axis(meas_basis)
+        if axis is not None:
+            return axis
+        turns = round(meas_basis.angle / (math.pi / 4))
+        if meas_basis.plane is Plane.XY and is_close_angle(meas_basis.angle, turns * math.pi / 4):
+            return Axis.X
+        return super()._measurement_axis(meas_basis)
+
+    @typing_extensions.override
+    def _emit_measurement(self, node: int, meas_basis: MeasBasis, axis: Axis, flip_p: float) -> None:
+        if determine_pauli_axis(meas_basis) is None:
+            # M(alpha) = Rz(alpha) X Rz(-alpha): rotate by -alpha before MX.
+            turns = round(meas_basis.angle / (math.pi / 4)) % 8
+            rotations = {
+                1: ("T_DAG",),
+                3: ("S_DAG", "T_DAG"),
+                5: ("Z", "T_DAG"),
+                7: ("T",),
+            }
+            for gate in rotations[turns]:
+                self._stim_io.write(f"{gate} {node}\n")
+            meas_basis = AxisMeasBasis(Axis.X, Sign.PLUS)
+        super()._emit_measurement(node, meas_basis, axis, flip_p)
 
     @typing_extensions.override
     def _emit_pauli_corrections(self, node: int) -> None:
@@ -318,6 +350,7 @@ def clifft_compile(  # ruff:ignore[too-many-arguments]
     pattern: Pattern,
     *,
     input_gates: Mapping[int, str | Sequence[str]] | None = None,
+    preparation_gates: Mapping[int, str | Sequence[str]] | None = None,
     input_circuit: str = "",
     fixed_controls: Mapping[int, bool] | None = None,
     emit_qubit_coords: bool = True,
@@ -333,7 +366,9 @@ def clifft_compile(  # ruff:ignore[too-many-arguments]
     Parameters
     ----------
     pattern : `Pattern`
-        The pattern to compile. Measurements must be Pauli measurements.
+        The pattern to compile. Supports Pauli measurements and XY-plane
+        measurements at odd multiples of pi/4 (Hermitian Clifford observables).
+        The latter lower to ideal T/T_DAG and Clifford rotations followed by MX.
     input_gates : `collections.abc.Mapping`\[`int`, `str` | `collections.abc.Sequence`\[`str`\]\] | `None`, optional
         Single-qubit unitaries applied to input nodes right after their Pauli
         reset, in order. For example, ``{node: "T"}`` with the default ``X+``
@@ -341,6 +376,11 @@ def clifft_compile(  # ruff:ignore[too-many-arguments]
         such as ``"T"``, ``"T_DAG"``, ``"H"`` or ``"S"`` and parametrized
         ``R_X``, ``R_Y``, ``R_Z`` or ``U3`` (``"R_Z(0.1)"``) are accepted.
         By default None.
+    preparation_gates : collections.abc.Mapping | None, optional
+        Single-qubit gates applied after scheduled internal-node resets,
+        before preparation noise. Use the ``preparation_gates`` returned by
+        the injection importer so magic resources are prepared when needed,
+        rather than all at circuit start. Input nodes use ``input_gates``.
     input_circuit : `str`, optional
         Clifft instructions inserted after all input preparations and before
         the first pattern command, for example an ideal encoder of logical
@@ -408,7 +448,10 @@ def clifft_compile(  # ruff:ignore[too-many-arguments]
     """
     compiler = _ClifftCompiler(
         pattern,
-        input_gates=_normalize_input_gates(pattern, input_gates),
+        input_gates={
+            **_normalize_preparation_gates(pattern, input_gates),
+            **_normalize_preparation_gates(pattern, preparation_gates, internal=True),
+        },
         input_circuit=input_circuit,
         fixed_controls=_normalize_fixed_controls(pattern, fixed_controls),
         emit_qubit_coords=emit_qubit_coords,
