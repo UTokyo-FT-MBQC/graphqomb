@@ -60,7 +60,7 @@ dev = [
     "ruff==0.17.1",
     "scipy-stubs>=1.15.3.0",
     "ty==0.0.92",
-    "types-networkx==3.6.1.20261018",
+    "types-networkx==3.6.1.20261029",
 ]
 doc = [
     "furo>=2025.12.19",
