@@ -6,6 +6,7 @@ Importing this package requires the optional ``stim`` dependency
 This package provides:
 
 - `stim_compile`: Function to compile a pattern into Stim circuit text.
+- `clifft_compile`: Function to compile a pattern into Clifft circuit text (``graphqomb[clifft]``).
 - `stim_circuit_to_pattern`: Function to import a supported Stim circuit into a pattern.
 - `stim_text_to_pattern`: Function to import supported Stim text into a pattern.
 - `stim_file_to_pattern`: Function to import a supported Stim file into a pattern.
@@ -25,6 +26,7 @@ This package provides:
 """
 
 from graphqomb.stim_glue._parse import StimMppExtraction
+from graphqomb.stim_glue.clifft_compiler import clifft_compile
 from graphqomb.stim_glue.compiler import stim_compile
 from graphqomb.stim_glue.importer import (
     StimImportResult,
@@ -49,6 +51,7 @@ __all__ = [
     "StimImportResult",
     "StimMppExtraction",
     "UnsupportedInstructionError",
+    "clifft_compile",
     "flag_detector_indices",
     "flag_postselection_mask",
     "optimize_j_cz",

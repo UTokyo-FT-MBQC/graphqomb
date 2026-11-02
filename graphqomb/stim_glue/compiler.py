@@ -65,6 +65,9 @@ def _is_inverted_pauli_measurement(meas_basis: MeasBasis, axis: Axis) -> bool:
 
 
 class _StimCompiler:
+    # Whether detector and reset instruction tags are emitted.
+    _emit_tags = True
+
     def __init__(
         self,
         pattern: Pattern,
@@ -104,7 +107,7 @@ class _StimCompiler:
         groups = self._pframe.detector_groups() if self._backpropagate else self._pframe.parity_check_group
         for checks, tag in zip(groups, self._pframe.parity_check_tags, strict=True):
             targets = [f"rec[{self._meas_order[c] - total_measurements}]" for c in checks]
-            tag_suffix = f"[{escape_tag(tag)}]" if tag else ""
+            tag_suffix = f"[{escape_tag(tag)}]" if tag and self._emit_tags else ""
             self._stim_io.write(f"DETECTOR{tag_suffix} {' '.join(targets)}\n")
 
     def _emit_observables(self, total_measurements: int) -> None:
@@ -153,12 +156,17 @@ class _StimCompiler:
         if init is None:
             init = Initialization()
         reset_instr = {Axis.X: "RX", Axis.Y: "RY", Axis.Z: "R"}[init.axis]
-        tag_suffix = f"[{escape_tag(init.tag)}]" if init.tag else ""
+        tag_suffix = f"[{escape_tag(init.tag)}]" if init.tag and self._emit_tags else ""
         self._stim_io.write(f"{reset_instr}{tag_suffix} {node}\n")
+        if is_input:
+            self._emit_input_state(node)
 
         self._rec_index += self._emit_noise_ops(ops, NoisePlacement.AFTER, default_placement)
         self._alive_nodes.add(node)
         self._touched_nodes.add(node)
+
+    def _emit_input_state(self, node: int) -> None:
+        """Prepare an input beyond its Pauli reset; Stim inputs need nothing more."""
 
     def _handle_entangle(self, nodes: tuple[int, int]) -> None:
         n0, n1 = nodes
@@ -325,6 +333,7 @@ def stim_compile(
     ValueError
         If the pattern's frame carries Clifford feedforward (cflow): stim
         classical feedback is Pauli-only, so such patterns cannot be exported.
+        Use `graphqomb.stim_glue.clifft_compiler.clifft_compile` for them.
 
     Notes
     -----

@@ -16,3 +16,11 @@ The Clifford operations are written in Stim and imported before adding cflow.
 The example explains the correction equations, detector rules, exports, and
 validation scope. Its gallery-style cells export ``.ptn`` patterns to the
 gitignored ``output/`` directory beside it.
+
+``steane_t_injection_noise.py`` samples the same teleportation with
+measurement noise in Clifft (``graphqomb[clifft]``, Python 3.12 or later). The
+conditional S is decided by a teleportation bit decoded online from the
+destructive readout, sampled by fixing each branch with ``fixed_controls``
+and keeping the shots whose decoded bit selects it. Kept shots are decoded
+with a lookup decoder of each branch's detector error model; the logical
+error rate scales as ``p^2``.

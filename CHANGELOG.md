@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Clifft Export**: `clifft_compile(pattern, ...)` in `graphqomb.stim_glue` emits [Clifft](https://pypi.org/project/clifft/) circuit text, Stim syntax extended with non-Clifford gates, for noisy sampling beyond the Stim export. `input_gates` applies single-qubit unitaries such as `T` after input resets, preparing `|T> = T|+>`, and `input_circuit` inserts a noiseless preparation such as an ideal encoder. Clifford feedforward (cflow) is executed by copying the control record to an ancilla and applying a controlled-Clifford gadget of Clifford gates and T; retained Pauli feedback and stored supports follow `stim_compile(pattern, backpropagate=False)`. Corrections onto a node follow the measurement order of their sources, matching `CliffordFrame` and the pattern simulator. Instruction tags are omitted because Clifft does not accept them. `fixed_controls` applies or omits every correction of a cflow source unconditionally, so shots can be sampled per branch and kept when an online decoder of the preceding records selects that branch; this samples Clifford feedforward decided by online decoding. Install with `graphqomb[clifft]` (Python 3.12 or later). Tests compare all 24 controlled-Clifford gadgets with their matrices, check ZZ-probe T teleportation in all four branches, and run encoded Steane T teleportation with silent detectors and deterministic logical readout.
+- **Noisy Steane T Teleportation Example**: `examples/ftqc/steane_t_injection_noise.py` samples the Steane logical T teleportation with measurement noise in Clifft, decodes the conditional-S control online with a Hamming lookup through branch-fixed sampling, and decodes kept shots with a lookup decoder of each branch's detector error model. Tests check that every single measurement flip is corrected; with measurement flips, the decoded logical error rate scales as p^2. The docs build installs the `clifft` extra.
+
 ## [0.6.0] - 2026-10-19
 
 ### Changed
