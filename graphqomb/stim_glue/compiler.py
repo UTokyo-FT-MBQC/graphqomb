@@ -158,15 +158,14 @@ class _StimCompiler:
         reset_instr = {Axis.X: "RX", Axis.Y: "RY", Axis.Z: "R"}[init.axis]
         tag_suffix = f"[{escape_tag(init.tag)}]" if init.tag and self._emit_tags else ""
         self._stim_io.write(f"{reset_instr}{tag_suffix} {node}\n")
-        if is_input:
-            self._emit_input_state(node)
+        self._emit_prepared_state(node)
 
         self._rec_index += self._emit_noise_ops(ops, NoisePlacement.AFTER, default_placement)
         self._alive_nodes.add(node)
         self._touched_nodes.add(node)
 
-    def _emit_input_state(self, node: int) -> None:
-        """Prepare an input beyond its Pauli reset; Stim inputs need nothing more."""
+    def _emit_prepared_state(self, node: int) -> None:
+        """Prepare a state beyond its Pauli reset; Stim needs nothing more."""
 
     def _handle_entangle(self, nodes: tuple[int, int]) -> None:
         n0, n1 = nodes
@@ -187,11 +186,15 @@ class _StimCompiler:
                 offset = self._meas_order[source] - self._rec_index
                 self._stim_io.write(f"{gate} rec[{offset}] {node}\n")
 
-    def _handle_measure(self, node: int, meas_basis: MeasBasis) -> None:
+    def _measurement_axis(self, meas_basis: MeasBasis) -> Axis:  # ruff:ignore[no-self-use]
         axis = determine_pauli_axis(meas_basis)
         if axis is None:
             msg = f"Unsupported measurement basis: {meas_basis.plane, meas_basis.angle}"
             raise ValueError(msg)
+        return axis
+
+    def _handle_measure(self, node: int, meas_basis: MeasBasis) -> None:
+        axis = self._measurement_axis(meas_basis)
         event = MeasureEvent(time=self._tick, node=self._node_info(node), axis=axis)
         ops = self._validate_ops_for_event(event, self._collect_noise_ops_from_models(lambda m: m.on_measure(event)))
 
@@ -209,20 +212,20 @@ class _StimCompiler:
         if not self._backpropagate:
             self._emit_pauli_corrections(node)
 
-        # Emit measurement with optional flip probability
-        meas_instr = {Axis.X: "MX", Axis.Y: "MY", Axis.Z: "MZ"}[axis]
-        is_inverted = _is_inverted_pauli_measurement(meas_basis, axis)
-        meas_target = f"!{node}" if is_inverted else str(node)
-        if meas_flip_p > 0.0:
-            self._stim_io.write(f"{meas_instr}({meas_flip_p}) {meas_target}\n")
-        else:
-            self._stim_io.write(f"{meas_instr} {meas_target}\n")
+        self._emit_measurement(node, meas_basis, axis, meas_flip_p)
 
         self._meas_order[node] = self._rec_index
         self._rec_index += 1
         self._alive_nodes.discard(node)
         self._touched_nodes.add(node)
         self._rec_index += self._emit_noise_ops(other_ops, NoisePlacement.AFTER, default_placement)
+
+    def _emit_measurement(self, node: int, meas_basis: MeasBasis, axis: Axis, flip_p: float) -> None:
+        meas_instr = {Axis.X: "MX", Axis.Y: "MY", Axis.Z: "MZ"}[axis]
+        is_inverted = _is_inverted_pauli_measurement(meas_basis, axis)
+        meas_target = f"!{node}" if is_inverted else str(node)
+        args = f"({flip_p})" if flip_p > 0.0 else ""
+        self._stim_io.write(f"{meas_instr}{args} {meas_target}\n")
 
     def _handle_tick(self) -> None:
         idle_nodes = sorted(self._alive_nodes - self._touched_nodes)
