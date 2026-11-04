@@ -31,6 +31,7 @@ from pathlib import Path
 
 import clifft
 import numpy as np
+from numpy.typing import NDArray
 
 from graphqomb.command import M
 from graphqomb.common import determine_pauli_axis
@@ -66,7 +67,7 @@ lines.insert(first_t + 1, f"X {lines[first_t].split()[1]}")
 fault = "\n".join(lines)
 
 
-def sample(text: str, *, noiseless: bool = False) -> tuple[np.ndarray, int, int]:
+def sample(text: str, *, noiseless: bool = False) -> tuple[NDArray[np.float64], int, int]:
     r"""Sample detector and observable marginals and postselected observable flips.
 
     Returns
