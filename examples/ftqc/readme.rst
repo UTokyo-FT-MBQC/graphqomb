@@ -1,8 +1,8 @@
 Fault-tolerant quantum computing
 ================================
 
-This example draws and simulates logical T gate teleportation using a supplied
-encoded magic state. T-state preparation and distillation circuits are outside
+The Steane examples draw and simulate logical T gate teleportation using a
+supplied encoded magic state. T-state preparation and distillation circuits are outside
 the simulation. Reference checks cover quantum output, detectors, and logical
 readout.
 
@@ -24,3 +24,8 @@ destructive readout, sampled by fixing each branch with ``fixed_controls``
 and keeping the shots whose decoded bit selects it. Kept shots are decoded
 with a lookup decoder of each branch's detector error model; the logical
 error rate scales as ``p^2``.
+
+``cultivation_import.py`` imports the distance-3 T-gate cultivation circuit
+distributed with Clifft, downloaded from a pinned commit, using both T
+lowerings of ``clifft_text_to_pattern``. Clifft sampling after MBQC
+compilation is compared with sampling of the source circuit.

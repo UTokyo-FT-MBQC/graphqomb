@@ -43,14 +43,14 @@ class LogicalErrorEstimate:
 
 
 def _encode(nodes: Sequence[int]) -> list[str]:
-    """Return the encoder after qubit 1 holds the logical state.
+    r"""Return the encoder after qubit 1 holds the logical state.
 
     Pivots 3, 5, 6 add the simplex rows to |0>; the logical-one coset
     contains {1, 2, 4}, disjoint from the pivots.
 
     Returns
     -------
-    list[str]
+    `list`\[`str`\]
         Noiseless Clifft instructions.
     """
     lines = [f"CX {nodes[1]} {nodes[2]} {nodes[1]} {nodes[4]}", f"H {nodes[3]} {nodes[5]} {nodes[6]}"]
@@ -64,7 +64,7 @@ def steane_encoder(nodes: Sequence[int], state_gates: Sequence[str]) -> str:
 
     Returns
     -------
-    str
+    `str`
         Noiseless Clifft instructions, starting with a reset of the block.
     """
     lines = [f"R {' '.join(map(str, nodes))}", *(f"{gate} {nodes[1]}" for gate in state_gates)]
@@ -76,7 +76,7 @@ def t_input_circuit(steane: SteanePattern) -> str:
 
     Returns
     -------
-    str
+    `str`
         Noiseless Clifft instructions; the logical X readout is deterministically 0.
     """
     return "\n".join(
@@ -96,7 +96,7 @@ def branch_input_circuit(steane: SteanePattern, value: bool) -> str:
 
     Returns
     -------
-    str
+    `str`
         Noiseless Stim instructions.
     """
     data, magic = steane.data_input_nodes, steane.magic_input_nodes
@@ -114,7 +114,7 @@ def branch_circuit(steane: SteanePattern, value: bool, noise_models: Sequence[No
 
     Returns
     -------
-    stim.Circuit
+    ``stim.Circuit``
         The branch circuit with deterministic detectors and observable.
     """
     text = clifft_compile(
@@ -140,7 +140,7 @@ def decode_teleportation_bit(steane: SteanePattern, measurements: NDArray[np.boo
 
     Returns
     -------
-    numpy.ndarray
+    `numpy.ndarray`
         The decoded bit of each shot, using only records preceding the correction.
     """
     frame = steane.pattern.frame
@@ -170,11 +170,11 @@ class ErrorMechanism:
 
 
 def error_mechanisms(dem: stim.DetectorErrorModel) -> list[ErrorMechanism]:
-    """List the errors of a single-observable detector error model.
+    r"""List the errors of a single-observable detector error model.
 
     Returns
     -------
-    list[ErrorMechanism]
+    `list`\[`ErrorMechanism`\]
         The errors with their detectors and observable flip.
     """
     mechanisms: list[ErrorMechanism] = []
@@ -204,7 +204,7 @@ class LookupDecoder:
 
         Returns
         -------
-        LookupDecoder
+        `LookupDecoder`
             The decoder; unlisted syndromes predict no flip.
         """
         mechanisms = [
@@ -224,7 +224,7 @@ class LookupDecoder:
 
         Returns
         -------
-        numpy.ndarray
+        `numpy.ndarray`
             The predicted flip of each shot.
         """
         return np.asarray([self.table.get(key, False) for key in _syndrome_keys(detectors)], dtype=np.bool_)
@@ -238,7 +238,7 @@ def sample_logical_error(
     seed: int = 0,
     decoders: Mapping[bool, LookupDecoder] | None = None,
 ) -> LogicalErrorEstimate:
-    """Sample decoded logical X failures of T teleportation with the S control decoded online.
+    r"""Sample decoded logical X failures of T teleportation with the S control decoded online.
 
     Each fixed-branch circuit samples ``shots`` shots and keeps those whose
     decoded teleportation bit selects that branch; each kept shot is decoded
@@ -246,21 +246,21 @@ def sample_logical_error(
 
     Parameters
     ----------
-    steane : SteanePattern
+    steane : `SteanePattern`
         The X-readout pattern.
-    noise_models : collections.abc.Sequence[NoiseModel]
+    noise_models : `collections.abc.Sequence`\[`NoiseModel`\]
         Noise models of the sampled circuits.
-    shots : int
+    shots : `int`
         Shots sampled from each branch circuit.
-    seed : int, optional
+    seed : `int`, optional
         Seed of the first branch; the second uses ``seed + 1``. By default 0.
-    decoders : collections.abc.Mapping[bool, LookupDecoder] | None, optional
+    decoders : `collections.abc.Mapping`\[`bool`, `LookupDecoder`\] | `None`, optional
         Decoder of each branch. By default built from the detector error
         model of each branch under ``noise_models``.
 
     Returns
     -------
-    LogicalErrorEstimate
+    `LogicalErrorEstimate`
         Failures among the kept shots.
     """
     clifft: Any = importlib.import_module("clifft")
