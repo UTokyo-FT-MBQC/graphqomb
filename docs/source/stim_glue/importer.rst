@@ -18,6 +18,52 @@ indices to graph measurement nodes, enabling external conditional-Clifford
 feedforward to use source record identities after import. Records removed as
 deterministic zero padding have no graph node and are omitted from the mapping.
 
+Import before scheduling
+------------------------
+
+:func:`~graphqomb.stim_glue.importer.stim_circuit_to_ir`,
+:func:`~graphqomb.stim_glue.importer.stim_text_to_ir`, and
+:func:`~graphqomb.stim_glue.importer.stim_file_to_ir` return a frozen
+:class:`~graphqomb.stim_glue.importer.StimImportIR` before constructing or
+solving any scheduler. It contains the resource graph, a
+:class:`~graphqomb.feedforward.Feedforward` with corrections and parity
+annotations, and the same source mappings as ``StimImportResult``.
+The graph, feedforward, and mapping contents remain mutable; freezing prevents
+reassignment of the dataclass fields. The importer transfers its constructed
+graph and maps into the IR without additional copies.
+
+Use ``ir.make_scheduler()`` to construct an unsolved scheduler. Inspect
+``ir.graph.coordinates`` and ``ir.record_to_node`` when choosing operation
+times, then call ``manual_schedule`` or ``solve_schedule``. Lower with
+``ir.to_pattern(scheduler)`` to obtain a ``StimImportResult``. Lowering delegates
+schedule validation to ``qompile`` and shares the IR's source mappings.
+The existing ``*_to_pattern`` entry points perform these steps using the
+requested configuration or the default greedy ``MINIMIZE_TIME`` strategy.
+
+.. code-block:: python
+
+   from graphqomb.stim_glue import stim_text_to_ir
+
+   ir = stim_text_to_ir("RX 0\nTICK\nMPP X0\nTICK\nMX 0")
+   scheduler = ir.make_scheduler()
+   # Prepare at 0, entangle at 1, then measure each node separately.
+   scheduler.manual_schedule(
+       dict.fromkeys(scheduler.prepare_time, 0),
+       {node: time for time, node in enumerate(scheduler.measure_time, start=2)},
+       dict.fromkeys(scheduler.entangle_time, 1),
+   )
+   result = ir.to_pattern(scheduler)
+
+For offline Pauli backpropagation, first compute
+``ff = ir.feedforward.backpropagate(ir.graph)``, then pass ``feedforward=ff``
+to both ``ir.make_scheduler`` and ``ir.to_pattern``. This uses the transformed
+maps and their matching detector and observable supports throughout scheduling
+and lowering. Export with ``stim_compile(result.pattern, backpropagate=False)``
+to serialize those supports.
+
+Graph construction
+------------------
+
 Every unitary block is normalized by :mod:`graphqomb.stim_glue.transpiler` to the four
 Clifford ``J(angle)`` gates (``H = J(0)``, ``HS = J(pi/2)``, ``HZ = J(pi)``,
 ``HS_DAG = J(-pi/2)``, corresponding to X+/Y-/X-/Y+ measurements) plus ``CZ``

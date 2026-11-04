@@ -48,6 +48,12 @@ correction gadgets are ideal. Scheduled magic preparation gates run after
 the reset and before any preparation noise. The injection scheduler orders
 each ZZ probe before its magic X readout to avoid consuming all resources
 at circuit start; this ordering does not change the ideal instrument.
+For explicit scheduling, ``clifft_text_to_ir`` and ``clifft_file_to_ir``
+return the same ``StimImportIR`` as :doc:`importer`. Its ``measurement_order``
+stores the additional probe-before-magic dependencies. ``ir.make_scheduler()``
+adds them to the scheduler DAG, including when a transformed feedforward is
+supplied. Set or solve the schedule, then call ``ir.to_pattern(scheduler)``
+and pass the resulting preparation gates to ``clifft_compile`` as above.
 For a T-basis measurement, ``MeasureEvent.axis`` denotes the physical X
 readout. BEFORE measurement noise acts before the ideal basis rotation;
 measurement-flip noise acts on the resulting X record.

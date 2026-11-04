@@ -5,8 +5,10 @@ from __future__ import annotations
 import operator
 import re
 import warnings
+from graphlib import TopologicalSorter
 from itertools import pairwise
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -14,14 +16,15 @@ from scipy.sparse import csr_array
 
 from graphqomb.command import E, M
 from graphqomb.common import Axis, AxisMeasBasis, Sign
+from graphqomb.feedforward import inverse_dag_from_dag
 from graphqomb.graphstate import odd_neighbors
 from graphqomb.pattern import is_runnable
 from graphqomb.ptn_format import dumps as ptn_dumps
 from graphqomb.qeccode import StabilizerCode, YFoliation, build_graph_state
-from graphqomb.scheduler import ScheduleConfig, Strategy
+from graphqomb.scheduler import ScheduleConfig, Scheduler, Strategy
 from graphqomb.simulator import PatternSimulator, SimulatorBackend
 from graphqomb.statevec import StateVector
-from graphqomb.stim_glue import importer
+from graphqomb.stim_glue import importer, stim_circuit_to_ir, stim_file_to_ir, stim_text_to_ir
 from graphqomb.stim_glue._parse import (
     PauliSupport,
     StimMppExtraction,
@@ -2193,3 +2196,95 @@ def test_import_exposes_source_record_nodes_without_zero_padding() -> None:
     assert set(imported.record_to_node) == {0, 1}
     assert set(imported.record_to_node.values()) <= imported.pattern.frame.graphstate.meas_bases.keys()
     assert imported.pattern.frame.parity_check_group == [{imported.record_to_node[0], imported.record_to_node[1]}]
+
+
+def test_stim_ir_builds_without_constructing_a_scheduler() -> None:
+    source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3)
+    with patch.object(Scheduler, "__init__", side_effect=AssertionError("IR import must not construct a Scheduler")):
+        ir = stim_circuit_to_ir(source)
+
+    assert len(ir.record_to_node) == source.num_measurements
+    assert len(ir.feedforward.parity_check_group) == source.num_detectors
+    assert len(ir.feedforward.logical_observables) == source.num_observables
+
+
+@pytest.mark.parametrize("backpropagate", [False, True])
+def test_stim_ir_manual_schedule_preserves_check_and_logical_parities(backpropagate: bool) -> None:
+    text = _two_round_mpp_circuit(("Z0*Z1",)).replace("DETECTOR", "DETECTOR[type=flag]")
+    ir = stim_text_to_ir(text + "\nM 0 1\nOBSERVABLE_INCLUDE(0) rec[-1] rec[-2]")
+    feedforward = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
+    if backpropagate:
+        assert feedforward.xflow != ir.feedforward.xflow
+    scheduler = ir.make_scheduler(feedforward=feedforward)
+    assert scheduler.graph is ir.graph
+    # Prepare everything first, entangle serially, then measure in dependency order.
+    edge_times = {edge: time for time, edge in enumerate(ir.graph.edges, start=1)}
+    order = TopologicalSorter(inverse_dag_from_dag(scheduler.dag)).static_order()
+    measure_times = {
+        node: time for time, node in enumerate(order, start=len(edge_times) + 1) if node in scheduler.measure_time
+    }
+    scheduler.manual_schedule(dict.fromkeys(scheduler.prepare_time, 0), measure_times, edge_times)
+    result = ir.to_pattern(scheduler, feedforward=feedforward)
+
+    is_runnable(result.pattern)
+    assert result.pattern.frame.graphstate is ir.graph
+    assert result.record_to_node is ir.record_to_node
+    assert result.mpp_extractions is ir.mpp_extractions
+    assert result.preparation_gates is ir.preparation_gates
+    assert result.pattern.frame.parity_check_tags == ["type=flag"]
+    compiled = stim.Circuit(stim_compile(result.pattern, backpropagate=False))
+    assert compiled.detector_error_model().num_errors == 0
+    assert compiled.num_detectors == 1
+    assert compiled.num_observables == 1
+    samples = compiled.compile_detector_sampler(seed=7).sample(shots=64, append_observables=True)
+    assert not samples.any()
+
+
+@pytest.mark.parametrize("schedule_config", [None, ScheduleConfig(Strategy.MINIMIZE_SPACE)])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "QUBIT_COORDS(1, 2) 0\nH 0\nTICK\nM 0\nR 0\nTICK\nMX 0",
+        _two_round_mpp_circuit(("Z0*Z1",)) + "\nM 0 1\nOBSERVABLE_INCLUDE(0) rec[-1] rec[-2]",
+    ],
+)
+def test_stim_pattern_wrapper_matches_explicit_ir_schedule(text: str, schedule_config: ScheduleConfig | None) -> None:
+    ir = stim_circuit_to_ir(stim.Circuit(text))
+    scheduler = ir.make_scheduler()
+    assert scheduler.solve_schedule(schedule_config)
+    explicit = ir.to_pattern(scheduler)
+    wrapped = stim_text_to_pattern(text, schedule_config=schedule_config)
+
+    assert ptn_dumps(explicit.pattern) == ptn_dumps(wrapped.pattern)
+    assert explicit.stim_to_qubit == wrapped.stim_to_qubit
+    assert explicit.qubit_to_stim == wrapped.qubit_to_stim
+    assert explicit.wire_to_stim == wrapped.wire_to_stim
+    assert explicit.stim_to_final_qubit == wrapped.stim_to_final_qubit
+    assert explicit.record_to_node == wrapped.record_to_node
+
+
+def test_stim_ir_text_and_file_entry_points(tmp_path: Path) -> None:
+    text = "RX 2\nTICK\nMPP X2\nMPAD 0\nDETECTOR rec[-1] rec[-2]"
+    path = tmp_path / "circuit.stim"
+    path.write_text(text, encoding="utf-8")
+    from_file = stim_file_to_ir(path)
+    from_text = stim_text_to_ir(text)
+
+    assert from_file.graph.nodes == from_text.graph.nodes
+    assert from_file.graph.edges == from_text.graph.edges
+    assert from_file.feedforward.xflow == from_text.feedforward.xflow
+    assert from_file.feedforward.parity_check_group == [{from_file.record_to_node[0]}]
+    assert from_file.record_to_node == from_text.record_to_node
+    assert set(from_file.record_to_node) == {0}
+
+
+def test_stim_ir_lowering_validates_the_supplied_schedule() -> None:
+    ir = stim_text_to_ir("H 0\nTICK\nH 0\nM 0")
+    scheduler = ir.make_scheduler()
+    scheduler.manual_schedule(
+        dict.fromkeys(scheduler.prepare_time, 0),
+        dict.fromkeys(scheduler.measure_time, 2),
+        dict.fromkeys(scheduler.entangle_time, 1),
+    )
+    with pytest.raises(ValueError, match="DAG violation"):
+        ir.to_pattern(scheduler)

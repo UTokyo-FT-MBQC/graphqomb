@@ -1,8 +1,10 @@
-"""Import supported Stim circuits into GraphQOMB patterns.
+"""Import supported Stim circuits into GraphQOMB IRs and patterns.
 
 This module provides:
 
 - `StimImportResult`: Result of importing a supported Stim circuit.
+- `StimImportIR`: Imported graph, feedforward, and source mappings before scheduling.
+- `stim_circuit_to_ir`, `stim_text_to_ir`, `stim_file_to_ir`: Import without scheduling.
 - `stim_file_to_pattern`: Import a supported Stim file into a GraphQOMB pattern.
 - `stim_text_to_pattern`: Import supported Stim text into a GraphQOMB pattern.
 - `stim_circuit_to_pattern`: Import a supported Stim circuit into a GraphQOMB pattern.
@@ -18,8 +20,9 @@ from typing import TYPE_CHECKING, Literal
 
 import stim
 
-from graphqomb.circuit import Circuit, CircuitScheduleStrategy, circuit2graph
+from graphqomb.circuit import Circuit, CircuitScheduleStrategy, _circuit2graph_context
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
+from graphqomb.feedforward import Feedforward
 from graphqomb.gates import CZ, J
 from graphqomb.graphstate import GraphState, compose_into, odd_neighbors
 from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
@@ -119,6 +122,98 @@ class StimImportResult:
 
 
 @dataclass(frozen=True)
+class StimImportIR:
+    r"""Imported resource graph and feedforward before scheduling or lowering.
+
+    The dataclass is frozen, but its graph, feedforward, and mappings remain
+    mutable. Import transfers ownership of the constructed graph and maps
+    without copying them. Mapping meanings are those of `StimImportResult`.
+
+    Attributes
+    ----------
+    graph : `GraphState`
+        Resource state with measurement bases, input initializations, and coordinates.
+    feedforward : `Feedforward`
+        X/Z/Clifford corrections, detector supports and tags, and logical parities.
+    stim_to_qubit : `dict`\[`int`, `int`\]
+        Original Stim qubit id to the internal index of its initial wire.
+    qubit_to_stim : `dict`\[`int`, `int`\]
+        Every internal qubit index to its original Stim qubit id.
+    mpp_extractions : `tuple`\[`StimMppExtraction`, ...\]
+        Stabilizer data of each imported MPP block, keyed by wire id.
+    wire_to_stim : `dict`\[`int`, `int`\]
+        Wire id to original Stim qubit id.
+    stim_to_final_qubit : `dict`\[`int`, `int`\]
+        Original Stim qubit id to the internal index of its last lifetime.
+    record_to_node : `dict`\[`int`, `int`\]
+        Absolute source measurement record to its graph node; zero padding is omitted.
+    preparation_gates : `dict`\[`int`, `str`\]
+        Scheduled magic-resource gates to pass to `clifft_compile`.
+    measurement_order : `tuple`\[`tuple`\[`int`, `int`\], ...\]
+        Additional (earlier, later) measurement dependencies for injection resources.
+    """
+
+    graph: GraphState
+    feedforward: Feedforward
+    stim_to_qubit: dict[int, int]
+    qubit_to_stim: dict[int, int]
+    mpp_extractions: tuple[StimMppExtraction, ...]
+    wire_to_stim: dict[int, int]
+    stim_to_final_qubit: dict[int, int]
+    record_to_node: dict[int, int]
+    preparation_gates: dict[int, str]
+    measurement_order: tuple[tuple[int, int], ...]
+
+    def make_scheduler(self, *, feedforward: Feedforward | None = None) -> Scheduler:
+        """Construct an unsolved scheduler including injection measurement order.
+
+        Parameters
+        ----------
+        feedforward : `Feedforward` | `None`, optional
+            Corrections for this graph, such as ``ir.feedforward.backpropagate(ir.graph)``.
+            Defaults to the imported feedforward. Pass the same object to `to_pattern`.
+
+        Returns
+        -------
+        `Scheduler`
+            Scheduler ready for ``manual_schedule`` or ``solve_schedule``.
+        """
+        ff = self.feedforward if feedforward is None else feedforward
+        scheduler = Scheduler(self.graph, ff.xflow, ff.zflow, cflow=ff.cflow)
+        for earlier, later in self.measurement_order:
+            scheduler.dag.setdefault(earlier, set()).add(later)
+        return scheduler
+
+    def to_pattern(self, scheduler: Scheduler, *, feedforward: Feedforward | None = None) -> StimImportResult:
+        """Lower a scheduled IR, retaining its source mappings and preparation gates.
+
+        Parameters
+        ----------
+        scheduler : `Scheduler`
+            Scheduler for this graph with a manual or solved schedule. Schedule
+            validation is performed by `qompile`.
+        feedforward : `Feedforward` | `None`, optional
+            Feedforward used to construct the scheduler; defaults to the imported one.
+
+        Returns
+        -------
+        `StimImportResult`
+            Lowered pattern and the IR's mappings, shared without copying.
+        """
+        ff = self.feedforward if feedforward is None else feedforward
+        return StimImportResult(
+            pattern=qompile(self.graph, ff, scheduler=scheduler),
+            stim_to_qubit=self.stim_to_qubit,
+            qubit_to_stim=self.qubit_to_stim,
+            mpp_extractions=self.mpp_extractions,
+            wire_to_stim=self.wire_to_stim,
+            stim_to_final_qubit=self.stim_to_final_qubit,
+            record_to_node=self.record_to_node,
+            preparation_gates=self.preparation_gates,
+        )
+
+
+@dataclass(frozen=True)
 class _Fragment:
     graph: GraphState
     xflow: dict[int, set[int]]
@@ -136,7 +231,6 @@ class _ImportContext:
     detector_record_indices: Sequence[frozenset[int]]
     detector_tags: Sequence[str]
     logical_observable_record_indices: Mapping[int, frozenset[int]]
-    schedule_strategy: CircuitScheduleStrategy
     y_foliation: YFoliation
     split_wire_ids: frozenset[int]
     # Inverse of detector_record_indices: record index -> detectors referencing it.
@@ -206,6 +300,97 @@ class _FragmentBuildResult:
     fragments: list[_Fragment]
     stim_to_qubit: dict[int, int]
     qubit_to_stim: dict[int, int]
+
+
+def stim_file_to_ir(
+    path: str | Path,
+    *,
+    coord_dims: int = 2,
+    schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
+    y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
+) -> StimImportIR:
+    """Import a supported Stim file without scheduling; see `stim_circuit_to_ir`.
+
+    Returns
+    -------
+    `StimImportIR`
+        Resource graph, feedforward, and source mappings before scheduling.
+    """
+    return stim_text_to_ir(
+        Path(path).read_text(encoding="utf-8"),
+        coord_dims=coord_dims,
+        schedule_strategy=schedule_strategy,
+        y_foliation=y_foliation,
+        merge_safe_ticks=merge_safe_ticks,
+    )
+
+
+def stim_text_to_ir(
+    text: str,
+    *,
+    coord_dims: int = 2,
+    schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
+    y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
+) -> StimImportIR:
+    """Import supported Stim text without scheduling; see `stim_circuit_to_ir`.
+
+    Returns
+    -------
+    `StimImportIR`
+        Resource graph, feedforward, and source mappings before scheduling.
+    """
+    return stim_circuit_to_ir(
+        stim.Circuit(text),
+        coord_dims=coord_dims,
+        schedule_strategy=schedule_strategy,
+        y_foliation=y_foliation,
+        merge_safe_ticks=merge_safe_ticks,
+    )
+
+
+def stim_circuit_to_ir(
+    circuit: stim.Circuit,
+    *,
+    coord_dims: int = 2,
+    schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
+    y_foliation: YFoliation = YFoliation.TYPE_I,
+    merge_safe_ticks: bool = False,
+) -> StimImportIR:
+    """Import a supported Stim circuit without constructing or solving a scheduler.
+
+    Input semantics and graph-building options match `stim_circuit_to_pattern`.
+    Inspect the graph and source mappings before assigning a schedule through
+    `StimImportIR.make_scheduler` and lowering with `StimImportIR.to_pattern`.
+
+    Parameters
+    ----------
+    circuit : ``stim.Circuit``
+        Supported Stim circuit; noise is removed during import.
+    coord_dims : `int`, optional
+        Number of source coordinate dimensions, 2 or 3, by default 2.
+    schedule_strategy : `CircuitScheduleStrategy`, optional
+        Accepted for compatibility with pattern import. It does not affect the
+        resource graph or flows; no circuit or pattern schedule is computed.
+    y_foliation : `YFoliation`, optional
+        Graph construction for Y products, by default ``YFoliation.TYPE_I``.
+    merge_safe_ticks : `bool`, optional
+        Merge TICK blocks when their removal preserves import semantics.
+
+    Returns
+    -------
+    `StimImportIR`
+        Graph, feedforward with detector and observable annotations, source
+        mappings, and additional injection measurement dependencies.
+    """
+    return _import_circuit_ir(
+        circuit,
+        coord_dims=coord_dims,
+        schedule_strategy=schedule_strategy,
+        y_foliation=y_foliation,
+        merge_safe_ticks=merge_safe_ticks,
+    )
 
 
 def stim_file_to_pattern(  # ruff:ignore[too-many-arguments]
@@ -290,8 +475,8 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
     given, a `graphqomb.scheduler.core.Scheduler` is built from the imported
     graph and flows, solved with that configuration (schedule_timeout
     bounds the CP-SAT solve time in seconds), and passed to
-    `graphqomb.qompiler.qompile`; when `None`, `qompile` schedules with its
-    default greedy strategy.
+    `graphqomb.qompiler.qompile`; when `None`, the default greedy strategy is
+    used. To inspect or transform the IR before scheduling, use `stim_circuit_to_ir`.
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
     Pauli measurement blocks. Inputs without an explicit reset start in the
@@ -381,30 +566,43 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
         If the circuit uses unsupported instructions or invalid coordinates,
         or if schedule_config is given and no schedule is found.
     """  # ruff:ignore[docstring-extraneous-exception]
-    return _import_circuit(
-        circuit,
-        coord_dims=coord_dims,
-        schedule_strategy=schedule_strategy,
-        y_foliation=y_foliation,
-        merge_safe_ticks=merge_safe_ticks,
+    return _schedule_and_lower(
+        stim_circuit_to_ir(
+            circuit,
+            coord_dims=coord_dims,
+            schedule_strategy=schedule_strategy,
+            y_foliation=y_foliation,
+            merge_safe_ticks=merge_safe_ticks,
+        ),
         schedule_config=schedule_config,
         schedule_timeout=schedule_timeout,
     )
 
 
-def _import_circuit(  # ruff:ignore[too-many-arguments, too-many-locals]
+def _schedule_and_lower(
+    ir: StimImportIR, *, schedule_config: ScheduleConfig | None, schedule_timeout: int
+) -> StimImportResult:
+    scheduler = ir.make_scheduler()
+    if not scheduler.solve_schedule(schedule_config, timeout=schedule_timeout):
+        msg = "Scheduling the imported pattern failed with the requested schedule_config."
+        raise ValueError(msg)
+    return ir.to_pattern(scheduler)
+
+
+def _import_circuit_ir(  # ruff:ignore[too-many-arguments, too-many-locals]
     circuit: stim.Circuit,
     *,
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
     merge_safe_ticks: bool = False,
-    schedule_config: ScheduleConfig | None = None,
-    schedule_timeout: int = 60,
     t_mode: Literal["measurement", "injection"] | None = None,
-) -> StimImportResult:
+) -> StimImportIR:
     if coord_dims not in {2, 3}:
         msg = "coord_dims must be 2 or 3."
+        raise ValueError(msg)
+    if schedule_strategy not in {CircuitScheduleStrategy.PARALLEL, CircuitScheduleStrategy.MINIMIZE_SPACE}:
+        msg = f"Invalid schedule strategy: {schedule_strategy}"
         raise ValueError(msg)
 
     idealized = _idealize_circuit(circuit.flattened())
@@ -431,7 +629,6 @@ def _import_circuit(  # ruff:ignore[too-many-arguments, too-many-locals]
         detector_record_indices=annotations.detectors,
         detector_tags=annotations.detector_tags,
         logical_observable_record_indices=annotations.logical_observables,
-        schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
         split_wire_ids=frozenset(reset_split.split_to_original),
         detectors_by_record=_detectors_by_record(annotations.detectors),
@@ -454,31 +651,18 @@ def _import_circuit(  # ruff:ignore[too-many-arguments, too-many-locals]
     preparation_gates, cflow = (
         inject_t_measurements(fragment.graph, xflow, zflow) if t_mode == "injection" else ({}, {})
     )
-    scheduler: Scheduler | None = None
-    if schedule_config is not None or preparation_gates:
-        scheduler = Scheduler(fragment.graph, xflow, zflow, cflow=cflow)
-        # These commuting measurements are deliberately ordered ZZ probe ->
-        # magic X readout. Otherwise the scheduler can consume every magic
-        # input at the start, giving the near-Clifford simulator a large
-        # simultaneous magic width even for a sequential T-gate circuit.
-        for magic in preparation_gates:
-            probe = next(iter(fragment.graph.neighbors(magic)))
-            scheduler.dag.setdefault(probe, set()).add(magic)
-        if not scheduler.solve_schedule(schedule_config, timeout=schedule_timeout):
-            msg = "Scheduling the imported pattern failed with the requested schedule_config."
-            raise ValueError(msg)
-    pattern = qompile(
-        fragment.graph,
-        xflow,
-        zflow,
-        cflow,
-        parity_check_group=parity_check_groups,
-        logical_observables=logical_observables,
-        parity_check_tags=parity_check_tags,
-        scheduler=scheduler,
-    )
-    return StimImportResult(
-        pattern=pattern,
+    # The builder owns these maps and supports; transfer them without copying.
+    feedforward = Feedforward({})
+    feedforward.xflow, feedforward.zflow, feedforward.cflow = xflow, zflow, cflow
+    feedforward.parity_check_group = parity_check_groups
+    feedforward.parity_check_tags = parity_check_tags
+    feedforward.logical_observables = logical_observables
+    # Order the commuting ZZ probe before magic X readout, keeping sequential
+    # injections from consuming every magic input at the start of the schedule.
+    measurement_order = tuple((next(iter(fragment.graph.neighbors(magic))), magic) for magic in preparation_gates)
+    return StimImportIR(
+        graph=fragment.graph,
+        feedforward=feedforward,
         stim_to_qubit={
             stim_id: qubit for stim_id, qubit in stim_to_qubit.items() if stim_id not in reset_split.split_to_original
         },
@@ -488,8 +672,9 @@ def _import_circuit(  # ruff:ignore[too-many-arguments, too-many-locals]
         mpp_extractions=fragment.mpp_extractions,
         wire_to_stim={wire_id: reset_split.split_to_original.get(wire_id, wire_id) for wire_id in sorted(stim_ids)},
         stim_to_final_qubit=_final_qubit_by_stim_id(build.stim_to_qubit, reset_split.split_to_original),
-        record_to_node=dict(fragment.record_nodes),
+        record_to_node=fragment.record_nodes,
         preparation_gates=preparation_gates,
+        measurement_order=measurement_order,
     )
 
 
@@ -1546,9 +1731,9 @@ def _unitary_fragment(  # ruff:ignore[too-many-arguments]
     for instruction in block:
         _append_unitary_instruction(circuit, instruction, stim_to_local, allow_t=context.allow_t)
 
-    local_graph, local_xflow, _ = circuit2graph(circuit, schedule_strategy=context.schedule_strategy)
-    graph, node_map = _copy_graph_with_qindices(local_graph, local_to_global)
-    xflow = _remap_flow(local_xflow, node_map)
+    local = _circuit2graph_context(circuit, schedule_strategy=None)
+    graph, node_map = _copy_graph_with_qindices(local.graph, local_to_global)
+    xflow = _remap_flow(local.gflow, node_map)
     z_span = _apply_unitary_coordinates(
         graph,
         xflow,
