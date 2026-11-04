@@ -56,6 +56,13 @@ Install optional Stim integration:
 uv add "graphqomb[stim]"
 ```
 
+Install optional [Clifft](https://pypi.org/project/clifft/) integration for noisy sampling with
+non-Clifford inputs such as `|T>` and Clifford feedforward (Clifft requires Python 3.12 or later):
+
+```bash
+uv add "graphqomb[clifft]"
+```
+
 ### From Source
 
 ```bash

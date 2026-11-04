@@ -136,3 +136,4 @@ Where to go next
 - :doc:`gallery/scheduler_pattern_demo` compares space- and time-oriented scheduling strategies.
 - :doc:`gallery/entanglement_scheduling_demo` focuses on explicit entanglement timing and `TICK` slices.
 - :doc:`stim_glue/compiler` documents the Stim export path for compatible patterns.
+- :doc:`stim_glue/clifft_compiler` documents noisy sampling with ``|T>`` inputs and Clifford feedforward through Clifft.

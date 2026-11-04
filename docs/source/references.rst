@@ -30,6 +30,7 @@ Module reference
     stim_glue/transpiler
     stim_glue/importer
     stim_glue/compiler
+    stim_glue/clifft_compiler
     stim_glue/postselect
     noise_model
     visualizer

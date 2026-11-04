@@ -74,6 +74,10 @@ pyzx = [
 stim = [
     "stim>=1.16",
 ]
+clifft = [
+    "clifft>=0.12; python_version >= '3.12'",
+    "stim>=1.16",
+]
 
 [project.urls]
 Homepage = "https://github.com/UTokyo-FT-MBQC/graphqomb"

@@ -22,7 +22,7 @@ jobs:
           uv-version: "0.11.16"
           enable-cache: true
 
-      - run: uv sync --locked --python 3.13 --extra doc --extra stim
+      - run: uv sync --locked --python 3.13 --extra doc --extra stim --extra clifft
 
       - name: Make docs
         run: uv run --no-sync sphinx-build -W docs/source docs/build
