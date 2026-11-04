@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-04
+
 ### Added
 
 - **Clifford+T Import**: `clifft_text_to_pattern` and `clifft_file_to_pattern` import Stim text extended with `T` and `T_DAG`. `t_mode="measurement"` keeps XY-plane measurements at +/-pi/4, and `t_mode="injection"` uses scheduled magic resources with only Pauli measurements; pass the returned `preparation_gates` to `clifft_compile`. `examples/ftqc/cultivation_import.py` compares Clifft sampling of a distance-3 T-gate cultivation circuit before and after MBQC compilation.
