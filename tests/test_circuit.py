@@ -68,6 +68,20 @@ def _build_small_random_single_qubit_circuit(seed: int) -> MBQCCircuit:
 # MBQCCircuit tests
 
 
+@pytest.mark.parametrize("repetitions", [2, 3])
+def test_repeated_cz_on_unchanged_frontiers_uses_edge_parity(repetitions: int) -> None:
+    circuit = MBQCCircuit(3)
+    circuit.j(0, 0.3)
+    circuit.j(1, 0.7)
+    for index in range(repetitions):
+        # An unrelated wire can advance between CZs without changing the pair.
+        circuit.cz(index % 2, 1 - index % 2)
+        circuit.j(2, 0.2)
+    circuit.j(0, 1.1)
+    circuit.j(1, 0.4)
+    _assert_circuit_pattern_equivalence(circuit)
+
+
 def test_mbqc_circuit_init() -> None:
     """Test MBQCCircuit initialization."""
     circuit = MBQCCircuit(num_qubits=3)

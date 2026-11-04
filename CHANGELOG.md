@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Clifft Export**: `clifft_compile(pattern, ...)` emits [Clifft](https://pypi.org/project/clifft/) circuit text for noisy sampling of patterns with non-stabilizer inputs such as `|T>` and Clifford feedforward (cflow). Conditional Cliffords are executed by controlled-Clifford gadgets, and `fixed_controls` fixes a cflow branch so that Clifford feedforward decided by online decoding can be sampled. Install with `graphqomb[clifft]` (Python 3.12 or later).
 - **Noisy Steane T Teleportation Example**: `examples/ftqc/steane_t_injection_noise.py` samples the Steane logical T teleportation with measurement noise in Clifft, decoding the conditional-S control online; the decoded logical error rate scales as p^2.
 
+### Fixed
+
+- **Repeated CZ in Circuit Conversion**: `circuit2graph` now cancels a repeated CZ on unchanged qubit frontiers, since CZ squared is the identity. Previously the second CZ was ignored, so the graph kept an edge that the circuit removes.
+
 ## [0.6.0] - 2026-10-19
 
 ### Changed

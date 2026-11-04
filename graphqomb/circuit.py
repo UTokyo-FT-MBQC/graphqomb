@@ -106,10 +106,13 @@ class _Circuit2GraphContext:
         self.qindex2front_nodes[instruction.qubit] = new_node
 
     def _apply_cz(self, instruction: CZ) -> None:
-        self.graph.add_edge(
-            self.qindex2front_nodes[instruction.qubits[0]],
-            self.qindex2front_nodes[instruction.qubits[1]],
-        )
+        node0 = self.qindex2front_nodes[instruction.qubits[0]]
+        node1 = self.qindex2front_nodes[instruction.qubits[1]]
+        # Repeated CZs on unchanged frontiers cancel because CZ**2 = I.
+        if node1 in self.graph.neighbors(node0):
+            self.graph.remove_edge(node0, node1)
+        else:
+            self.graph.add_edge(node0, node1)
 
         aligned_time = max(self.qindex2timestep[instruction.qubits[0]], self.qindex2timestep[instruction.qubits[1]])
         if self.minimize_qubits:
