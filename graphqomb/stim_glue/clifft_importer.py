@@ -25,34 +25,33 @@ def clifft_text_to_pattern(  # ruff:ignore[too-many-arguments]
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
 ) -> StimImportResult:
-    r"""Import Stim-format Clifford+T text into an MBQC pattern.
+    r"""Import Stim text extended with T and T_DAG into a GraphQOMB pattern.
+
+    Write each T instruction on its own line, including inside REPEAT blocks.
+    Source noise is removed. The other options are those of
+    `stim_circuit_to_pattern`.
 
     Parameters
     ----------
-    text : str
-        The existing Stim-import subset, extended by T and T_DAG. Write each
-        T instruction on its own line, including inside REPEAT blocks.
-        Source noise is removed, just as for the Stim importer.
-    t_mode : {"measurement", "injection"}
-        ``measurement`` represents each T as J(pi/4), J(0), using an
-        XY measurement at -pi/4. ``injection`` replaces that measurement
-        with a ZZ-probe gadget, a scheduled magic resource, and conditional S correction;
-        T_DAG uses the opposite signs. All measurements are then Pauli.
-    coord_dims, schedule_strategy, y_foliation, merge_safe_ticks, schedule_config, schedule_timeout
-        See `stim_circuit_to_pattern`.
+    text : `str`
+        The supported Stim subset extended with T and T_DAG.
+    t_mode : {"measurement", "injection"}, optional
+        ``"measurement"`` lowers T to an XY measurement at -pi/4.
+        ``"injection"`` consumes a scheduled T|+> resource through a ZZ probe
+        and conditional S, so all measurements are Pauli. T_DAG uses the
+        opposite signs. By default ``"measurement"``.
 
     Returns
     -------
-    StimImportResult
-        Pattern and original measurement-record mapping. Pass its
-        ``preparation_gates`` to ``clifft_compile`` to prepare injection resources.
-        These resources and their synthesis rotations are ideal; use explicit
-        noise models when evaluating noisy MBQC execution.
+    `StimImportResult`
+        Imported pattern and record mapping. Pass its ``preparation_gates``
+        to `clifft_compile`.
 
     Raises
     ------
     ValueError
-        For an unknown mode, private transport tags, or unsupported syntax.
+        If t_mode is unknown, or the text uses reserved transport tags or
+        unsupported syntax.
     """
     if t_mode not in {"measurement", "injection"}:
         msg = f"Unknown T lowering mode: {t_mode!r}."
@@ -83,12 +82,12 @@ def clifft_file_to_pattern(  # ruff:ignore[too-many-arguments]
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
 ) -> StimImportResult:
-    """Import a Clifford+T file; see `clifft_text_to_pattern` for options.
+    """Import a Stim file extended with T and T_DAG; see `clifft_text_to_pattern`.
 
     Returns
     -------
-    StimImportResult
-        Pattern, record mapping and any required scheduled magic preparations.
+    `StimImportResult`
+        Imported pattern and record mapping.
     """
     return clifft_text_to_pattern(
         Path(path).read_text(encoding="utf-8"),

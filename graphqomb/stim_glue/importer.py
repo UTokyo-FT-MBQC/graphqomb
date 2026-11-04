@@ -104,9 +104,8 @@ class StimImportResult:
         Absolute source measurement-record index to its graph measurement node.
         Deterministic padding records omitted during idealization have no node.
     preparation_gates : `dict`\[`int`, `str`\]
-        Additional scheduled resource preparations for the Clifford+T injection
-        importer. Pass to ``clifft_compile(preparation_gates=...)``; empty for
-        ordinary Stim import and measurement-based T lowering.
+        Gates preparing scheduled magic resources of injection T lowering, to
+        pass to `clifft_compile`. Empty otherwise.
     """
 
     pattern: Pattern
@@ -376,9 +375,12 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
     `StimImportResult`
         Imported pattern, qubit mapping, and MPP extraction metadata.
 
-    Unsupported instructions, invalid coordinates, or an unsatisfiable
-    schedule_config raise ValueError.
-    """
+    Raises
+    ------
+    ValueError
+        If the circuit uses unsupported instructions or invalid coordinates,
+        or if schedule_config is given and no schedule is found.
+    """  # ruff:ignore[docstring-extraneous-exception]
     return _import_circuit(
         circuit,
         coord_dims=coord_dims,
@@ -868,12 +870,17 @@ def _transpile_tick_block(
     allow_t: bool = False,
 ) -> stim.Circuit:
     if allow_t and any(instruction.tag in T_ANGLES for instruction in block):
+        instructions = list(iter_instructions(block))
         result = stim.Circuit()
         pending = stim.Circuit()
-        for instruction in block:
+        for index, instruction in enumerate(instructions):
             if instruction.tag in T_ANGLES:
+                # Qubits used from this T onward must keep their post-measurement state.
+                used_later = {stim_id for later in instructions[index:] for stim_id in _tracked_qubits(later)}
                 result += _transpile_tick_block(
-                    pending, block_number=block_number, preserved_measurement_qubits=preserved_measurement_qubits
+                    pending,
+                    block_number=block_number,
+                    preserved_measurement_qubits=preserved_measurement_qubits | used_later,
                 )
                 pending = stim.Circuit()
                 result.append(instruction)

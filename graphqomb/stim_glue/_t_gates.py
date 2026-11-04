@@ -21,11 +21,11 @@ T_ANGLES = {"graphqomb.internal.T": math.pi / 4, "graphqomb.internal.T_DAG": -ma
 
 
 def parse_t_circuit(text: str) -> stim.Circuit:
-    """Parse the Stim+T subset using optimizer-protected private transport tags.
+    r"""Parse the Stim+T subset using optimizer-protected private transport tags.
 
     Returns
     -------
-    stim.Circuit
+    ``stim.Circuit``
         Circuit whose tagged identities must be lowered before execution.
 
     Raises
@@ -47,14 +47,14 @@ def parse_t_circuit(text: str) -> stim.Circuit:
 def inject_t_measurements(
     graph: GraphState, xflow: dict[int, set[int]], zflow: dict[int, set[int]]
 ) -> tuple[dict[int, str], dict[int, dict[int, C1Element]]]:
-    """Replace each T-basis measurement with a ZZ-probe injection gadget.
+    r"""Replace each T-basis measurement with a ZZ-probe injection gadget.
 
     Mutate the graph and correction maps before scheduling. The additional
     Z on a probe propagates every incoming X correction through its new CZ.
 
     Returns
     -------
-    tuple
+    `tuple`\[`dict`\[`int`, `str`\], `dict`\[`int`, `dict`\[`int`, `C1Element`\]\]\]
         Scheduled magic-preparation gates and conditional S/S-dagger corrections.
 
     Raises

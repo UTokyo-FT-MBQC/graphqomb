@@ -376,11 +376,10 @@ def clifft_compile(  # ruff:ignore[too-many-arguments]
         such as ``"T"``, ``"T_DAG"``, ``"H"`` or ``"S"`` and parametrized
         ``R_X``, ``R_Y``, ``R_Z`` or ``U3`` (``"R_Z(0.1)"``) are accepted.
         By default None.
-    preparation_gates : collections.abc.Mapping | None, optional
-        Single-qubit gates applied after scheduled internal-node resets,
-        before preparation noise. Use the ``preparation_gates`` returned by
-        the injection importer so magic resources are prepared when needed,
-        rather than all at circuit start. Input nodes use ``input_gates``.
+    preparation_gates : `collections.abc.Mapping` | `None`, optional
+        Gates in the form of ``input_gates``, applied to internal nodes after
+        their reset and before preparation noise, such as the
+        ``preparation_gates`` of `clifft_text_to_pattern`. By default None.
     input_circuit : `str`, optional
         Clifft instructions inserted after all input preparations and before
         the first pattern command, for example an ideal encoder of logical
@@ -410,33 +409,18 @@ def clifft_compile(  # ruff:ignore[too-many-arguments]
     Notes
     -----
     Detector and observable supports are serialized as stored, as in
-    ``stim_compile(pattern, backpropagate=False)``: call
-    ``Feedforward.backpropagate`` before ``qompile`` to compile removable
-    Pauli corrections into them. Every retained correction is executed right
-    before the corrected node's measurement, or at the end for unmeasured
-    outputs. Corrections onto one node follow the measurement order of their
-    sources, and each source applies X, then Z, then its Clifford gate, as in
-    `graphqomb.pauli_frame.CliffordFrame` and the pattern simulator.
+    ``stim_compile(pattern, backpropagate=False)``. Retained corrections run
+    right before the corrected node's measurement, or at the end for
+    unmeasured outputs, in the order of `graphqomb.pauli_frame.CliffordFrame`.
 
-    Clifft feedback controls only CX and CZ. A conditional Clifford therefore
-    copies its control record to an ancilla qubit, numbered after all pattern
-    and input-circuit qubits, and applies a controlled gadget built from
-    Clifford gates and T: three T/T_DAG gates for controlled-S and two for
-    controlled-H. Input gates, the input circuit, and correction gadgets are
-    noiseless; noise models are not invoked for them.
+    Clifft feedback controls only CX and CZ, so a conditional Clifford copies
+    its record to an ancilla, numbered after all other qubits, and applies a
+    controlled gadget of Clifford gates and T. Input gates, the input
+    circuit, and these gadgets are noiseless.
 
-    Fault-tolerant execution decides a conditional Clifford from a value
-    decoded online from the records measured so far, not from the raw record
-    of its source: a wrong Clifford cannot be repaired by offline Pauli
-    decoding. To sample this, compile one circuit for each value ``c`` of the
-    source with ``fixed_controls={source: c}``, sample the same number of
-    shots from each, decode the value from the records preceding the
-    correction, and keep the shots whose decoded value equals ``c``. The
-    circuits agree before the correction, so a branch keeps the fraction of
-    shots that the decoder sends into it, and the kept shots of all branches
-    together follow the online-decoded execution. With fixed values, a
-    pattern whose only non-Clifford parts are input gates or the input
-    circuit compiles to Clifford instructions only.
+    To sample Clifford feedforward decided by online decoding, compile one
+    circuit per value ``c`` of the source with ``fixed_controls={source: c}``
+    and keep the shots whose decoded value equals ``c``.
 
     Examples
     --------

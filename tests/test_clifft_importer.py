@@ -82,6 +82,18 @@ OBSERVABLE_INCLUDE(0) rec[-3] rec[-2] rec[-1]
     np.testing.assert_array_equal(np.asarray(sample.observables)[:, 0], np.logical_xor.reduce(records, axis=1))
 
 
+@pytest.mark.parametrize("mode", ["measurement", "injection"])
+def test_measurement_before_t_in_same_block_keeps_its_state(mode: Literal["measurement", "injection"]) -> None:
+    clifft = pytest.importorskip("clifft")
+    imported = clifft_text_to_pattern("R 0\nT 0\nH 0\nM 0\nT 0\nM 0", t_mode=mode)
+    output = clifft_compile(imported.pattern, preparation_gates=imported.preparation_gates)
+    sample = clifft.sample(clifft.compile(output), shots=256, seed=4)
+    measured = [c.node for c in imported.pattern if isinstance(c, M)]
+    first, second = (measured.index(imported.record_to_node[index]) for index in range(2))
+    records = np.asarray(sample.measurements, dtype=bool)
+    np.testing.assert_array_equal(records[:, first], records[:, second])
+
+
 def test_injection_has_pauli_measurements_and_scheduled_magic_resources() -> None:
     imported = clifft_text_to_pattern("RX 0\nT 0\nH 0\nT_DAG 0\nMX 0", t_mode="injection")
     pattern = imported.pattern
