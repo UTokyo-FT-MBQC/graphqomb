@@ -36,30 +36,43 @@ Use ``ir.make_scheduler()`` to construct an unsolved scheduler. Inspect
 ``ir.graph.coordinates`` and ``ir.record_to_node`` when choosing operation
 times, then call ``manual_schedule`` or ``solve_schedule``. Lower with
 ``ir.to_pattern(scheduler)`` to obtain a ``StimImportResult``. Lowering delegates
-schedule validation to ``qompile`` and shares the IR's source mappings.
+schedule validation to ``qompile`` and also checks graph identity and injection
+measurement order. Each result has independent source-mapping dictionaries;
+the resource graph and flow maps are not copied by the import helpers.
 The existing ``*_to_pattern`` entry points perform these steps using the
 requested configuration or the default greedy ``MINIMIZE_TIME`` strategy.
 
 .. code-block:: python
 
+   from graphlib import TopologicalSorter
+
+   from graphqomb.feedforward import inverse_dag_from_dag
    from graphqomb.stim_glue import stim_text_to_ir
 
    ir = stim_text_to_ir("RX 0\nTICK\nMPP X0\nTICK\nMX 0")
    scheduler = ir.make_scheduler()
-   # Prepare at 0, entangle at 1, then measure each node separately.
+   # Prepare at 0, entangle serially, then follow measurement dependencies.
+   edge_times = {edge: t for t, edge in enumerate(ir.graph.edges, start=1)}
+   order = TopologicalSorter(inverse_dag_from_dag(scheduler.dag)).static_order()
    scheduler.manual_schedule(
        dict.fromkeys(scheduler.prepare_time, 0),
-       {node: time for time, node in enumerate(scheduler.measure_time, start=2)},
-       dict.fromkeys(scheduler.entangle_time, 1),
+       {
+           node: t
+           for t, node in enumerate(order, start=len(edge_times) + 1)
+           if node in scheduler.measure_time
+       },
+       edge_times,
    )
    result = ir.to_pattern(scheduler)
 
 For offline Pauli backpropagation, first compute
 ``ff = ir.feedforward.backpropagate(ir.graph)``, then pass ``feedforward=ff``
-to both ``ir.make_scheduler`` and ``ir.to_pattern``. This uses the transformed
-maps and their matching detector and observable supports throughout scheduling
-and lowering. Export with ``stim_compile(result.pattern, backpropagate=False)``
-to serialize those supports.
+to ``ir.make_scheduler``. The scheduler retains that feedforward, so
+``ir.to_pattern(scheduler)`` automatically uses the transformed maps and their
+matching detector and observable supports. For an externally constructed
+``Scheduler``, pass ``feedforward=ff`` to ``to_pattern`` explicitly.
+Export with ``stim_compile(result.pattern, backpropagate=False)`` to serialize
+those supports.
 
 Graph construction
 ------------------

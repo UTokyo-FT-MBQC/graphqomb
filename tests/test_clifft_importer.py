@@ -176,15 +176,16 @@ def test_injection_ir_scheduler_keeps_probe_before_magic(backpropagate: bool) ->
     feedforward = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
     scheduler = ir.make_scheduler(feedforward=feedforward)
 
-    assert len(ir.measurement_order) == 2
-    assert dict(ir.measurement_order) == {
-        next(iter(ir.graph.neighbors(magic))): magic for magic in ir.preparation_gates
-    }
+    # The two gadgets control T on node 0 and T_DAG on node 3, respectively.
+    assert ir.preparation_gates == {6: "T", 8: "T_DAG"}
+    assert ir.feedforward.cflow.keys() == {7, 9}
+    assert ir.measurement_order == ((7, 6), (9, 8))
     assert all(time is None for time in scheduler.measure_time.values())
     for probe, magic in ir.measurement_order:
         assert magic in scheduler.dag[probe]
     assert scheduler.solve_schedule()
-    result = ir.to_pattern(scheduler, feedforward=feedforward)
+    result = ir.to_pattern(scheduler)
+    assert result.pattern.frame.parity_check_group == feedforward.parity_check_group
     measured = [c.node for c in result.pattern if isinstance(c, M)]
     for probe, magic in ir.measurement_order:
         assert measured.index(probe) < measured.index(magic)
@@ -212,3 +213,44 @@ def test_clifft_ir_file_entry_point(tmp_path: Path) -> None:
     assert set(ir.record_to_node) == {0}
     assert list(ir.preparation_gates.values()) == ["T"]
     assert len(ir.measurement_order) == 1
+
+
+@pytest.mark.parametrize("backpropagate", [False, True])
+def test_injection_ir_rejects_reversed_manual_probe_magic_order(backpropagate: bool) -> None:
+    ir = clifft_text_to_ir("RX 0\nT 0\nMX 0", t_mode="injection")
+    ff = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
+    scheduler = ir.make_scheduler(feedforward=ff)
+    probe, magic = ir.measurement_order[0]
+    # Isolate the extra injection constraint: solve only the correction-flow DAG,
+    # then put the otherwise commuting magic readout strictly before the probe.
+    scheduler.dag[probe].remove(magic)
+    assert scheduler.solve_schedule()
+    measure_times = {node: time + 2 for node, time in scheduler.measure_time.items() if time is not None}
+    measure_times[magic] = 1
+    scheduler.manual_schedule(dict.fromkeys(scheduler.prepare_time, 0), measure_times, dict.fromkeys(ir.graph.edges, 0))
+    # qompile accepts these times against the correction flows alone.
+    qompile(ir.graph, ff, scheduler=scheduler)
+
+    with pytest.raises(ValueError, match="Injection measurement order"):
+        ir.to_pattern(scheduler)
+
+
+def test_lowered_import_results_have_independent_source_mappings() -> None:
+    ir = clifft_text_to_ir("RX 0\nT 0\nMX 0", t_mode="injection")
+    scheduler = ir.make_scheduler()
+    assert scheduler.solve_schedule()
+    first = ir.to_pattern(scheduler)
+    second = ir.to_pattern(scheduler)
+
+    for original, left, right in (
+        (ir.stim_to_qubit, first.stim_to_qubit, second.stim_to_qubit),
+        (ir.qubit_to_stim, first.qubit_to_stim, second.qubit_to_stim),
+        (ir.wire_to_stim, first.wire_to_stim, second.wire_to_stim),
+        (ir.stim_to_final_qubit, first.stim_to_final_qubit, second.stim_to_final_qubit),
+        (ir.record_to_node, first.record_to_node, second.record_to_node),
+        (ir.preparation_gates, first.preparation_gates, second.preparation_gates),
+    ):
+        assert left == original
+        left.clear()
+        assert right == original
+        assert right

@@ -12,7 +12,7 @@ import stim
 
 from graphqomb import clifford_algebra as ca
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Plane, PlannerMeasBasis, Sign
-from graphqomb.feedforward import Feedforward
+from graphqomb.feedforward import Feedforward, _feedforward_from_owned
 from graphqomb.graphstate import GraphState
 from graphqomb.pauli_frame import CliffordFrame, PauliFrame
 from graphqomb.ptn_format import dumps, loads
@@ -27,6 +27,35 @@ if TYPE_CHECKING:
 
     from graphqomb.common import MeasBasis
     from graphqomb.pattern import Pattern
+
+
+def test_owned_feedforward_transfers_containers_without_changing_public_copying() -> None:
+    xflow = {0: {1}}
+    zflow = {0: {2}}
+    groups = [{0, 1}]
+    tags = ["type=flag"]
+    observables = {0: {2}}
+    owned = _feedforward_from_owned(
+        xflow, zflow, {}, parity_check_group=groups, parity_check_tags=tags, logical_observables=observables
+    )
+    copied = Feedforward(
+        xflow, zflow, parity_check_group=groups, parity_check_tags=tags, logical_observables=observables
+    )
+
+    assert owned.xflow is xflow
+    assert owned.zflow is zflow
+    assert owned.parity_check_group is groups
+    assert owned.parity_check_tags is tags
+    assert owned.logical_observables is observables
+    xflow[0].clear()
+    groups[0].clear()
+    assert copied.xflow == {0: {1}}
+    assert copied.parity_check_group == [{0, 1}]
+
+
+def test_owned_feedforward_rejects_misaligned_tags() -> None:
+    with pytest.raises(ValueError, match="one tag per parity check group"):
+        _feedforward_from_owned({}, {}, {}, parity_check_group=[{0}], parity_check_tags=[], logical_observables={})
 
 
 def _graph(*axes: Axis | None) -> GraphState:

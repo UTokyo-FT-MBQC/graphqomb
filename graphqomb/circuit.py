@@ -50,13 +50,7 @@ class _Circuit2GraphContext:
 
     def __init__(self, graph: GraphState, strategy: CircuitScheduleStrategy | None) -> None:
         self.schedule = strategy is not None
-        if strategy is None or strategy == CircuitScheduleStrategy.PARALLEL:
-            self.minimize_qubits = False
-        elif strategy == CircuitScheduleStrategy.MINIMIZE_SPACE:
-            self.minimize_qubits = True
-        else:
-            msg = f"Invalid schedule strategy: {strategy}"
-            raise ValueError(msg)
+        self.minimize_qubits = strategy == CircuitScheduleStrategy.MINIMIZE_SPACE
 
         self.graph = graph
         self.gflow = {}
@@ -351,10 +345,24 @@ def circuit2graph(
         The scheduler is configured with automatic time scheduling derived from circuit structure.
 
     """
+    _validate_schedule_strategy(schedule_strategy)
     context = _circuit2graph_context(circuit, schedule_strategy)
     scheduler = Scheduler(context.graph, context.gflow)
     scheduler.manual_schedule(context.prepare_time, context.measure_time)
     return context.graph, context.gflow, scheduler
+
+
+def _validate_schedule_strategy(strategy: CircuitScheduleStrategy) -> None:
+    """Validate the scheduling option retained by circuit and pattern entry points.
+
+    Raises
+    ------
+    ValueError
+        If the strategy is not a supported circuit scheduling strategy.
+    """
+    if strategy not in {CircuitScheduleStrategy.PARALLEL, CircuitScheduleStrategy.MINIMIZE_SPACE}:
+        msg = f"Invalid schedule strategy: {strategy}"
+        raise ValueError(msg)
 
 
 def _circuit2graph_context(

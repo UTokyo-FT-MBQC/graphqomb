@@ -82,6 +82,14 @@ def test_repeated_cz_on_unchanged_frontiers_uses_edge_parity(repetitions: int) -
     _assert_circuit_pattern_equivalence(circuit)
 
 
+@pytest.mark.parametrize("strategy", [None, "invalid"])
+def test_circuit2graph_rejects_invalid_schedule_strategy(strategy: CircuitScheduleStrategy) -> None:
+    circuit = MBQCCircuit(1)
+    circuit.j(0, 0)
+    with pytest.raises(ValueError, match="Invalid schedule strategy"):
+        circuit2graph(circuit, strategy)
+
+
 def test_mbqc_circuit_init() -> None:
     """Test MBQCCircuit initialization."""
     circuit = MBQCCircuit(num_qubits=3)
