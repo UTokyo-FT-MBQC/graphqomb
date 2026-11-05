@@ -22,7 +22,7 @@ import stim
 
 from graphqomb.circuit import Circuit, CircuitScheduleStrategy, _circuit2graph_context, _validate_schedule_strategy
 from graphqomb.common import Axis, AxisMeasBasis, Initialization, Sign
-from graphqomb.feedforward import Feedforward, _feedforward_from_owned
+from graphqomb.feedforward import Feedforward
 from graphqomb.gates import CZ, J
 from graphqomb.graphstate import GraphState, compose_into, odd_neighbors
 from graphqomb.qeccode import StabilizerGraphStateBuildResult, YFoliation, build_graph_state
@@ -121,21 +121,14 @@ class StimImportResult:
     preparation_gates: dict[int, str] = field(default_factory=dict)
 
 
-class _StimImportScheduler(Scheduler):
-    """Retain the feedforward used to construct an imported graph's schedule."""
-
-    def __init__(self, graph: GraphState, feedforward: Feedforward) -> None:
-        super().__init__(graph, feedforward.xflow, feedforward.zflow, cflow=feedforward.cflow)
-        self.feedforward = feedforward
-
-
 @dataclass(frozen=True)
 class StimImportIR:
     r"""Imported resource graph and feedforward before scheduling or lowering.
 
     The dataclass is frozen, but its graph, feedforward, and mappings remain
-    mutable. Import transfers ownership of the constructed graph and maps
-    without copying them. Mapping meanings are those of `StimImportResult`.
+    mutable. Use ``dataclasses.replace(ir, feedforward=...)`` to apply transformed
+    feedforward before scheduling and lowering. Mapping meanings are those of
+    `StimImportResult`.
 
     Attributes
     ----------
@@ -172,28 +165,21 @@ class StimImportIR:
     preparation_gates: dict[int, str]
     measurement_order: tuple[tuple[int, int], ...]
 
-    def make_scheduler(self, *, feedforward: Feedforward | None = None) -> Scheduler:
+    def make_scheduler(self) -> Scheduler:
         """Construct an unsolved scheduler including injection measurement order.
-
-        Parameters
-        ----------
-        feedforward : `Feedforward` | `None`, optional
-            Corrections for this graph, such as ``ir.feedforward.backpropagate(ir.graph)``.
-            Defaults to the imported feedforward. The returned scheduler retains
-            this object so `to_pattern` uses it automatically.
 
         Returns
         -------
         `Scheduler`
             Scheduler ready for ``manual_schedule`` or ``solve_schedule``.
         """
-        ff = self.feedforward if feedforward is None else feedforward
-        scheduler = _StimImportScheduler(self.graph, ff)
+        ff = self.feedforward
+        scheduler = Scheduler(self.graph, ff.xflow, ff.zflow, cflow=ff.cflow)
         for earlier, later in self.measurement_order:
             scheduler.dag.setdefault(earlier, set()).add(later)
         return scheduler
 
-    def to_pattern(self, scheduler: Scheduler, *, feedforward: Feedforward | None = None) -> StimImportResult:
+    def to_pattern(self, scheduler: Scheduler) -> StimImportResult:
         """Lower a scheduled IR, retaining its source mappings and preparation gates.
 
         Parameters
@@ -202,9 +188,6 @@ class StimImportIR:
             Scheduler for this graph with a manual or solved schedule. Schedule
             validation is performed by `qompile`; injection measurement order
             is also checked before lowering.
-        feedforward : `Feedforward` | `None`, optional
-            Explicit feedforward override. By default, use the feedforward retained
-            by `make_scheduler`, or the imported one for an external scheduler.
 
         Returns
         -------
@@ -220,16 +203,13 @@ class StimImportIR:
         if scheduler.graph is not self.graph:
             msg = "The scheduler must belong to this IR's graph."
             raise ValueError(msg)
-        if feedforward is None and isinstance(scheduler, _StimImportScheduler):
-            feedforward = scheduler.feedforward
-        ff = self.feedforward if feedforward is None else feedforward
         for earlier, later in self.measurement_order:
             earlier_time = scheduler.measure_time.get(earlier)
             later_time = scheduler.measure_time.get(later)
             if earlier_time is not None and later_time is not None and earlier_time >= later_time:
                 msg = f"Injection measurement order requires probe {earlier} before magic readout {later}."
                 raise ValueError(msg)
-        return _wrap_pattern(self, qompile(self.graph, ff, scheduler=scheduler))
+        return _wrap_pattern(self, qompile(self.graph, self.feedforward, scheduler=scheduler))
 
 
 def _wrap_pattern(ir: StimImportIR, pattern: Pattern) -> StimImportResult:
@@ -681,7 +661,7 @@ def _import_circuit_ir(  # ruff:ignore[too-many-locals]
     preparation_gates, cflow = (
         inject_t_measurements(fragment.graph, xflow, zflow) if t_mode == "injection" else ({}, {})
     )
-    feedforward = _feedforward_from_owned(
+    feedforward = Feedforward(
         xflow,
         zflow,
         cflow,
@@ -1763,7 +1743,7 @@ def _unitary_fragment(  # ruff:ignore[too-many-arguments]
     for instruction in block:
         _append_unitary_instruction(circuit, instruction, stim_to_local, allow_t=context.allow_t)
 
-    local = _circuit2graph_context(circuit, schedule_strategy=None)
+    local = _circuit2graph_context(circuit, CircuitScheduleStrategy.PARALLEL)
     graph, node_map = _copy_graph_with_qindices(local.graph, local_to_global)
     xflow = _remap_flow(local.gflow, node_map)
     z_span = _apply_unitary_coordinates(

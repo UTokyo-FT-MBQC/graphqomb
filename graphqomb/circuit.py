@@ -48,8 +48,8 @@ class _Circuit2GraphContext:
     minimize_qubits: bool
     current_time: int
 
-    def __init__(self, graph: GraphState, strategy: CircuitScheduleStrategy | None) -> None:
-        self.schedule = strategy is not None
+    def __init__(self, graph: GraphState, strategy: CircuitScheduleStrategy) -> None:
+        _validate_schedule_strategy(strategy)
         self.minimize_qubits = strategy == CircuitScheduleStrategy.MINIMIZE_SPACE
 
         self.graph = graph
@@ -88,15 +88,14 @@ class _Circuit2GraphContext:
             PlannerMeasBasis(Plane.XY, -instruction.angle),
         )
 
-        if self.schedule:
-            timestep = self.qindex2timestep[instruction.qubit]
-            if self.minimize_qubits:
-                timestep = max(self.current_time, timestep)
-            self.prepare_time[new_node] = timestep
-            self.measure_time[self.qindex2front_nodes[instruction.qubit]] = timestep + 1
-            self.qindex2timestep[instruction.qubit] = timestep + 1
-            if self.minimize_qubits:
-                self.current_time = timestep + 1
+        timestep = self.qindex2timestep[instruction.qubit]
+        if self.minimize_qubits:
+            timestep = max(self.current_time, timestep)
+        self.prepare_time[new_node] = timestep
+        self.measure_time[self.qindex2front_nodes[instruction.qubit]] = timestep + 1
+        self.qindex2timestep[instruction.qubit] = timestep + 1
+        if self.minimize_qubits:
+            self.current_time = timestep + 1
 
         self.gflow[self.qindex2front_nodes[instruction.qubit]] = {new_node}
         self.qindex2front_nodes[instruction.qubit] = new_node
@@ -110,13 +109,12 @@ class _Circuit2GraphContext:
         else:
             self.graph.add_edge(node0, node1)
 
-        if self.schedule:
-            aligned_time = max(self.qindex2timestep[instruction.qubits[0]], self.qindex2timestep[instruction.qubits[1]])
-            if self.minimize_qubits:
-                aligned_time = max(self.current_time, aligned_time)
-                self.current_time = aligned_time
-            self.qindex2timestep[instruction.qubits[0]] = aligned_time
-            self.qindex2timestep[instruction.qubits[1]] = aligned_time
+        aligned_time = max(self.qindex2timestep[instruction.qubits[0]], self.qindex2timestep[instruction.qubits[1]])
+        if self.minimize_qubits:
+            aligned_time = max(self.current_time, aligned_time)
+            self.current_time = aligned_time
+        self.qindex2timestep[instruction.qubits[0]] = aligned_time
+        self.qindex2timestep[instruction.qubits[1]] = aligned_time
 
     def _apply_phase_gadget(self, instruction: PhaseGadget) -> None:
         new_node = self.graph.add_node()
@@ -126,15 +124,14 @@ class _Circuit2GraphContext:
 
         self.gflow[new_node] = {new_node}
 
-        if self.schedule:
-            max_timestep = max(self.qindex2timestep[qubit] for qubit in instruction.qubits)
-            if self.minimize_qubits:
-                max_timestep = max(self.current_time, max_timestep)
-                self.current_time = max_timestep + 1
-            self.prepare_time[new_node] = max_timestep
-            self.measure_time[new_node] = max_timestep + 1
-            for qubit in instruction.qubits:
-                self.qindex2timestep[qubit] = max_timestep + 1
+        max_timestep = max(self.qindex2timestep[qubit] for qubit in instruction.qubits)
+        if self.minimize_qubits:
+            max_timestep = max(self.current_time, max_timestep)
+            self.current_time = max_timestep + 1
+        self.prepare_time[new_node] = max_timestep
+        self.measure_time[new_node] = max_timestep + 1
+        for qubit in instruction.qubits:
+            self.qindex2timestep[qubit] = max_timestep + 1
 
 
 class BaseCircuit(ABC):
@@ -345,7 +342,6 @@ def circuit2graph(
         The scheduler is configured with automatic time scheduling derived from circuit structure.
 
     """
-    _validate_schedule_strategy(schedule_strategy)
     context = _circuit2graph_context(circuit, schedule_strategy)
     scheduler = Scheduler(context.graph, context.gflow)
     scheduler.manual_schedule(context.prepare_time, context.measure_time)
@@ -365,15 +361,13 @@ def _validate_schedule_strategy(strategy: CircuitScheduleStrategy) -> None:
         raise ValueError(msg)
 
 
-def _circuit2graph_context(
-    circuit: BaseCircuit, schedule_strategy: CircuitScheduleStrategy | None
-) -> _Circuit2GraphContext:
-    """Build graph and flow, omitting timing calculations when the strategy is None.
+def _circuit2graph_context(circuit: BaseCircuit, schedule_strategy: CircuitScheduleStrategy) -> _Circuit2GraphContext:
+    """Build graph, flow, and circuit-derived timings without constructing a scheduler.
 
     Returns
     -------
     `_Circuit2GraphContext`
-        Graph and flow, with circuit timings only when a strategy is supplied.
+        Graph, flow, and circuit-derived timings.
     """
     graph = GraphState()
     context = _Circuit2GraphContext(graph, schedule_strategy)
@@ -383,8 +377,7 @@ def _circuit2graph_context(
         node = graph.add_node()
         graph.register_input(node, i)
         context.qindex2front_nodes[i] = node
-        if context.schedule:
-            context.qindex2timestep[i] = 0
+        context.qindex2timestep[i] = 0
 
     for instruction in circuit.unit_instructions():
         context.apply_instruction(instruction)

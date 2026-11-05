@@ -51,10 +51,9 @@ at circuit start; this ordering does not change the ideal instrument.
 For explicit scheduling, ``clifft_text_to_ir`` and ``clifft_file_to_ir``
 return the same ``StimImportIR`` as :doc:`importer`. Its ``measurement_order``
 stores the additional probe-before-magic dependencies. ``ir.make_scheduler()``
-adds them to the scheduler DAG, including when a transformed feedforward is
-supplied with ``ir.make_scheduler(feedforward=ff)``. The scheduler retains
-that object, so ``ir.to_pattern(scheduler)`` uses the same transformed maps
-and parity supports automatically. Set or solve the schedule before lowering;
+adds them to the scheduler DAG. Use ``dataclasses.replace(ir, feedforward=...)``
+to apply transformed feedforward before scheduling and lowering.
+Set or solve the schedule before lowering;
 probe-before-magic order is checked even for manual schedules. Pass the
 resulting preparation gates to ``clifft_compile`` as above.
 For a T-basis measurement, ``MeasureEvent.axis`` denotes the physical X

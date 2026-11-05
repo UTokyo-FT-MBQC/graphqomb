@@ -41,7 +41,6 @@ class Feedforward:
     effect. ``backpropagate`` returns new maps and parities together; its
     result can be passed directly to ``qompile(graph, feedforward)``.
     Construction and transformation copy caller-owned maps and supports.
-    Internal builders may transfer owned maps through ``_feedforward_from_owned``.
 
     Parameters
     ----------
@@ -166,41 +165,6 @@ class Feedforward:
             logical_observables=dict(zip(self.logical_observables, supports[num_detectors:], strict=True)),
             parity_check_tags=self.parity_check_tags,
         )
-
-
-def _feedforward_from_owned(  # ruff:ignore[too-many-arguments]
-    xflow: dict[int, set[int]],
-    zflow: dict[int, set[int]],
-    cflow: dict[int, dict[int, C1Element]],
-    *,
-    parity_check_group: list[set[int]],
-    logical_observables: dict[int, set[int]],
-    parity_check_tags: list[str],
-) -> Feedforward:
-    """Take ownership of builder-created maps and supports without copying.
-
-    Callers relinquish these containers to the returned IR. Public
-    construction continues to copy caller-owned data.
-
-    Returns
-    -------
-    `Feedforward`
-        Feedforward owning the supplied containers, with aligned detector tags.
-
-    Raises
-    ------
-    ValueError
-        If detector supports and tags have different lengths.
-    """
-    if len(parity_check_tags) != len(parity_check_group):
-        msg = "parity_check_tags must have one tag per parity check group."
-        raise ValueError(msg)
-    result = Feedforward.__new__(Feedforward)
-    result.xflow, result.zflow, result.cflow = xflow, zflow, cflow
-    result.parity_check_group = parity_check_group
-    result.logical_observables = logical_observables
-    result.parity_check_tags = parity_check_tags
-    return result
 
 
 def _expand_parity_supports(

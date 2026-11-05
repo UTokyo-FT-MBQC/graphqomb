@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -174,7 +175,8 @@ def test_injection_ir_scheduler_keeps_probe_before_magic(backpropagate: bool) ->
     with patch.object(Scheduler, "__init__", side_effect=AssertionError("IR import must not construct a Scheduler")):
         ir = clifft_text_to_ir("RX 0\nT 0\nH 0\nT_DAG 0\nMX 0", t_mode="injection")
     feedforward = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
-    scheduler = ir.make_scheduler(feedforward=feedforward)
+    ir = replace(ir, feedforward=feedforward)
+    scheduler = ir.make_scheduler()
 
     # The two gadgets control T on node 0 and T_DAG on node 3, respectively.
     assert ir.preparation_gates == {6: "T", 8: "T_DAG"}
@@ -219,7 +221,8 @@ def test_clifft_ir_file_entry_point(tmp_path: Path) -> None:
 def test_injection_ir_rejects_reversed_manual_probe_magic_order(backpropagate: bool) -> None:
     ir = clifft_text_to_ir("RX 0\nT 0\nMX 0", t_mode="injection")
     ff = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
-    scheduler = ir.make_scheduler(feedforward=ff)
+    ir = replace(ir, feedforward=ff)
+    scheduler = ir.make_scheduler()
     probe, magic = ir.measurement_order[0]
     # Isolate the extra injection constraint: solve only the correction-flow DAG,
     # then put the otherwise commuting magic readout strictly before the probe.
