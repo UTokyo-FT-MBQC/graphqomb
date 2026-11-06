@@ -2217,11 +2217,7 @@ def test_stim_ir_manual_schedule_preserves_check_and_logical_parities(backpropag
     if backpropagate:
         assert feedforward.xflow != ir.feedforward.xflow
     ir = replace(ir, feedforward=feedforward)
-    scheduler = (
-        ir.make_scheduler()
-        if backpropagate
-        else Scheduler(ir.graph, feedforward.xflow, feedforward.zflow, cflow=feedforward.cflow)
-    )
+    scheduler = ir.make_scheduler()
     assert scheduler.graph is ir.graph
     # Prepare everything first, entangle serially, then measure in dependency order.
     edge_times = {edge: time for time, edge in enumerate(ir.graph.edges, start=1)}

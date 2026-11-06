@@ -149,7 +149,7 @@ class StimImportIR:
     preparation_gates : `dict`\[`int`, `str`\]
         Scheduled magic-resource gates to pass to `clifft_compile`.
     measurement_order : `tuple`\[`tuple`\[`int`, `int`\], ...\]
-        Probe-before-magic preferences added by `make_scheduler` to limit magic resources.
+        Probe-before-magic dependencies added by `make_scheduler` to limit magic resources.
     """
 
     graph: GraphState
