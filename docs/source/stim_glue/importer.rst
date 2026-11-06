@@ -28,15 +28,12 @@ Import before scheduling
 solving any scheduler. It contains the resource graph, a
 :class:`~graphqomb.feedforward.Feedforward` with corrections and parity
 annotations, and the same source mappings as ``StimImportResult``.
-The graph, feedforward, and mapping contents remain mutable; freezing prevents
-reassignment of the dataclass fields.
 
 Use ``ir.make_scheduler()`` to construct an unsolved scheduler. Inspect
 ``ir.graph.coordinates`` and ``ir.record_to_node`` when choosing operation
 times, then call ``manual_schedule`` or ``solve_schedule``. Lower with
 ``ir.to_pattern(scheduler)`` to obtain a ``StimImportResult``. Lowering delegates
-schedule validation to ``qompile`` and also checks graph identity and injection
-measurement order. Each result has independent source-mapping dictionaries.
+schedule validation to ``qompile`` and checks that the scheduler uses the IR's graph.
 The existing ``*_to_pattern`` entry points perform these steps using the
 requested configuration or the default greedy ``MINIMIZE_TIME`` strategy.
 

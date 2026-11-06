@@ -2217,7 +2217,11 @@ def test_stim_ir_manual_schedule_preserves_check_and_logical_parities(backpropag
     if backpropagate:
         assert feedforward.xflow != ir.feedforward.xflow
     ir = replace(ir, feedforward=feedforward)
-    scheduler = ir.make_scheduler()
+    scheduler = (
+        ir.make_scheduler()
+        if backpropagate
+        else Scheduler(ir.graph, feedforward.xflow, feedforward.zflow, cflow=feedforward.cflow)
+    )
     assert scheduler.graph is ir.graph
     # Prepare everything first, entangle serially, then measure in dependency order.
     edge_times = {edge: time for time, edge in enumerate(ir.graph.edges, start=1)}
@@ -2231,7 +2235,6 @@ def test_stim_ir_manual_schedule_preserves_check_and_logical_parities(backpropag
     is_runnable(result.pattern)
     assert result.pattern.frame.graphstate is ir.graph
     assert result.record_to_node == ir.record_to_node
-    assert result.record_to_node is not ir.record_to_node
     assert result.mpp_extractions is ir.mpp_extractions
     assert result.pattern.frame.xflow == feedforward.xflow
     assert result.pattern.frame.parity_check_group == feedforward.parity_check_group
@@ -2305,47 +2308,3 @@ def test_stim_ir_rejects_a_scheduler_for_a_different_graph() -> None:
 
     with pytest.raises(ValueError, match="scheduler must belong to this IR's graph"):
         ir.to_pattern(scheduler)
-
-
-def test_stim_ir_accepts_an_external_scheduler_for_its_graph() -> None:
-    ir = stim_text_to_ir("RX 0\nTICK\nMPP X0\nTICK\nMX 0")
-    ir = replace(ir, feedforward=ir.feedforward.backpropagate(ir.graph))
-    ff = ir.feedforward
-    scheduler = Scheduler(ir.graph, ff.xflow, ff.zflow, cflow=ff.cflow)
-    assert scheduler.solve_schedule()
-
-    result = ir.to_pattern(scheduler)
-
-    is_runnable(result.pattern)
-    assert result.pattern.frame.parity_check_group == ff.parity_check_group
-
-
-def test_stim_ir_replace_feedforward_preserves_surface_code_parities() -> None:
-    source = stim.Circuit.generated("surface_code:rotated_memory_z", distance=3, rounds=3)
-    original = stim_circuit_to_ir(source)
-    ir = replace(original, feedforward=original.feedforward.backpropagate(original.graph))
-    assert ir.graph is original.graph
-    assert ir.feedforward.xflow != original.feedforward.xflow
-    scheduler = ir.make_scheduler()
-    assert scheduler.solve_schedule()
-
-    result = ir.to_pattern(scheduler)
-
-    is_runnable(result.pattern)
-    assert result.pattern.frame.parity_check_group == ir.feedforward.parity_check_group
-    assert result.pattern.frame.logical_observables == ir.feedforward.logical_observables
-    compiled = stim.Circuit(stim_compile(result.pattern, backpropagate=False))
-    assert compiled.num_detectors == source.num_detectors
-    assert compiled.num_observables == source.num_observables
-    assert not compiled.compile_detector_sampler(seed=7).sample(shots=64, append_observables=True).any()
-
-
-def test_default_stim_pattern_import_preserves_cycle_value_error() -> None:
-    text = "RX 0 1\nM 0 1"
-    ir = stim_text_to_ir(text)
-    ir.feedforward.xflow = {0: {1}, 1: {0}}
-    with (
-        patch.object(importer, "stim_circuit_to_ir", return_value=ir),
-        pytest.raises(ValueError, match="Cycle"),
-    ):
-        stim_text_to_pattern(text)

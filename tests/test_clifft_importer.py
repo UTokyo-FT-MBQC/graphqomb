@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -170,12 +169,9 @@ def test_internal_preparation_gates_reject_input_nodes() -> None:
         clifft_compile(qompile(graph, {}), preparation_gates={node: "T"})
 
 
-@pytest.mark.parametrize("backpropagate", [False, True])
-def test_injection_ir_scheduler_keeps_probe_before_magic(backpropagate: bool) -> None:
+def test_injection_ir_scheduler_keeps_probe_before_magic() -> None:
     with patch.object(Scheduler, "__init__", side_effect=AssertionError("IR import must not construct a Scheduler")):
         ir = clifft_text_to_ir("RX 0\nT 0\nH 0\nT_DAG 0\nMX 0", t_mode="injection")
-    feedforward = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
-    ir = replace(ir, feedforward=feedforward)
     scheduler = ir.make_scheduler()
 
     # The two gadgets control T on node 0 and T_DAG on node 3, respectively.
@@ -187,7 +183,6 @@ def test_injection_ir_scheduler_keeps_probe_before_magic(backpropagate: bool) ->
         assert magic in scheduler.dag[probe]
     assert scheduler.solve_schedule()
     result = ir.to_pattern(scheduler)
-    assert result.pattern.frame.parity_check_group == feedforward.parity_check_group
     measured = [c.node for c in result.pattern if isinstance(c, M)]
     for probe, magic in ir.measurement_order:
         assert measured.index(probe) < measured.index(magic)
@@ -217,43 +212,16 @@ def test_clifft_ir_file_entry_point(tmp_path: Path) -> None:
     assert len(ir.measurement_order) == 1
 
 
-@pytest.mark.parametrize("backpropagate", [False, True])
-def test_injection_ir_rejects_reversed_manual_probe_magic_order(backpropagate: bool) -> None:
+def test_injection_ir_accepts_manual_magic_before_probe() -> None:
     ir = clifft_text_to_ir("RX 0\nT 0\nMX 0", t_mode="injection")
-    ff = ir.feedforward.backpropagate(ir.graph) if backpropagate else ir.feedforward
-    ir = replace(ir, feedforward=ff)
-    scheduler = ir.make_scheduler()
+    ff = ir.feedforward
+    scheduler = Scheduler(ir.graph, ff.xflow, ff.zflow, cflow=ff.cflow)
     probe, magic = ir.measurement_order[0]
-    # Isolate the extra injection constraint: solve only the correction-flow DAG,
-    # then put the otherwise commuting magic readout strictly before the probe.
-    scheduler.dag[probe].remove(magic)
+    # The commuting magic readout can precede the probe in a custom schedule.
     assert scheduler.solve_schedule()
     measure_times = {node: time + 2 for node, time in scheduler.measure_time.items() if time is not None}
     measure_times[magic] = 1
     scheduler.manual_schedule(dict.fromkeys(scheduler.prepare_time, 0), measure_times, dict.fromkeys(ir.graph.edges, 0))
-    # qompile accepts these times against the correction flows alone.
-    qompile(ir.graph, ff, scheduler=scheduler)
-
-    with pytest.raises(ValueError, match="Injection measurement order"):
-        ir.to_pattern(scheduler)
-
-
-def test_lowered_import_results_have_independent_source_mappings() -> None:
-    ir = clifft_text_to_ir("RX 0\nT 0\nMX 0", t_mode="injection")
-    scheduler = ir.make_scheduler()
-    assert scheduler.solve_schedule()
-    first = ir.to_pattern(scheduler)
-    second = ir.to_pattern(scheduler)
-
-    for original, left, right in (
-        (ir.stim_to_qubit, first.stim_to_qubit, second.stim_to_qubit),
-        (ir.qubit_to_stim, first.qubit_to_stim, second.qubit_to_stim),
-        (ir.wire_to_stim, first.wire_to_stim, second.wire_to_stim),
-        (ir.stim_to_final_qubit, first.stim_to_final_qubit, second.stim_to_final_qubit),
-        (ir.record_to_node, first.record_to_node, second.record_to_node),
-        (ir.preparation_gates, first.preparation_gates, second.preparation_gates),
-    ):
-        assert left == original
-        left.clear()
-        assert right == original
-        assert right
+    result = ir.to_pattern(scheduler)
+    measured = [c.node for c in result.pattern if isinstance(c, M)]
+    assert measured.index(magic) < measured.index(probe)

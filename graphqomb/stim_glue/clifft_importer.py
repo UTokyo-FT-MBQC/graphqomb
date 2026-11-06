@@ -112,7 +112,8 @@ def clifft_text_to_pattern(  # ruff:ignore[too-many-arguments]
 
     Import options are those of `clifft_text_to_ir`. schedule_config and
     schedule_timeout select the pattern-level scheduler as in
-    `stim_circuit_to_pattern`.
+    `stim_circuit_to_pattern`. schedule_strategy is retained for compatibility
+    and does not affect scheduling.
 
     Parameters
     ----------

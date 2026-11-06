@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Unscheduled Stim Import IR**: `stim_circuit_to_ir`, `stim_text_to_ir`, and `stim_file_to_ir` return a frozen `StimImportIR` containing the resource graph, `Feedforward` with detector and logical parity annotations, and source mappings without constructing or solving a scheduler. Use `dataclasses.replace(ir, feedforward=...)` to apply transformed feedforward before scheduling and lowering. `make_scheduler` includes injection measurement dependencies; `to_pattern` lowers a supplied schedule using the IR's feedforward, validates graph identity and injection measurement order, and returns `StimImportResult` with independent source mappings. `clifft_text_to_ir` and `clifft_file_to_ir` provide the same boundary for Clifford+T import, while the existing pattern import APIs retain their scheduling defaults and results.
+- **Unscheduled Stim Import IR**: Added `stim_circuit_to_ir`, `stim_text_to_ir`, and `stim_file_to_ir` to inspect or transform the graph and feedforward before scheduling and lowering. `clifft_text_to_ir` and `clifft_file_to_ir` provide the same workflow for Clifford+T circuits; existing pattern import APIs retain their scheduling defaults and results.
 
 ## [0.7.0] - 2026-11-04
 

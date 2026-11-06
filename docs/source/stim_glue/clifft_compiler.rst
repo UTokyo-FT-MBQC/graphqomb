@@ -49,13 +49,8 @@ the reset and before any preparation noise. The injection scheduler orders
 each ZZ probe before its magic X readout to avoid consuming all resources
 at circuit start; this ordering does not change the ideal instrument.
 For explicit scheduling, ``clifft_text_to_ir`` and ``clifft_file_to_ir``
-return the same ``StimImportIR`` as :doc:`importer`. Its ``measurement_order``
-stores the additional probe-before-magic dependencies. ``ir.make_scheduler()``
-adds them to the scheduler DAG. Use ``dataclasses.replace(ir, feedforward=...)``
-to apply transformed feedforward before scheduling and lowering.
-Set or solve the schedule before lowering;
-probe-before-magic order is checked even for manual schedules. Pass the
-resulting preparation gates to ``clifft_compile`` as above.
+follow the workflow in :doc:`importer`; ``ir.make_scheduler()`` includes
+the probe-before-magic dependencies.
 For a T-basis measurement, ``MeasureEvent.axis`` denotes the physical X
 readout. BEFORE measurement noise acts before the ideal basis rotation;
 measurement-flip noise acts on the resulting X record.

@@ -126,9 +126,7 @@ class StimImportIR:
     r"""Imported resource graph and feedforward before scheduling or lowering.
 
     The dataclass is frozen, but its graph, feedforward, and mappings remain
-    mutable. Use ``dataclasses.replace(ir, feedforward=...)`` to apply transformed
-    feedforward before scheduling and lowering. Mapping meanings are those of
-    `StimImportResult`.
+    mutable. Mapping meanings are those of `StimImportResult`.
 
     Attributes
     ----------
@@ -151,7 +149,7 @@ class StimImportIR:
     preparation_gates : `dict`\[`int`, `str`\]
         Scheduled magic-resource gates to pass to `clifft_compile`.
     measurement_order : `tuple`\[`tuple`\[`int`, `int`\], ...\]
-        Additional (earlier, later) measurement dependencies for injection resources.
+        Probe-before-magic preferences added by `make_scheduler` to limit magic resources.
     """
 
     graph: GraphState
@@ -186,49 +184,42 @@ class StimImportIR:
         ----------
         scheduler : `Scheduler`
             Scheduler for this graph with a manual or solved schedule. Schedule
-            validation is performed by `qompile`; injection measurement order
-            is also checked before lowering.
+            validation is performed by `qompile`.
 
         Returns
         -------
         `StimImportResult`
-            Lowered pattern with independent copies of the source mappings.
+            Lowered pattern with the IR's source mappings.
 
         Raises
         ------
         ValueError
-            If the scheduler belongs to a different graph, or its schedule violates
-            injection measurement order or the constraints validated by `qompile`.
+            If the scheduler belongs to a different graph or its schedule violates
+            the constraints validated by `qompile`.
         """
         if scheduler.graph is not self.graph:
             msg = "The scheduler must belong to this IR's graph."
             raise ValueError(msg)
-        for earlier, later in self.measurement_order:
-            earlier_time = scheduler.measure_time.get(earlier)
-            later_time = scheduler.measure_time.get(later)
-            if earlier_time is not None and later_time is not None and earlier_time >= later_time:
-                msg = f"Injection measurement order requires probe {earlier} before magic readout {later}."
-                raise ValueError(msg)
         return _wrap_pattern(self, qompile(self.graph, self.feedforward, scheduler=scheduler))
 
 
 def _wrap_pattern(ir: StimImportIR, pattern: Pattern) -> StimImportResult:
-    """Attach independent source mappings to a lowered pattern.
+    """Attach the IR's source mappings to a lowered pattern.
 
     Returns
     -------
     `StimImportResult`
-        Pattern and source metadata; resource graph and flows are not copied.
+        Pattern and source metadata.
     """
     return StimImportResult(
         pattern=pattern,
-        stim_to_qubit=ir.stim_to_qubit.copy(),
-        qubit_to_stim=ir.qubit_to_stim.copy(),
+        stim_to_qubit=ir.stim_to_qubit,
+        qubit_to_stim=ir.qubit_to_stim,
         mpp_extractions=ir.mpp_extractions,
-        wire_to_stim=ir.wire_to_stim.copy(),
-        stim_to_final_qubit=ir.stim_to_final_qubit.copy(),
-        record_to_node=ir.record_to_node.copy(),
-        preparation_gates=ir.preparation_gates.copy(),
+        wire_to_stim=ir.wire_to_stim,
+        stim_to_final_qubit=ir.stim_to_final_qubit,
+        record_to_node=ir.record_to_node,
+        preparation_gates=ir.preparation_gates,
     )
 
 
@@ -487,6 +478,7 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
     bounds the CP-SAT solve time in seconds), and passed to
     `graphqomb.qompiler.qompile`; when `None`, the default greedy strategy is
     used. To inspect or transform the IR before scheduling, use `stim_circuit_to_ir`.
+    schedule_strategy is retained for compatibility and does not affect scheduling.
 
     The importer supports initial Pauli resets, Clifford unitary blocks, and
     Pauli measurement blocks. Inputs without an explicit reset start in the
