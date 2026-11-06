@@ -18,6 +18,58 @@ indices to graph measurement nodes, enabling external conditional-Clifford
 feedforward to use source record identities after import. Records removed as
 deterministic zero padding have no graph node and are omitted from the mapping.
 
+Import before scheduling
+------------------------
+
+:func:`~graphqomb.stim_glue.importer.stim_circuit_to_ir`,
+:func:`~graphqomb.stim_glue.importer.stim_text_to_ir`, and
+:func:`~graphqomb.stim_glue.importer.stim_file_to_ir` return a frozen
+:class:`~graphqomb.stim_glue.importer.StimImportIR` before constructing or
+solving any scheduler. It contains the resource graph, a
+:class:`~graphqomb.feedforward.Feedforward` with corrections and parity
+annotations, and the same source mappings as ``StimImportResult``.
+
+Use ``ir.make_scheduler()`` to construct an unsolved scheduler. Inspect
+``ir.graph.coordinates`` and ``ir.record_to_node`` when choosing operation
+times, then call ``manual_schedule`` or ``solve_schedule``. Lower with
+``ir.to_pattern(scheduler)`` to obtain a ``StimImportResult``. Lowering delegates
+schedule validation to ``qompile`` and checks that the scheduler uses the IR's graph.
+The existing ``*_to_pattern`` entry points perform these steps using the
+requested configuration or the default greedy ``MINIMIZE_TIME`` strategy.
+
+.. code-block:: python
+
+   from dataclasses import replace
+   from graphlib import TopologicalSorter
+
+   from graphqomb.feedforward import inverse_dag_from_dag
+   from graphqomb.stim_glue import stim_text_to_ir
+
+   ir = stim_text_to_ir("RX 0\nTICK\nMPP X0\nTICK\nMX 0")
+   ir = replace(ir, feedforward=ir.feedforward.backpropagate(ir.graph))
+   scheduler = ir.make_scheduler()
+   # Prepare at 0, entangle serially, then follow measurement dependencies.
+   edge_times = {edge: t for t, edge in enumerate(ir.graph.edges, start=1)}
+   order = TopologicalSorter(inverse_dag_from_dag(scheduler.dag)).static_order()
+   scheduler.manual_schedule(
+       dict.fromkeys(scheduler.prepare_time, 0),
+       {
+           node: t
+           for t, node in enumerate(order, start=len(edge_times) + 1)
+           if node in scheduler.measure_time
+       },
+       edge_times,
+   )
+   result = ir.to_pattern(scheduler)
+
+Use ``dataclasses.replace(ir, feedforward=...)`` to apply transformed feedforward
+before scheduling and lowering; both methods use the resulting IR's feedforward.
+Export with ``stim_compile(result.pattern, backpropagate=False)`` to serialize
+those supports.
+
+Graph construction
+------------------
+
 Every unitary block is normalized by :mod:`graphqomb.stim_glue.transpiler` to the four
 Clifford ``J(angle)`` gates (``H = J(0)``, ``HS = J(pi/2)``, ``HZ = J(pi)``,
 ``HS_DAG = J(-pi/2)``, corresponding to X+/Y-/X-/Y+ measurements) plus ``CZ``

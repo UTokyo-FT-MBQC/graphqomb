@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -12,8 +13,17 @@ from graphqomb.command import M, N
 from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
 from graphqomb.noise_model import DepolarizingNoiseModel
+from graphqomb.ptn_format import dumps as ptn_dumps
 from graphqomb.qompiler import qompile
-from graphqomb.stim_glue import clifft_compile, clifft_file_to_pattern, clifft_text_to_pattern, stim_compile
+from graphqomb.scheduler import Scheduler
+from graphqomb.stim_glue import (
+    clifft_compile,
+    clifft_file_to_ir,
+    clifft_file_to_pattern,
+    clifft_text_to_ir,
+    clifft_text_to_pattern,
+    stim_compile,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -157,3 +167,61 @@ def test_internal_preparation_gates_reject_input_nodes() -> None:
     graph.assign_meas_basis(node, AxisMeasBasis(Axis.X, Sign.PLUS))
     with pytest.raises(ValueError, match="not an internal node"):
         clifft_compile(qompile(graph, {}), preparation_gates={node: "T"})
+
+
+def test_injection_ir_scheduler_keeps_probe_before_magic() -> None:
+    with patch.object(Scheduler, "__init__", side_effect=AssertionError("IR import must not construct a Scheduler")):
+        ir = clifft_text_to_ir("RX 0\nT 0\nH 0\nT_DAG 0\nMX 0", t_mode="injection")
+    scheduler = ir.make_scheduler()
+
+    # The two gadgets control T on node 0 and T_DAG on node 3, respectively.
+    assert ir.preparation_gates == {6: "T", 8: "T_DAG"}
+    assert ir.feedforward.cflow.keys() == {7, 9}
+    assert ir.measurement_order == ((7, 6), (9, 8))
+    assert all(time is None for time in scheduler.measure_time.values())
+    for probe, magic in ir.measurement_order:
+        assert magic in scheduler.dag[probe]
+    assert scheduler.solve_schedule()
+    result = ir.to_pattern(scheduler)
+    measured = [c.node for c in result.pattern if isinstance(c, M)]
+    for probe, magic in ir.measurement_order:
+        assert measured.index(probe) < measured.index(magic)
+
+
+@pytest.mark.parametrize("mode", ["measurement", "injection"])
+def test_clifft_pattern_wrapper_matches_explicit_ir_schedule(mode: Literal["measurement", "injection"]) -> None:
+    text = "RX 0\nT 0\nH 0\nT_DAG 0\nMX 0\nOBSERVABLE_INCLUDE(0) rec[-1]"
+    ir = clifft_text_to_ir(text, t_mode=mode)
+    scheduler = ir.make_scheduler()
+    assert scheduler.solve_schedule()
+    explicit = ir.to_pattern(scheduler)
+    wrapped = clifft_text_to_pattern(text, t_mode=mode)
+
+    assert ptn_dumps(explicit.pattern) == ptn_dumps(wrapped.pattern)
+    assert explicit.record_to_node == wrapped.record_to_node
+    assert explicit.preparation_gates == wrapped.preparation_gates
+
+
+def test_clifft_ir_file_entry_point(tmp_path: Path) -> None:
+    path = tmp_path / "circuit.stim"
+    path.write_text("RX 0\nT 0\nMX 0", encoding="utf-8")
+    ir = clifft_file_to_ir(path, t_mode="injection")
+
+    assert set(ir.record_to_node) == {0}
+    assert list(ir.preparation_gates.values()) == ["T"]
+    assert len(ir.measurement_order) == 1
+
+
+def test_injection_ir_accepts_manual_magic_before_probe() -> None:
+    ir = clifft_text_to_ir("RX 0\nT 0\nMX 0", t_mode="injection")
+    ff = ir.feedforward
+    scheduler = Scheduler(ir.graph, ff.xflow, ff.zflow, cflow=ff.cflow)
+    probe, magic = ir.measurement_order[0]
+    # The commuting magic readout can precede the probe in a custom schedule.
+    assert scheduler.solve_schedule()
+    measure_times = {node: time + 2 for node, time in scheduler.measure_time.items() if time is not None}
+    measure_times[magic] = 1
+    scheduler.manual_schedule(dict.fromkeys(scheduler.prepare_time, 0), measure_times, dict.fromkeys(ir.graph.edges, 0))
+    result = ir.to_pattern(scheduler)
+    measured = [c.node for c in result.pattern if isinstance(c, M)]
+    assert measured.index(magic) < measured.index(probe)

@@ -8,10 +8,13 @@ This package provides:
 - `stim_compile`: Function to compile a pattern into Stim circuit text.
 - `clifft_compile`: Function to compile a pattern into Clifft circuit text (``graphqomb[clifft]``).
 - `clifft_text_to_pattern`, `clifft_file_to_pattern`: Clifford+T import with measurement or injection lowering.
+- `clifft_text_to_ir`, `clifft_file_to_ir`: Clifford+T import before scheduling and lowering.
+- `stim_circuit_to_ir`, `stim_text_to_ir`, `stim_file_to_ir`: Import a supported Stim circuit without scheduling.
 - `stim_circuit_to_pattern`: Function to import a supported Stim circuit into a pattern.
 - `stim_text_to_pattern`: Function to import supported Stim text into a pattern.
 - `stim_file_to_pattern`: Function to import a supported Stim file into a pattern.
 - `StimImportResult`: Result of importing a supported Stim circuit.
+- `StimImportIR`: Graph, feedforward, source mappings, and injection measurement order before scheduling.
 - `transpile`: Function to transpile a Stim Clifford circuit into the Clifford J/CZ basis.
 - `optimize_j_cz`: Function to remove redundant Clifford J and CZ gates.
 - `STIM_GATE_J_ANGLES`: Mapping from single-qubit basis gates to J angles.
@@ -28,12 +31,21 @@ This package provides:
 
 from graphqomb.stim_glue._parse import StimMppExtraction
 from graphqomb.stim_glue.clifft_compiler import clifft_compile
-from graphqomb.stim_glue.clifft_importer import clifft_file_to_pattern, clifft_text_to_pattern
+from graphqomb.stim_glue.clifft_importer import (
+    clifft_file_to_ir,
+    clifft_file_to_pattern,
+    clifft_text_to_ir,
+    clifft_text_to_pattern,
+)
 from graphqomb.stim_glue.compiler import stim_compile
 from graphqomb.stim_glue.importer import (
+    StimImportIR,
     StimImportResult,
+    stim_circuit_to_ir,
     stim_circuit_to_pattern,
+    stim_file_to_ir,
     stim_file_to_pattern,
+    stim_text_to_ir,
     stim_text_to_pattern,
 )
 from graphqomb.stim_glue.mpp import stabilizer_code_from_stim_file, stabilizer_code_from_stim_text
@@ -50,11 +62,14 @@ __all__ = [
     "FLAG_DETECTOR_TAG",
     "STIM_GATE_J_ANGLES",
     "RoundRewriteResult",
+    "StimImportIR",
     "StimImportResult",
     "StimMppExtraction",
     "UnsupportedInstructionError",
     "clifft_compile",
+    "clifft_file_to_ir",
     "clifft_file_to_pattern",
+    "clifft_text_to_ir",
     "clifft_text_to_pattern",
     "flag_detector_indices",
     "flag_postselection_mask",
@@ -62,9 +77,12 @@ __all__ = [
     "rewrite_syndrome_rounds",
     "stabilizer_code_from_stim_file",
     "stabilizer_code_from_stim_text",
+    "stim_circuit_to_ir",
     "stim_circuit_to_pattern",
     "stim_compile",
+    "stim_file_to_ir",
     "stim_file_to_pattern",
+    "stim_text_to_ir",
     "stim_text_to_pattern",
     "transpile",
 ]

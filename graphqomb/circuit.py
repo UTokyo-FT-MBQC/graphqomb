@@ -49,13 +49,8 @@ class _Circuit2GraphContext:
     current_time: int
 
     def __init__(self, graph: GraphState, strategy: CircuitScheduleStrategy) -> None:
-        if strategy == CircuitScheduleStrategy.PARALLEL:
-            self.minimize_qubits = False
-        elif strategy == CircuitScheduleStrategy.MINIMIZE_SPACE:
-            self.minimize_qubits = True
-        else:
-            msg = f"Invalid schedule strategy: {strategy}"
-            raise ValueError(msg)
+        _validate_schedule_strategy(strategy)
+        self.minimize_qubits = strategy == CircuitScheduleStrategy.MINIMIZE_SPACE
 
         self.graph = graph
         self.gflow = {}
@@ -347,6 +342,33 @@ def circuit2graph(
         The scheduler is configured with automatic time scheduling derived from circuit structure.
 
     """
+    context = _circuit2graph_context(circuit, schedule_strategy)
+    scheduler = Scheduler(context.graph, context.gflow)
+    scheduler.manual_schedule(context.prepare_time, context.measure_time)
+    return context.graph, context.gflow, scheduler
+
+
+def _validate_schedule_strategy(strategy: CircuitScheduleStrategy) -> None:
+    """Validate the scheduling option retained by circuit and pattern entry points.
+
+    Raises
+    ------
+    ValueError
+        If the strategy is not a supported circuit scheduling strategy.
+    """
+    if strategy not in {CircuitScheduleStrategy.PARALLEL, CircuitScheduleStrategy.MINIMIZE_SPACE}:
+        msg = f"Invalid schedule strategy: {strategy}"
+        raise ValueError(msg)
+
+
+def _circuit2graph_context(circuit: BaseCircuit, schedule_strategy: CircuitScheduleStrategy) -> _Circuit2GraphContext:
+    """Build graph, flow, and circuit-derived timings without constructing a scheduler.
+
+    Returns
+    -------
+    `_Circuit2GraphContext`
+        Graph, flow, and circuit-derived timings.
+    """
     graph = GraphState()
     context = _Circuit2GraphContext(graph, schedule_strategy)
 
@@ -364,8 +386,4 @@ def circuit2graph(
     for qindex, node in context.qindex2front_nodes.items():
         graph.register_output(node, qindex)
 
-    # manually schedule
-    scheduler = Scheduler(graph, context.gflow)
-    scheduler.manual_schedule(context.prepare_time, context.measure_time)
-
-    return graph, context.gflow, scheduler
+    return context
