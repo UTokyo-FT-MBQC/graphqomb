@@ -8,7 +8,7 @@ This module provides:
 from __future__ import annotations
 
 import math
-import sys
+from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple
 
 import matplotlib.pyplot as plt
@@ -29,20 +29,8 @@ if TYPE_CHECKING:
 # Minimum number of coordinate dimensions required for 2D visualization
 _MIN_2D_COORDS = 2
 
-if sys.version_info >= (3, 11):
-    from enum import StrEnum
 
-    class _ColorMap(StrEnum):
-        pass
-
-else:
-    from enum import Enum
-
-    class _ColorMap(str, Enum):
-        pass
-
-
-class ColorMap(_ColorMap):
+class ColorMap(StrEnum):
     """Color map for the nodes."""
 
     XY = "#2ECC71"  # Emerald green

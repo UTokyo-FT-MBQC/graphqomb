@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Unscheduled Stim Import IR**: Added `stim_circuit_to_ir`, `stim_text_to_ir`, and `stim_file_to_ir` to inspect or transform the graph and feedforward before scheduling and lowering. `clifft_text_to_ir` and `clifft_file_to_ir` provide the same workflow for Clifford+T circuits; existing pattern import APIs retain their scheduling defaults and results.
 
+### Changed
+
+- **Python Support**: Dropped Python 3.10 support, which reached end of life in October 2026. Now requires Python >=3.11, <3.15. Patched releases of Pillow, filelock, and soupsieve require Python 3.11 or later, so the lockfile can now move past vulnerable versions.
+
 ## [0.7.0] - 2026-11-04
 
 ### Added
