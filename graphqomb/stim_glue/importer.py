@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import accumulate, pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -57,6 +57,12 @@ if TYPE_CHECKING:
 
 
 _PAULI_PRODUCT_MEASUREMENT_GATES = frozenset({"MPP", *PAIR_MEASUREMENT_AXES})
+CAT_FLAG_TAG = "graphqomb.cat_flag"
+"""Detector tag of the flag checks added by ``mpp_ancilla="cat"``."""
+# A product with fewer legs cannot spread one ancilla fault over two data wires.
+_MIN_CAT_LEGS = 3
+# ``MPP[ancilla=cat]`` and ``MPP[ancilla=single]`` override mpp_ancilla for one instruction.
+_MPP_ANCILLA_TAG_PREFIX = "ancilla="
 _FEEDBACK_AXES = {
     ("CX", 0): Axis.X,
     ("CY", 0): Axis.Y,
@@ -109,6 +115,10 @@ class StimImportResult:
     preparation_gates : `dict`\[`int`, `str`\]
         Gates preparing scheduled magic resources of injection T lowering, to
         pass to `clifft_compile`. Empty otherwise.
+    mpp_legs : `dict`\[`int`, `tuple`\[`tuple`\[`int`, `int`\], ...\]\]
+        Absolute source measurement record of each Pauli product to its legs,
+        as ``(ancilla node, data node)`` edges in the order of the product's
+        targets; see `StimImportIR`.
     """
 
     pattern: Pattern
@@ -119,6 +129,7 @@ class StimImportResult:
     stim_to_final_qubit: dict[int, int]
     record_to_node: dict[int, int] = field(default_factory=dict)
     preparation_gates: dict[int, str] = field(default_factory=dict)
+    mpp_legs: dict[int, tuple[tuple[int, int], ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -150,6 +161,15 @@ class StimImportIR:
         Scheduled magic-resource gates to pass to `clifft_compile`.
     measurement_order : `tuple`\[`tuple`\[`int`, `int`\], ...\]
         Probe-before-magic dependencies added by `make_scheduler` to limit magic resources.
+    mpp_legs : `dict`\[`int`, `tuple`\[`tuple`\[`int`, `int`\], ...\]\]
+        Absolute source measurement record of each Pauli product to its legs,
+        in the order of the product's targets. A leg is the graph edge
+        ``(ancilla node, data node)`` that couples the product to one data
+        wire; a Y factor under Type I foliation has a Z leg followed by an X
+        leg. With a single ancilla every leg starts at the record node. With a
+        cat ancilla each leg starts at its own cat node, the cat nodes of
+        neighboring targets share a connector, and the last one is the record
+        node. `sequence_mpp_legs` schedules the legs in this order.
     """
 
     graph: GraphState
@@ -162,6 +182,7 @@ class StimImportIR:
     record_to_node: dict[int, int]
     preparation_gates: dict[int, str]
     measurement_order: tuple[tuple[int, int], ...]
+    mpp_legs: dict[int, tuple[tuple[int, int], ...]] = field(default_factory=dict)
 
     def make_scheduler(self) -> Scheduler:
         """Construct an unsolved scheduler including injection measurement order.
@@ -202,6 +223,110 @@ class StimImportIR:
             raise ValueError(msg)
         return _wrap_pattern(self, qompile(self.graph, self.feedforward, scheduler=scheduler))
 
+    def sequence_mpp_legs(self, scheduler: Scheduler) -> None:
+        """Entangle the legs of each Pauli-product ancilla one per time slice, in target order.
+
+        A fault on an ancilla node spreads through the CZ gates applied after
+        it, so the order of the legs that share an ancilla node decides which
+        data wires one fault reaches. This method keeps the prepare and
+        measure order of the scheduler and replaces its schedule through
+        ``Scheduler.manual_schedule``:
+
+        - Legs that share an ancilla node get strictly increasing entanglement
+          times in the order of `mpp_legs`, each as early as the prepare times
+          and the earlier legs allow. Entanglement times already set for legs
+          are discarded.
+        - A time slice is split into as many slices as its longest such run of
+          legs. Preparations, measurements, and all other edges of the slice
+          stay in the first of them.
+        - A data node is prepared earlier where the schedule would otherwise
+          measure the data node of a later target before it exists. This can
+          happen in a product that mixes X and Z factors, and it can exceed a
+          qubit limit the schedule was solved with.
+
+        Legs on different ancilla nodes are not ordered against each other,
+        and neither are the edges inside a cat ring. A cat node has one leg,
+        so cat ancillas add no slices.
+
+        Parameters
+        ----------
+        scheduler : `Scheduler`
+            Scheduler for this graph with a valid schedule from
+            ``solve_schedule`` or ``manual_schedule``.
+
+        Raises
+        ------
+        ValueError
+            If the scheduler belongs to a different graph or its prepare and
+            measure times are incomplete.
+        """
+        if scheduler.graph is not self.graph:
+            msg = "The scheduler must belong to this IR's graph."
+            raise ValueError(msg)
+        prepare = {node: time for node, time in scheduler.prepare_time.items() if time is not None}
+        measure = {node: time for node, time in scheduler.measure_time.items() if time is not None}
+        if len(prepare) != len(scheduler.prepare_time) or len(measure) != len(scheduler.measure_time):
+            msg = "Set the prepare and measure times of the scheduler before sequencing MPP legs."
+            raise ValueError(msg)
+
+        leg_slots = _target_order_leg_slots(self.mpp_legs, prepare, measure)
+        widths = [1] * scheduler.num_slices()
+        for time, position in leg_slots.values():
+            widths[time] = max(widths[time], position + 1)
+        offsets = list(accumulate(widths, initial=0))
+
+        entangle: dict[tuple[int, int], int | None] = {}
+        for edge, edge_time in scheduler.entangle_time.items():
+            slot = leg_slots.get(frozenset(edge))
+            if slot is not None:
+                entangle[edge] = offsets[slot[0]] + slot[1]
+            else:
+                # None is left to `auto_schedule_entanglement`, which uses the stretched prepare times.
+                entangle[edge] = None if edge_time is None else offsets[edge_time]
+        scheduler.manual_schedule(
+            {node: offsets[time] for node, time in prepare.items()},
+            {node: offsets[time] for node, time in measure.items()},
+            entangle,
+        )
+
+
+def _target_order_leg_slots(
+    mpp_legs: Mapping[int, Sequence[tuple[int, int]]],
+    prepare: dict[int, int],
+    measure: Mapping[int, int],
+) -> dict[frozenset[int], tuple[int, int]]:
+    r"""Place each leg in a time slice of the given schedule, in target order per ancilla node.
+
+    prepare is updated in place where a data node has to be prepared earlier.
+
+    Returns
+    -------
+    `dict`\[`frozenset`\[`int`\], `tuple`\[`int`, `int`\]\]
+        Leg edge to its time slice and its position among the legs of its
+        ancilla node in that slice.
+    """
+    legs_by_ancilla: dict[int, list[int]] = {}
+    for legs in mpp_legs.values():
+        for ancilla, data in legs:
+            legs_by_ancilla.setdefault(ancilla, []).append(data)
+
+    slots: dict[frozenset[int], tuple[int, int]] = {}
+    for ancilla, data_nodes in legs_by_ancilla.items():
+        # A leg waits for the legs before it, so its data node must outlive their preparation.
+        deadline: int | None = None
+        for data in reversed(data_nodes):
+            if deadline is not None and data in prepare:
+                prepare[data] = min(prepare[data], deadline - 1)
+            if data in measure:
+                deadline = measure[data] if deadline is None else min(deadline, measure[data])
+        # Inputs are prepared before slice 0.
+        time, position = prepare.get(ancilla, 0), -1
+        for data in data_nodes:
+            earliest = max(time, prepare.get(data, 0))
+            time, position = earliest, (position + 1 if earliest == time else 0)
+            slots[frozenset((ancilla, data))] = (time, position)
+    return slots
+
 
 def _wrap_pattern(ir: StimImportIR, pattern: Pattern) -> StimImportResult:
     """Attach the IR's source mappings to a lowered pattern.
@@ -220,6 +345,7 @@ def _wrap_pattern(ir: StimImportIR, pattern: Pattern) -> StimImportResult:
         stim_to_final_qubit=ir.stim_to_final_qubit,
         record_to_node=ir.record_to_node,
         preparation_gates=ir.preparation_gates,
+        mpp_legs=ir.mpp_legs,
     )
 
 
@@ -231,6 +357,10 @@ class _Fragment:
     feedback_targets: tuple[_FeedbackTarget, ...] = ()
     mpp_extractions: tuple[StimMppExtraction, ...] = ()
     zflow: dict[int, set[int]] = field(default_factory=dict)
+    # Closing connectors of cat ancillas; each corrected record is a parity check.
+    flag_nodes: tuple[int, ...] = ()
+    # Record index of each Pauli product -> its (ancilla node, data node) legs in target order.
+    mpp_legs: dict[int, tuple[tuple[int, int], ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -246,6 +376,7 @@ class _ImportContext:
     # Inverse of detector_record_indices: record index -> detectors referencing it.
     detectors_by_record: Mapping[int, Sequence[int]] = field(default_factory=dict)
     allow_t: bool = False
+    mpp_ancilla: Literal["single", "cat"] = "single"
 
 
 @dataclass(frozen=True)
@@ -317,6 +448,7 @@ def stim_file_to_ir(
     *,
     coord_dims: int = 2,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
 ) -> StimImportIR:
     """Import a supported Stim file without scheduling; see `stim_circuit_to_ir`.
@@ -330,6 +462,7 @@ def stim_file_to_ir(
         Path(path).read_text(encoding="utf-8"),
         coord_dims=coord_dims,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
     )
 
@@ -339,6 +472,7 @@ def stim_text_to_ir(
     *,
     coord_dims: int = 2,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
 ) -> StimImportIR:
     """Import supported Stim text without scheduling; see `stim_circuit_to_ir`.
@@ -352,6 +486,7 @@ def stim_text_to_ir(
         stim.Circuit(text),
         coord_dims=coord_dims,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
     )
 
@@ -361,6 +496,7 @@ def stim_circuit_to_ir(
     *,
     coord_dims: int = 2,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
 ) -> StimImportIR:
     """Import a supported Stim circuit without constructing or solving a scheduler.
@@ -377,6 +513,15 @@ def stim_circuit_to_ir(
         Number of source coordinate dimensions, 2 or 3, by default 2.
     y_foliation : `YFoliation`, optional
         Graph construction for Y products, by default ``YFoliation.TYPE_I``.
+    mpp_ancilla : {"single", "cat"}, optional
+        Ancilla of each MPP product. ``"single"`` couples one ancilla to every
+        data leg. ``"cat"`` splits the ancilla of a product with at least three
+        legs into a ring of X-measured cat nodes, one per leg, and adds the
+        closing connector as a parity check tagged `CAT_FLAG_TAG`, so that a
+        single ancilla fault reaches at most one data wire or is flagged.
+        The instruction tags ``MPP[ancilla=cat]`` and ``MPP[ancilla=single]``
+        override it for the products of one instruction. By default
+        ``"single"``.
     merge_safe_ticks : `bool`, optional
         Merge TICK blocks when their removal preserves import semantics.
 
@@ -390,6 +535,7 @@ def stim_circuit_to_ir(
         circuit,
         coord_dims=coord_dims,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
     )
 
@@ -400,16 +546,19 @@ def stim_file_to_pattern(  # ruff:ignore[too-many-arguments]
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
+    sequence_mpp_legs: bool = False,
 ) -> StimImportResult:
     """Import a supported Stim file into a GraphQOMB pattern.
 
     When merge_safe_ticks is true, TICK boundaries whose removal cannot
     change the imported semantics are dropped before import; see
     `stim_circuit_to_pattern`. schedule_config and schedule_timeout
-    select the pattern-level scheduler; see `stim_circuit_to_pattern`.
+    select the pattern-level scheduler, and sequence_mpp_legs orders the legs
+    of each product ancilla; see `stim_circuit_to_pattern`.
 
     Returns
     -------
@@ -421,9 +570,11 @@ def stim_file_to_pattern(  # ruff:ignore[too-many-arguments]
         coord_dims=coord_dims,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
         schedule_config=schedule_config,
         schedule_timeout=schedule_timeout,
+        sequence_mpp_legs=sequence_mpp_legs,
     )
 
 
@@ -433,16 +584,19 @@ def stim_text_to_pattern(  # ruff:ignore[too-many-arguments]
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
+    sequence_mpp_legs: bool = False,
 ) -> StimImportResult:
     """Import supported Stim text into a GraphQOMB pattern.
 
     When merge_safe_ticks is true, TICK boundaries whose removal cannot
     change the imported semantics are dropped before import; see
     `stim_circuit_to_pattern`. schedule_config and schedule_timeout
-    select the pattern-level scheduler; see `stim_circuit_to_pattern`.
+    select the pattern-level scheduler, and sequence_mpp_legs orders the legs
+    of each product ancilla; see `stim_circuit_to_pattern`.
 
     Returns
     -------
@@ -454,9 +608,11 @@ def stim_text_to_pattern(  # ruff:ignore[too-many-arguments]
         coord_dims=coord_dims,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
         schedule_config=schedule_config,
         schedule_timeout=schedule_timeout,
+        sequence_mpp_legs=sequence_mpp_legs,
     )
 
 
@@ -466,9 +622,11 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
+    sequence_mpp_legs: bool = False,
 ) -> StimImportResult:
     """Import a supported Stim circuit into a GraphQOMB pattern.
 
@@ -557,6 +715,21 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
     column in each block. wire_to_stim maps those ids back to the original
     circuit ids.
 
+    mpp_ancilla selects the ancilla of each ``MPP`` product. With ``"cat"``,
+    a product with at least three data legs is measured through a ring of
+    X-measured cat nodes, one per leg, and the closing connector of the ring is
+    appended to the parity checks with the tag `CAT_FLAG_TAG`. A single fault
+    on the ancilla side then reaches at most one data wire or flips a flag.
+    Source detectors keep their indices; see `stim_circuit_to_ir`. The tags
+    ``MPP[ancilla=cat]`` and ``MPP[ancilla=single]`` override mpp_ancilla for
+    the products of one instruction.
+
+    The legs of a product follow the order of its targets. The schedule
+    leaves the edges of one time slice in no particular order; when
+    sequence_mpp_legs is true, `StimImportIR.sequence_mpp_legs` is applied to
+    the solved schedule, so that the legs sharing an ancilla node are
+    entangled one per time slice in target order.
+
     Returns
     -------
     `StimImportResult`
@@ -574,17 +747,23 @@ def stim_circuit_to_pattern(  # ruff:ignore[too-many-arguments]
             circuit,
             coord_dims=coord_dims,
             y_foliation=y_foliation,
+            mpp_ancilla=mpp_ancilla,
             merge_safe_ticks=merge_safe_ticks,
         ),
         schedule_config=schedule_config,
         schedule_timeout=schedule_timeout,
+        sequence_mpp_legs=sequence_mpp_legs,
     )
 
 
 def _schedule_and_lower(
-    ir: StimImportIR, *, schedule_config: ScheduleConfig | None, schedule_timeout: int
+    ir: StimImportIR,
+    *,
+    schedule_config: ScheduleConfig | None,
+    schedule_timeout: int,
+    sequence_mpp_legs: bool = False,
 ) -> StimImportResult:
-    if schedule_config is None and not ir.measurement_order:
+    if schedule_config is None and not ir.measurement_order and not sequence_mpp_legs:
         # Keep qompile's default path: normalize and validate flows before solving,
         # without constructing and validating the same scheduling DAG twice.
         return _wrap_pattern(ir, qompile(ir.graph, ir.feedforward))
@@ -592,19 +771,25 @@ def _schedule_and_lower(
     if not scheduler.solve_schedule(schedule_config, timeout=schedule_timeout):
         msg = "Scheduling the imported pattern failed with the requested schedule_config."
         raise ValueError(msg)
+    if sequence_mpp_legs:
+        ir.sequence_mpp_legs(scheduler)
     return ir.to_pattern(scheduler)
 
 
-def _import_circuit_ir(  # ruff:ignore[too-many-locals]
+def _import_circuit_ir(  # ruff:ignore[too-many-locals, too-many-arguments]
     circuit: stim.Circuit,
     *,
     coord_dims: int = 2,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
     t_mode: Literal["measurement", "injection"] | None = None,
 ) -> StimImportIR:
     if coord_dims not in {2, 3}:
         msg = "coord_dims must be 2 or 3."
+        raise ValueError(msg)
+    if mpp_ancilla not in {"single", "cat"}:
+        msg = f"Unknown MPP ancilla kind: {mpp_ancilla!r}."
         raise ValueError(msg)
 
     idealized = _idealize_circuit(circuit.flattened())
@@ -632,6 +817,7 @@ def _import_circuit_ir(  # ruff:ignore[too-many-locals]
         detector_tags=annotations.detector_tags,
         logical_observable_record_indices=annotations.logical_observables,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         split_wire_ids=frozenset(reset_split.split_to_original),
         detectors_by_record=_detectors_by_record(annotations.detectors),
         allow_t=t_mode is not None,
@@ -649,6 +835,9 @@ def _import_circuit_ir(  # ruff:ignore[too-many-locals]
         record_nodes=fragment.record_nodes,
         zero_record_indices=idealized.zero_record_indices,
     )
+    for flag_node in fragment.flag_nodes:
+        parity_check_groups.append({flag_node})
+        parity_check_tags.append(CAT_FLAG_TAG)
     xflow, zflow = _flows_with_feedback(fragment, zero_record_indices=idealized.zero_record_indices)
     preparation_gates, cflow = (
         inject_t_measurements(fragment.graph, xflow, zflow) if t_mode == "injection" else ({}, {})
@@ -679,6 +868,7 @@ def _import_circuit_ir(  # ruff:ignore[too-many-locals]
         record_to_node=fragment.record_nodes,
         preparation_gates=preparation_gates,
         measurement_order=measurement_order,
+        mpp_legs=fragment.mpp_legs,
     )
 
 
@@ -1404,7 +1594,7 @@ def _append_ideal_pauli_measurements(
     instruction: stim.CircuitInstruction,
 ) -> None:
     if instruction.name == "MPP":
-        circuit.append("MPP", instruction.targets_copy())
+        circuit.append("MPP", instruction.targets_copy(), tag=instruction.tag)
         return
 
     targets = instruction.targets_copy()
@@ -1429,7 +1619,7 @@ def _append_ideal_pauli_measurements(
                     plain_qubit_target(target, instruction.name),
                 )
             )
-        circuit.append("MPP", product_targets)
+        circuit.append("MPP", product_targets, tag=instruction.tag)
 
 
 def _fragments_from_blocks(  # ruff:ignore[too-many-locals]
@@ -1856,9 +2046,13 @@ def _mpp_fragment(
     stim_to_qubit: Mapping[int, int],
     context: _ImportContext,
 ) -> _Fragment:
-    signed_products = tuple(
-        product for analyzed in block for product in mpp_targets_to_signed_products(analyzed.instruction.targets_copy())
-    )
+    signed_products: list[tuple[PauliSupport, Sign]] = []
+    cat_rows: set[int] = set()
+    for analyzed in block:
+        products = mpp_targets_to_signed_products(analyzed.instruction.targets_copy())
+        if _mpp_ancilla_kind(analyzed.instruction.tag, context.mpp_ancilla) == "cat":
+            cat_rows.update(range(len(signed_products), len(signed_products) + len(products)))
+        signed_products.extend(products)
     supports = tuple(support for support, _sign in signed_products)
     # `stim_mpp_extraction_from_records` keeps the product order, so product i
     # becomes stabilizer row i and therefore ancilla node `ancilla_nodes[i]`.
@@ -1890,6 +2084,7 @@ def _mpp_fragment(
         extraction,
         record_indices=record_indices,
         negative_rows=negative_rows,
+        cat_rows=cat_rows,
         z_base=z_base,
         io_stim_ids=io_stim_ids,
         stim_to_qubit=stim_to_qubit,
@@ -1900,7 +2095,33 @@ def _mpp_fragment(
         xflow=fragment.xflow,
         record_nodes=fragment.record_nodes,
         mpp_extractions=(extraction,),
+        flag_nodes=fragment.flag_nodes,
+        mpp_legs=fragment.mpp_legs,
     )
+
+
+def _mpp_ancilla_kind(tag: str, default: Literal["single", "cat"]) -> Literal["single", "cat"]:
+    r"""Return the ancilla kind a Pauli-product instruction asks for with its tag.
+
+    Returns
+    -------
+    `typing.Literal`\["single", "cat"\]
+        The kind named by an ``ancilla=`` tag, or default for any other tag.
+
+    Raises
+    ------
+    ValueError
+        If the tag names an unknown ancilla kind.
+    """
+    if not tag.startswith(_MPP_ANCILLA_TAG_PREFIX):
+        return default
+    kind = tag.removeprefix(_MPP_ANCILLA_TAG_PREFIX)
+    if kind == "single":
+        return "single"
+    if kind == "cat":
+        return "cat"
+    msg = f"Unknown MPP ancilla kind: {kind!r}."
+    raise ValueError(msg)
 
 
 def _validate_commuting_mpp_supports(supports: Sequence[PauliSupport]) -> None:
@@ -1927,6 +2148,7 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     *,
     record_indices: Sequence[int],
     negative_rows: AbstractSet[int],
+    cat_rows: AbstractSet[int],
     z_base: int,
     io_stim_ids: set[int],
     stim_to_qubit: Mapping[int, int],
@@ -1957,11 +2179,109 @@ def _mpp_graph_fragment(  # ruff:ignore[too-many-arguments]
     if len(record_indices) != len(result.ancilla_nodes):
         msg = "Imported MPP record count does not match the generated ancilla-node count."
         raise ValueError(msg)
+    flag_nodes: list[int] = []
+    mpp_legs: dict[int, tuple[tuple[int, int], ...]] = {}
+    legs_by_row = _legs_in_target_order(result, extraction)
+    for row in sorted(result.ancilla_nodes):
+        ancilla = result.ancilla_nodes[row]
+        legs = legs_by_row[row]
+        leg_ancillas = [ancilla] * len(legs)
+        if row in cat_rows and len(legs) >= _MIN_CAT_LEGS:
+            leg_ancillas, flag_node = _split_ancilla_into_cat(result.graph, ancilla, legs, xflow)
+            flag_nodes.append(flag_node)
+        mpp_legs[record_indices[row]] = tuple(zip(leg_ancillas, legs, strict=True))
     return _Fragment(
         graph=result.graph,
         xflow=xflow,
         record_nodes={record_indices[row]: node for row, node in result.ancilla_nodes.items()},
+        flag_nodes=tuple(flag_nodes),
+        mpp_legs=mpp_legs,
     )
+
+
+def _legs_in_target_order(
+    result: StabilizerGraphStateBuildResult, extraction: StimMppExtraction
+) -> dict[int, list[int]]:
+    r"""List the data nodes joined to each product ancilla in the order of the product's targets.
+
+    A target with several legs, a Y factor under Type I foliation, lists them
+    from the lower data layer up, so its Z leg precedes its X leg.
+
+    Returns
+    -------
+    `dict`\[`int`, `list`\[`int`\]\]
+        Stabilizer row to the data nodes of its legs.
+    """
+    nodes_by_column: dict[int, list[int]] = {}
+    for (column, _layer), node in sorted(result.data_nodes.items()):
+        nodes_by_column.setdefault(column, []).append(node)
+    legs_by_row: dict[int, list[int]] = {}
+    for row, ancilla in result.ancilla_nodes.items():
+        neighbors = result.graph.neighbors(ancilla)
+        legs_by_row[row] = [
+            node
+            for stim_id, _pauli in extraction.supports[row]
+            for node in nodes_by_column[extraction.stim_to_column[stim_id]]
+            if node in neighbors
+        ]
+    return legs_by_row
+
+
+def _split_ancilla_into_cat(
+    graph: GraphState,
+    ancilla: int,
+    legs: Sequence[int],
+    xflow: dict[int, set[int]],
+) -> tuple[list[int], int]:
+    r"""Replace a product ancilla by a ring of cat nodes, one per data leg.
+
+    legs lists the data nodes joined to the ancilla in the order of the
+    product's targets. The ancilla becomes a teleportation wire
+    :math:`a_1 - c_1 - a_2 - \cdots - a_w` of X-measured nodes. Cat node
+    :math:`a_i` keeps leg i, connector :math:`c_i` joins :math:`a_i` to
+    :math:`a_{i+1}`, and the original ancilla is the last cat node
+    :math:`a_w`, so its basis, its edges to other ancillas, and its record
+    node are unchanged. The wire flow :math:`a_i \to c_i \to a_{i+1}` makes
+    the corrected record of :math:`a_w` the parity of all cat outcomes. A
+    closing connector :math:`c_w` between :math:`a_w` and :math:`a_1` has a
+    deterministic corrected record, which flags a single fault on the wire.
+    A fault on a cat node then reaches at most one data leg.
+
+    Returns
+    -------
+    `tuple`\[`list`\[`int`\], `int`\]
+        The cat node of each leg and the closing connector.
+    """
+    coordinates = graph.coordinates
+    center = coordinates.get(ancilla)
+    x_basis = AxisMeasBasis(Axis.X, Sign.PLUS)
+
+    def toward(node: int, fraction: float) -> tuple[float, ...] | None:
+        target = coordinates.get(node)
+        if center is None or target is None or len(center) != len(target):
+            return None
+        return tuple(c + fraction * (t - c) for c, t in zip(center, target, strict=True))
+
+    cat_nodes: list[int] = []
+    for leg in legs[:-1]:
+        cat_node = graph.add_node(coordinate=toward(leg, 0.5))
+        graph.assign_meas_basis(cat_node, x_basis)
+        graph.remove_edge(ancilla, leg)
+        graph.add_edge(cat_node, leg)
+        cat_nodes.append(cat_node)
+    cat_nodes.append(ancilla)
+    connectors: list[int] = []
+    for position, left in enumerate(cat_nodes):
+        right = cat_nodes[(position + 1) % len(cat_nodes)]
+        connector = graph.add_node(coordinate=toward(legs[position], 0.25))
+        graph.assign_meas_basis(connector, x_basis)
+        graph.add_edge(connector, left)
+        graph.add_edge(connector, right)
+        connectors.append(connector)
+    for position, cat_node in enumerate(cat_nodes[:-1]):
+        xflow[cat_node] = {connectors[position]}
+        xflow[connectors[position]] = {cat_nodes[position + 1]}
+    return cat_nodes, connectors[-1]
 
 
 def _add_relocated_io_nodes(
@@ -2022,9 +2342,14 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
     record_nodes = dict(first.record_nodes)
     feedback_targets = list(first.feedback_targets)
     mpp_extractions = list(first.mpp_extractions)
+    flag_nodes = list(first.flag_nodes)
+    mpp_legs = dict(first.mpp_legs)
 
     for fragment in fragments[1:]:
         node_map2 = compose_into(graph, fragment.graph)
+        flag_nodes.extend(node_map2[node] for node in fragment.flag_nodes)
+        for record_index, legs in fragment.mpp_legs.items():
+            mpp_legs[record_index] = tuple((node_map2[ancilla], node_map2[data]) for ancilla, data in legs)
         _merge_flow_into(xflow, _remap_flow(fragment.xflow, node_map2))
         _merge_flow_into(zflow, _remap_flow(fragment.zflow, node_map2))
         record_nodes.update(_remap_record_nodes(fragment.record_nodes, node_map2))
@@ -2038,6 +2363,8 @@ def _compose_fragments(fragments: Sequence[_Fragment]) -> _Fragment:
         feedback_targets=tuple(feedback_targets),
         mpp_extractions=tuple(mpp_extractions),
         zflow=zflow,
+        flag_nodes=tuple(flag_nodes),
+        mpp_legs=mpp_legs,
     )
 
 
@@ -2076,6 +2403,8 @@ def _apply_single_measurements(
         feedback_targets=fragment.feedback_targets,
         mpp_extractions=fragment.mpp_extractions,
         zflow=fragment.zflow,
+        flag_nodes=fragment.flag_nodes,
+        mpp_legs=fragment.mpp_legs,
     )
 
 

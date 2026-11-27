@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from graphqomb.command import M, N
+from graphqomb.command import TICK, E, M, N
 from graphqomb.common import Axis, AxisMeasBasis, Plane, PlannerMeasBasis, Sign, determine_pauli_axis
 from graphqomb.graphstate import GraphState
 from graphqomb.noise_model import DepolarizingNoiseModel
@@ -17,6 +17,7 @@ from graphqomb.ptn_format import dumps as ptn_dumps
 from graphqomb.qompiler import qompile
 from graphqomb.scheduler import Scheduler
 from graphqomb.stim_glue import (
+    CAT_FLAG_TAG,
     clifft_compile,
     clifft_file_to_ir,
     clifft_file_to_pattern,
@@ -225,3 +226,53 @@ def test_injection_ir_accepts_manual_magic_before_probe() -> None:
     result = ir.to_pattern(scheduler)
     measured = [c.node for c in result.pattern if isinstance(c, M)]
     assert measured.index(magic) < measured.index(probe)
+
+
+def test_clifft_entry_points_accept_cat_ancillas(tmp_path: Path) -> None:
+    text = "RX 0\nT 0\nTICK\nMPP Z0*Z1*Z2"
+    path = tmp_path / "circuit.stim"
+    path.write_text(text, encoding="utf-8")
+
+    assert clifft_text_to_ir(text).feedforward.parity_check_tags == []
+    assert clifft_text_to_ir(text, mpp_ancilla="cat").feedforward.parity_check_tags == [CAT_FLAG_TAG]
+    assert clifft_file_to_ir(path, mpp_ancilla="cat").feedforward.parity_check_tags == [CAT_FLAG_TAG]
+    assert clifft_text_to_pattern(text, mpp_ancilla="cat").pattern.frame.parity_check_tags == [CAT_FLAG_TAG]
+    assert clifft_file_to_pattern(path, mpp_ancilla="cat").pattern.frame.parity_check_tags == [CAT_FLAG_TAG]
+
+
+def test_clifft_import_reads_the_mpp_ancilla_tag_and_target_order() -> None:
+    text = "RX 0\nT 0\nTICK\nMPP[ancilla=cat] Z2*Z0*Z1\nTICK\nMPP[ancilla=single] X0*X1*X2"
+
+    for t_mode in ("measurement", "injection"):
+        ir = clifft_text_to_ir(text, t_mode=t_mode, mpp_ancilla="cat")
+        assert ir.feedforward.parity_check_tags == [CAT_FLAG_TAG]
+        assert len({ancilla for ancilla, _ in ir.mpp_legs[0]}) == 3
+        assert [ancilla for ancilla, _ in ir.mpp_legs[1]] == [ir.record_to_node[1]] * 3
+        scheduler = ir.make_scheduler()
+        assert scheduler.solve_schedule()
+        ir.sequence_mpp_legs(scheduler)
+        ir.to_pattern(scheduler)
+
+
+@pytest.mark.parametrize("t_mode", ["measurement", "injection"])
+def test_clifft_pattern_entry_points_sequence_mpp_legs_on_request(
+    tmp_path: Path, t_mode: Literal["measurement", "injection"]
+) -> None:
+    text = "RX 0\nT 0\nTICK\nMPP Z2*Z0*Z1"
+    path = tmp_path / "circuit.stim"
+    path.write_text(text, encoding="utf-8")
+
+    for result in (
+        clifft_text_to_pattern(text, t_mode=t_mode, sequence_mpp_legs=True),
+        clifft_file_to_pattern(path, t_mode=t_mode, sequence_mpp_legs=True),
+    ):
+        slices: dict[frozenset[int], int] = {}
+        time = 0
+        for command in result.pattern.commands:
+            if isinstance(command, TICK):
+                time += 1
+            elif isinstance(command, E):
+                slices[frozenset(command.nodes)] = time
+        times = [slices[frozenset(leg)] for leg in result.mpp_legs[0]]
+        assert len(times) == 3
+        assert times == sorted(set(times))

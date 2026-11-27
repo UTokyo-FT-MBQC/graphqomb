@@ -25,6 +25,13 @@ and keeping the shots whose decoded bit selects it. Kept shots are decoded
 with a lookup decoder of each branch's detector error model; the logical
 error rate scales as ``p^2``.
 
+``color_code_cat_ancilla.py`` writes a memory experiment of the triangular
+color code with plaquette ``MPP`` products and imports it with single
+ancillas and with ``mpp_ancilla="cat"``. It computes the fault distance of
+the exported noisy Stim circuits for distances 3 and 5 in several CZ orders.
+Cat ancillas keep the code distance; single ancillas do not in the orders
+tried.
+
 ``cultivation_import.py`` imports the distance-3 T-gate cultivation circuit
 distributed with Clifft, downloaded from a pinned commit, using both T
 lowerings of ``clifft_text_to_pattern``. Clifft sampling after MBQC

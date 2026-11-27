@@ -15,6 +15,7 @@ This package provides:
 - `stim_file_to_pattern`: Function to import a supported Stim file into a pattern.
 - `StimImportResult`: Result of importing a supported Stim circuit.
 - `StimImportIR`: Graph, feedforward, source mappings, and injection measurement order before scheduling.
+- `CAT_FLAG_TAG`: The detector tag of the flag checks added by ``mpp_ancilla="cat"``.
 - `transpile`: Function to transpile a Stim Clifford circuit into the Clifford J/CZ basis.
 - `optimize_j_cz`: Function to remove redundant Clifford J and CZ gates.
 - `STIM_GATE_J_ANGLES`: Mapping from single-qubit basis gates to J angles.
@@ -25,8 +26,8 @@ This package provides:
 - `stabilizer_code_from_stim_file`: Function to build a stabilizer code from a Stim file.
 - `StimMppExtraction`: Stabilizer-code data extracted from Stim MPP products.
 - `FLAG_DETECTOR_TAG`: The Stim instruction tag marking a post-selection flag detector.
-- `flag_detector_indices`: Function to list flag-detector indices in a Stim circuit.
-- `flag_postselection_mask`: Function to build a sinter post-selection mask from flag detectors.
+- `flag_detector_indices`: Function to list the detector indices carrying a tag in a Stim circuit.
+- `flag_postselection_mask`: Function to build a sinter post-selection mask from tagged detectors.
 """
 
 from graphqomb.stim_glue._parse import StimMppExtraction
@@ -39,6 +40,7 @@ from graphqomb.stim_glue.clifft_importer import (
 )
 from graphqomb.stim_glue.compiler import stim_compile
 from graphqomb.stim_glue.importer import (
+    CAT_FLAG_TAG,
     StimImportIR,
     StimImportResult,
     stim_circuit_to_ir,
@@ -59,6 +61,7 @@ from graphqomb.stim_glue.transpiler import (
 )
 
 __all__ = [
+    "CAT_FLAG_TAG",
     "FLAG_DETECTOR_TAG",
     "STIM_GATE_J_ANGLES",
     "RoundRewriteResult",

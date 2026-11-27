@@ -8,17 +8,18 @@ import warnings
 from dataclasses import replace
 from graphlib import TopologicalSorter
 from itertools import pairwise
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from unittest.mock import patch
 
 import numpy as np
 import pytest
 from scipy.sparse import csr_array
 
-from graphqomb.command import E, M
+from graphqomb.command import TICK, E, M
 from graphqomb.common import Axis, AxisMeasBasis, Sign
 from graphqomb.feedforward import inverse_dag_from_dag
 from graphqomb.graphstate import odd_neighbors
+from graphqomb.noise_model import DepolarizingNoiseModel, MeasurementFlipNoiseModel
 from graphqomb.pattern import is_runnable
 from graphqomb.ptn_format import dumps as ptn_dumps
 from graphqomb.qeccode import StabilizerCode, YFoliation, build_graph_state
@@ -33,7 +34,12 @@ from graphqomb.stim_glue._parse import (
     stim_mpp_extraction_from_records,
 )
 from graphqomb.stim_glue.compiler import stim_compile
-from graphqomb.stim_glue.importer import stim_circuit_to_pattern, stim_file_to_pattern, stim_text_to_pattern
+from graphqomb.stim_glue.importer import (
+    CAT_FLAG_TAG,
+    stim_circuit_to_pattern,
+    stim_file_to_pattern,
+    stim_text_to_pattern,
+)
 
 stim = pytest.importorskip("stim")
 
@@ -42,6 +48,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from numpy.typing import NDArray
+
+    from graphqomb.pattern import Pattern
 
 
 @pytest.mark.parametrize(
@@ -2304,3 +2312,344 @@ def test_stim_ir_rejects_a_scheduler_for_a_different_graph() -> None:
 
     with pytest.raises(ValueError, match="scheduler must belong to this IR's graph"):
         ir.to_pattern(scheduler)
+
+
+@pytest.mark.parametrize("y_foliation", list(YFoliation))
+@pytest.mark.parametrize("num_y", range(4))
+@pytest.mark.parametrize("inverted", [False, True])
+def test_mpp_cat_ancilla_preserves_hermitian_product_sign(y_foliation: YFoliation, num_y: int, inverted: bool) -> None:
+    source = stim.Circuit("RX 0\nR 1")
+    if num_y:
+        source.append("RY", list(range(2, num_y + 2)))
+    product = ("!" if inverted else "") + "X0*Z1" + "".join(f"*Y{q}" for q in range(2, num_y + 2))
+    source += stim.Circuit(f"MPP {product}\nDETECTOR rec[-1]\nOBSERVABLE_INCLUDE(0) rec[-1]")
+
+    result = stim_circuit_to_pattern(source, y_foliation=y_foliation, mpp_ancilla="cat")
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    # The source detector keeps its index; a product with three or more legs adds one flag check.
+    tags = result.pattern.frame.parity_check_tags
+    assert tags[0] != CAT_FLAG_TAG
+    assert tags[1:] == [CAT_FLAG_TAG] * (num_y > 0)
+    assert compiled.detector_error_model().num_errors == 0
+    expected_detectors, expected_observables = source.reference_detector_and_observable_signs()
+    actual_detectors, actual_observables = compiled.reference_detector_and_observable_signs()
+    assert np.array_equal(actual_detectors[:1], expected_detectors)
+    assert not actual_detectors[1:].any()
+    assert np.array_equal(actual_observables, expected_observables)
+
+
+@pytest.mark.parametrize("y_foliation", [YFoliation.TYPE_I, YFoliation.TYPE_II])
+@pytest.mark.parametrize(
+    "products",
+    [
+        pytest.param(("Z0*Z1*Z2*Z3", "X0*X1*X2*X3"), id="css-pair"),
+        pytest.param(("Y0*Z1*X2", "Y0*X1*Z2"), id="yy-overlap-with-mixed-pair"),
+        pytest.param(("Y0*Y1*Y2*Y3", "Y2*Y3"), id="two-yy-overlaps"),
+        pytest.param(("Z0*X1*Z2", "X0*Z1*Z2*Z3"), id="twisted-ancilla-pair"),
+        pytest.param(("!Y0*Y1*Z2", "Y1*Y2*X0"), id="signed-yy-overlap"),
+    ],
+)
+def test_mpp_cat_ancilla_rounds_stay_deterministic(products: tuple[str, ...], y_foliation: YFoliation) -> None:
+    text = _two_round_mpp_circuit(products)
+    result = stim_text_to_pattern(text, y_foliation=y_foliation, mpp_ancilla="cat")
+    compiled = stim.Circuit(stim_compile(result.pattern))
+
+    assert compiled.num_detectors > stim.Circuit(text).num_detectors
+    assert compiled.detector_error_model().num_errors == 0
+    assert not np.asarray(compiled.compile_detector_sampler(seed=11).sample(64)).any()
+
+
+def test_mpp_cat_ancilla_splits_product_into_ring_with_flag() -> None:
+    single = stim_text_to_pattern("MPP Z0*Z1*Z2*Z3")
+    cat = stim_text_to_pattern("MPP Z0*Z1*Z2*Z3", mpp_ancilla="cat")
+    single_graph = single.pattern.frame.graphstate
+    cat_graph = cat.pattern.frame.graphstate
+
+    # Three more cat nodes and four connectors; four legs and eight ring edges replace four legs.
+    assert len(cat_graph.nodes) == len(single_graph.nodes) + 7
+    assert len(cat_graph.edges) == len(single_graph.edges) + 8
+    assert len(single_graph.neighbors(single.record_to_node[0])) == 4
+    assert len(cat_graph.neighbors(cat.record_to_node[0])) == 3
+    assert cat.pattern.frame.parity_check_tags == [CAT_FLAG_TAG]
+    assert single.pattern.frame.parity_check_tags == []
+
+    # Two legs cannot spread a single ancilla fault, so the ancilla is kept.
+    pair = stim_text_to_pattern("MPP Z0*Z1", mpp_ancilla="cat")
+    assert len(pair.pattern.frame.graphstate.nodes) == len(
+        stim_text_to_pattern("MPP Z0*Z1").pattern.frame.graphstate.nodes
+    )
+    assert pair.pattern.frame.parity_check_tags == []
+
+
+def _unflagged_single_fault_signatures(mpp_ancilla: Literal["single", "cat"]) -> set[frozenset[int]]:
+    """Detector sets of single faults after measuring ZZZZ on four |+> qubits.
+
+    Detectors 0, 1, 2 compare the final X readouts of neighboring qubits, so
+    they identify the Z error left on the data up to the measured product.
+    """
+    text = (
+        "RX 0 1 2 3\nTICK\nMPP Z0*Z1*Z2*Z3\nTICK\nMX 0 1 2 3\n"
+        "DETECTOR rec[-4] rec[-3]\nDETECTOR rec[-3] rec[-2]\nDETECTOR rec[-2] rec[-1]"
+    )
+    pattern = stim_text_to_pattern(text, mpp_ancilla=mpp_ancilla).pattern
+    noise = [DepolarizingNoiseModel(p1=1e-3, p2=1e-3), MeasurementFlipNoiseModel(p=1e-3)]
+    compiled = stim.Circuit(stim_compile(pattern, noise_models=noise))
+    flags = {index for index, tag in enumerate(pattern.frame.parity_check_tags) if tag == CAT_FLAG_TAG}
+    signatures: set[frozenset[int]] = set()
+    for instruction in compiled.detector_error_model().flattened():
+        if instruction.type != "error":
+            continue
+        detectors = frozenset(target.val for target in instruction.targets_copy() if target.is_relative_detector_id())
+        if not detectors & flags:
+            signatures.add(detectors)
+    return signatures
+
+
+def test_mpp_cat_ancilla_confines_single_faults_to_one_data_wire() -> None:
+    # Z on one qubit flips the comparisons next to it; these sets are the weight-two errors.
+    two_wire_errors = {frozenset({1}), frozenset({0, 2}), frozenset({0, 1, 2})}
+
+    assert _unflagged_single_fault_signatures("single") & two_wire_errors
+    assert not _unflagged_single_fault_signatures("cat") & two_wire_errors
+
+
+def test_stim_import_rejects_unknown_mpp_ancilla() -> None:
+    with pytest.raises(ValueError, match="Unknown MPP ancilla kind"):
+        stim_text_to_pattern("MPP Z0*Z1*Z2", mpp_ancilla="flag")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
+def test_mpp_ancilla_tag_selects_the_ancilla_of_one_instruction() -> None:
+    text = "MPP[ancilla=cat] Z0*Z1*Z2*Z3\nTICK\nMPP Z0*Z1*Z2*Z3\nTICK\nMPP[ancilla=single] X0*X1*X2*X3"
+
+    def record_degrees(ir: importer.StimImportIR) -> list[int]:
+        return [len(ir.graph.neighbors(ir.record_to_node[record])) for record in range(3)]
+
+    # A ring leaves the record node one leg and two connectors; a single ancilla keeps four legs.
+    by_default_single = stim_text_to_ir(text)
+    assert record_degrees(by_default_single) == [3, 4, 4]
+    assert by_default_single.feedforward.parity_check_tags == [CAT_FLAG_TAG]
+    by_default_cat = stim_text_to_ir(text, mpp_ancilla="cat")
+    assert record_degrees(by_default_cat) == [3, 3, 4]
+    assert by_default_cat.feedforward.parity_check_tags == [CAT_FLAG_TAG] * 2
+
+
+def test_mpp_ancilla_tag_applies_per_instruction_inside_one_block() -> None:
+    ir = stim_text_to_ir("MPP[ancilla=cat] Z0*Z1*Z2 Z3*Z4*Z5\nMPP Z6*Z7*Z8\nMPP[unrelated] Z9*Z10*Z11")
+
+    assert [len(ir.graph.neighbors(ir.record_to_node[record])) for record in range(4)] == [3, 3, 3, 3]
+    assert [len({ancilla for ancilla, _ in ir.mpp_legs[record]}) for record in range(4)] == [3, 3, 1, 1]
+    assert ir.feedforward.parity_check_tags == [CAT_FLAG_TAG] * 2
+
+
+def test_mpp_ancilla_tag_on_every_instruction_matches_the_import_option() -> None:
+    products = "Z2*Z0*Z1*Z3 X0*X1*X2*X3"
+    tagged = stim_text_to_ir(f"MPP[ancilla=cat] {products}")
+    option = stim_text_to_ir(f"MPP {products}", mpp_ancilla="cat")
+
+    assert tagged.graph.nodes == option.graph.nodes
+    assert tagged.graph.edges == option.graph.edges
+    assert {node: (basis.plane, basis.angle) for node, basis in tagged.graph.meas_bases.items()} == {
+        node: (basis.plane, basis.angle) for node, basis in option.graph.meas_bases.items()
+    }
+    assert tagged.mpp_legs == option.mpp_legs
+    assert tagged.feedforward.xflow == option.feedforward.xflow
+    assert tagged.feedforward.parity_check_group == option.feedforward.parity_check_group
+    assert tagged.feedforward.parity_check_tags == option.feedforward.parity_check_tags == [CAT_FLAG_TAG] * 2
+
+
+def test_stim_import_rejects_unknown_mpp_ancilla_tag() -> None:
+    with pytest.raises(ValueError, match="Unknown MPP ancilla kind"):
+        stim_text_to_ir("MPP[ancilla=flag] Z0*Z1*Z2")
+
+
+def _leg_qubits(ir: importer.StimImportIR, record: int) -> list[int]:
+    """Stim qubit of each leg's data node, read from ``QUBIT_COORDS(q, 0) q``."""
+    return [round(ir.graph.coordinates[data][0]) for _, data in ir.mpp_legs[record]]
+
+
+_LINE_COORDS = "\n".join(f"QUBIT_COORDS({qubit}, 0) {qubit}" for qubit in range(4)) + "\n"
+
+
+def test_mpp_legs_follow_the_target_order() -> None:
+    ir = stim_text_to_ir(_LINE_COORDS + "MPP Z2*Z0*Z3*Z1 X1*X3\nMXX 3 0")
+
+    assert _leg_qubits(ir, 0) == [2, 0, 3, 1]
+    assert _leg_qubits(ir, 1) == [1, 3]
+    assert _leg_qubits(ir, 2) == [3, 0]
+    for record in range(3):
+        ancilla = ir.record_to_node[record]
+        assert [node for node, _ in ir.mpp_legs[record]] == [ancilla] * len(ir.mpp_legs[record])
+        assert {data for _, data in ir.mpp_legs[record]} <= ir.graph.neighbors(ancilla)
+
+
+def test_mpp_legs_of_a_y_factor_are_its_z_leg_then_its_x_leg() -> None:
+    type_i = stim_text_to_ir(_LINE_COORDS + "MPP Z2*Y1*X0")
+    assert _leg_qubits(type_i, 0) == [2, 1, 1, 0]
+    z_leg, x_leg = (data for _, data in type_i.mpp_legs[0][1:3])
+    assert type_i.graph.coordinates[z_leg][2] < type_i.graph.coordinates[x_leg][2]
+
+    type_ii = stim_text_to_ir(_LINE_COORDS + "MPP Z2*Y1*X0", y_foliation=YFoliation.TYPE_II)
+    assert _leg_qubits(type_ii, 0) == [2, 1, 0]
+
+
+def test_mpp_cat_ring_follows_the_target_order() -> None:
+    ir = stim_text_to_ir(_LINE_COORDS + "MPP[ancilla=cat] Z2*Z0*Z3*Z1")
+    graph = ir.graph
+    cat_nodes = [node for node, _ in ir.mpp_legs[0]]
+
+    assert _leg_qubits(ir, 0) == [2, 0, 3, 1]
+    assert len(set(cat_nodes)) == 4
+    assert cat_nodes[-1] == ir.record_to_node[0]
+    for cat_node, data in ir.mpp_legs[0]:
+        assert data in graph.neighbors(cat_node)
+    # Cat nodes of neighboring targets share a connector; the others share nothing.
+    for position, cat_node in enumerate(cat_nodes):
+        assert len(graph.neighbors(cat_node) & graph.neighbors(cat_nodes[(position + 1) % 4])) == 1
+        assert not graph.neighbors(cat_node) & graph.neighbors(cat_nodes[(position + 2) % 4])
+
+
+def test_mpp_legs_stay_valid_across_composed_blocks() -> None:
+    ir = stim_text_to_ir(_LINE_COORDS + "R 0 1 2 3\nTICK\nMPP Z0*Z1*Z2\nTICK\nH 0\nTICK\nMPP[ancilla=cat] Z3*Z2*Z1")
+
+    assert _leg_qubits(ir, 0) == [0, 1, 2]
+    assert _leg_qubits(ir, 1) == [3, 2, 1]
+    edges = {frozenset(edge) for edge in ir.graph.edges}
+    assert all(frozenset(leg) in edges for legs in ir.mpp_legs.values() for leg in legs)
+    assert ir.mpp_legs[1][-1][0] == ir.record_to_node[1]
+
+
+def _entangle_slices(pattern: Pattern) -> dict[frozenset[int], int]:
+    slices: dict[frozenset[int], int] = {}
+    time = 0
+    for command in pattern.commands:
+        if isinstance(command, TICK):
+            time += 1
+        elif isinstance(command, E):
+            slices[frozenset(command.nodes)] = time
+    return slices
+
+
+@pytest.mark.parametrize("y_foliation", [YFoliation.TYPE_I, YFoliation.TYPE_II])
+@pytest.mark.parametrize(
+    "products",
+    [
+        pytest.param(("Z2*Z0*Z3*Z1", "X3*X2*X1*X0"), id="css-pair"),
+        pytest.param(("Y0*Z1*X2", "Y0*X1*Z2"), id="yy-overlap-with-mixed-pair"),
+        pytest.param(("Z0*X1*Z2", "X0*Z1*Z2*Z3"), id="twisted-ancilla-pair"),
+        pytest.param(("!Y0*Y1*Z2", "Y1*Y2*X0"), id="signed-yy-overlap"),
+    ],
+)
+def test_sequence_mpp_legs_entangles_each_ancilla_in_target_order(
+    products: tuple[str, ...], y_foliation: YFoliation
+) -> None:
+    text = _two_round_mpp_circuit(products)
+    ir = stim_text_to_ir(text, y_foliation=y_foliation)
+    scheduler = ir.make_scheduler()
+    assert scheduler.solve_schedule()
+    ir.sequence_mpp_legs(scheduler)
+    pattern = ir.to_pattern(scheduler).pattern
+
+    slices = _entangle_slices(pattern)
+    assert len(ir.mpp_legs) == 2 * len(products)
+    for legs in ir.mpp_legs.values():
+        times = [slices[frozenset(leg)] for leg in legs]
+        assert times == sorted(set(times))
+    compiled = stim.Circuit(stim_compile(pattern))
+    assert compiled.num_detectors == stim.Circuit(text).num_detectors
+    assert not np.asarray(compiled.compile_detector_sampler(seed=5).sample(64)).any()
+
+
+def test_sequence_mpp_legs_adds_no_slice_for_cat_ancillas() -> None:
+    ir = stim_text_to_ir("R 0 1 2 3\nTICK\nMPP Z0*Z1*Z2*Z3\nTICK\nMX 0 1 2 3", mpp_ancilla="cat")
+    scheduler = ir.make_scheduler()
+    assert scheduler.solve_schedule()
+    num_slices = scheduler.num_slices()
+    ir.sequence_mpp_legs(scheduler)
+
+    assert scheduler.num_slices() == num_slices
+    ir.to_pattern(scheduler)
+
+
+@pytest.mark.parametrize(
+    ("product", "hook"),
+    [("Z0*Z1*Z2*Z3", {1}), ("Z0*Z2*Z1*Z3", {0, 1, 2}), ("Z0*Z3*Z1*Z2", {0, 2}), ("Z3*Z2*Z0*Z1", {1})],
+)
+def test_sequenced_single_ancilla_hook_error_is_the_last_two_targets(product: str, hook: set[int]) -> None:
+    # Detectors 0, 1, 2 compare the X readouts of qubits (0, 1), (1, 2), (2, 3).
+    text = (
+        f"RX 0 1 2 3\nTICK\nMPP {product}\nTICK\nMX 0 1 2 3\n"
+        "DETECTOR rec[-4] rec[-3]\nDETECTOR rec[-3] rec[-2]\nDETECTOR rec[-2] rec[-1]"
+    )
+    ir = stim_text_to_ir(text)
+    scheduler = ir.make_scheduler()
+    assert scheduler.solve_schedule()
+    ir.sequence_mpp_legs(scheduler)
+    noise = [DepolarizingNoiseModel(p1=1e-3, p2=1e-3), MeasurementFlipNoiseModel(p=1e-3)]
+    compiled = stim.Circuit(stim_compile(ir.to_pattern(scheduler).pattern, noise_models=noise))
+    signatures = {
+        frozenset(target.val for target in instruction.targets_copy() if target.is_relative_detector_id())
+        for instruction in compiled.detector_error_model().flattened()
+        if instruction.type == "error"
+    }
+
+    # The Z errors on two wires, up to the measured product: Z0Z1, Z0Z3, Z0Z2.
+    two_wire_errors = {frozenset({1}), frozenset({0, 2}), frozenset({0, 1, 2})}
+    assert signatures & two_wire_errors == {frozenset(hook)}
+
+
+def test_sequence_mpp_legs_prepares_a_data_node_earlier_when_the_target_order_needs_it() -> None:
+    ir = stim_text_to_ir("MPP X0*Z1")
+    (ancilla, first), (_, second) = ir.mpp_legs[0]
+    scheduler = ir.make_scheduler()
+    order = [node for node in TopologicalSorter(inverse_dag_from_dag(scheduler.dag)).static_order() if node != second]
+    measure_time = {node: time for time, node in enumerate([second, *order], start=1) if node in scheduler.measure_time}
+    # The second target's data node is measured before the first target's data node exists.
+    prepare_time = dict.fromkeys(scheduler.prepare_time, 0) | {first: measure_time[second]}
+    assert measure_time[ancilla] > measure_time[second]
+    scheduler.manual_schedule(prepare_time, measure_time)
+    ir.to_pattern(scheduler)
+
+    ir.sequence_mpp_legs(scheduler)
+    slices = _entangle_slices(ir.to_pattern(scheduler).pattern)
+
+    assert slices[frozenset((ancilla, first))] < slices[frozenset((ancilla, second))]
+    prepared, measured = scheduler.prepare_time[first], scheduler.measure_time[second]
+    assert prepared is not None
+    assert measured is not None
+    assert prepared < measured
+
+
+def test_sequence_mpp_legs_rejects_unusable_schedulers() -> None:
+    ir = stim_text_to_ir("MPP Z0*Z1*Z2")
+    with pytest.raises(ValueError, match="prepare and measure times"):
+        ir.sequence_mpp_legs(ir.make_scheduler())
+
+    other = stim_text_to_ir("MPP Z0*Z1*Z2").make_scheduler()
+    assert other.solve_schedule()
+    with pytest.raises(ValueError, match="scheduler must belong to this IR's graph"):
+        ir.sequence_mpp_legs(other)
+
+
+def test_pattern_entry_points_sequence_mpp_legs_on_request(tmp_path: Path) -> None:
+    text = "RX 0 1 2 3\nTICK\nMPP Z2*Z0*Z3*Z1 X3*X1*X0*X2\nTICK\nMX 0 1 2 3"
+    path = tmp_path / "circuit.stim"
+    path.write_text(text, encoding="utf-8")
+    config = ScheduleConfig(Strategy.MINIMIZE_TIME)
+
+    def leg_times(result: importer.StimImportResult) -> list[list[int]]:
+        slices = _entangle_slices(result.pattern)
+        return [[slices[frozenset(leg)] for leg in legs] for legs in result.mpp_legs.values()]
+
+    default = stim_text_to_pattern(text)
+    assert default.mpp_legs == stim_text_to_ir(text).mpp_legs
+    assert all(len(set(times)) == 1 for times in leg_times(default))
+    for result in (
+        stim_text_to_pattern(text, sequence_mpp_legs=True),
+        stim_circuit_to_pattern(stim.Circuit(text), sequence_mpp_legs=True),
+        stim_file_to_pattern(path, sequence_mpp_legs=True),
+        stim_text_to_pattern(text, sequence_mpp_legs=True, schedule_config=config),
+    ):
+        assert result.mpp_legs == default.mpp_legs
+        assert all(times == sorted(set(times)) and len(times) == 4 for times in leg_times(result))
+        is_runnable(result.pattern)
