@@ -263,6 +263,123 @@ whole-circuit index space, and each ``StimMppExtraction`` retains the
 corresponding absolute record sets even when an annotation also references
 records outside that MPP unit.
 
+Cat-state ancillas
+------------------
+
+By default an ``MPP`` product is measured through one ancilla node joined to
+every data leg of the product. An X fault on that node between two of its CZ
+gates acts as Z on each data wire coupled later, so one fault can reach
+several data wires.
+
+Pass ``mpp_ancilla="cat"`` to any import entry point, including the
+Clifford+T ones, to measure each product with at least three data legs
+through a ring. Leg :math:`d_i` is joined to its own cat node :math:`a_i`.
+Connector :math:`c_i` joins :math:`a_i` to :math:`a_{i+1}`, and the last
+connector closes the ring. Legs are graph edges, so a Y factor has two legs
+under Type I foliation. A product with fewer legs keeps its single ancilla.
+The legs follow the order of the product's targets, so the cat nodes of
+neighboring targets are neighbors on the ring.
+
+An instruction tag selects the ancilla for the products of one instruction
+and overrides ``mpp_ancilla``:
+
+.. code-block:: text
+
+   MPP[ancilla=cat] X0*X1*X2*X3*X4*X5
+   MPP[ancilla=single] Z0*Z1*Z2*Z3
+   MPP X0*X1*X2*X3
+
+The first instruction uses a ring, the second a single ancilla, and the third
+follows ``mpp_ancilla``. Any other tag is ignored. A product is measured
+through a full ring or through one ancilla; a ring with fewer cat nodes than
+legs is not supported.
+
+The original ancilla becomes the last cat node. Its measurement basis, its
+edges to other ancillas, and its entry in ``record_to_node`` are unchanged,
+and its corrected record is still the outcome of the product. The added cat
+nodes and the connectors are measured in X.
+
+The parity of the connector outcomes is fixed. The importer appends it to the
+parity checks with the tag
+:data:`~graphqomb.stim_glue.importer.CAT_FLAG_TAG`, after the source
+detectors, which keep their indices. One fault on the ring then flips this
+flag check or reaches at most one data wire, in any CZ order. Select the flag
+checks of a compiled circuit by their tag to decode or post-select them
+separately from the checks of the code:
+
+.. code-block:: python
+
+   import stim
+
+   from graphqomb.stim_glue import (
+       CAT_FLAG_TAG,
+       flag_postselection_mask,
+       stim_compile,
+       stim_text_to_pattern,
+   )
+
+   result = stim_text_to_pattern("MPP Z0*Z1*Z2*Z3", mpp_ancilla="cat")
+   circuit = stim.Circuit(stim_compile(result.pattern))
+   mask = flag_postselection_mask(circuit, CAT_FLAG_TAG)
+
+A flag check detects one fault per ring; two faults on the same ring can
+cancel in it. The fault distance of a compiled circuit also depends on the
+order of its CZ gates, which the schedule decides.
+:doc:`/gallery/ftqc/color_code_cat_ancilla` computes the fault distance of a
+color-code memory experiment for both ancilla kinds and several CZ orders.
+
+Leg order
+---------
+
+A fault spreads only through the CZ gates applied after it, so the order in
+which an ancilla node is entangled with its legs decides which data wires one
+fault reaches. The importer takes this order from the source circuit: the
+legs of a product follow the order of its targets. ``ir.mpp_legs`` maps the
+measurement record of each product to its legs, as ``(ancilla node, data
+node)`` edges in that order. A Y factor under Type I foliation contributes
+its Z leg and then its X leg.
+
+The default schedule entangles an edge as soon as both of its nodes are
+prepared, and the edges of one time slice are in no particular order.
+:meth:`~graphqomb.stim_glue.importer.StimImportIR.sequence_mpp_legs` rewrites
+a schedule through ``Scheduler.manual_schedule`` so that the legs sharing an
+ancilla node are entangled one per time slice, in target order:
+
+.. code-block:: python
+
+   from graphqomb.stim_glue import stim_text_to_ir
+
+   ir = stim_text_to_ir("MPP Z0*Z1*Z2*Z3")
+   scheduler = ir.make_scheduler()
+   scheduler.solve_schedule()
+   ir.sequence_mpp_legs(scheduler)
+   result = ir.to_pattern(scheduler)
+
+The prepare and measure order of the schedule is kept. A time slice is split
+where an ancilla node has several legs in it, and a data node is prepared
+earlier where a later target's data node would otherwise be measured before
+it exists.
+
+With a single ancilla on four targets, a fault on the ancilla between its
+second and third CZ gate then leaves an error on the data wires of the last
+two targets. Order the targets so that this pair does not shorten a logical
+operator of the code. To schedule the legs by hand instead, pass entanglement
+times for the edges of ``ir.mpp_legs`` to ``Scheduler.manual_schedule``.
+
+Legs on different ancilla nodes are not ordered against each other, and
+neither are the edges inside a cat ring. A cat node has one leg, so cat
+ancillas add no time slices.
+
+The ``*_to_pattern`` entry points keep the default schedule unless
+``sequence_mpp_legs=True`` is passed, which applies the same rewrite to the
+solved schedule:
+
+.. code-block:: python
+
+   result = stim_text_to_pattern("MPP Z0*Z1*Z2*Z3", sequence_mpp_legs=True)
+
+``result.mpp_legs`` and ``ir.mpp_legs`` hold the same legs.
+
 Noise policy
 ------------
 

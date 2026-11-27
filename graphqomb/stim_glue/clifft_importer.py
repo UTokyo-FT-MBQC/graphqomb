@@ -20,12 +20,13 @@ if TYPE_CHECKING:
     from graphqomb.scheduler import ScheduleConfig
 
 
-def clifft_text_to_ir(
+def clifft_text_to_ir(  # ruff:ignore[too-many-arguments]
     text: str,
     *,
     t_mode: Literal["measurement", "injection"] = "measurement",
     coord_dims: int = 2,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
 ) -> StimImportIR:
     r"""Import Stim text extended with T and T_DAG without scheduling or lowering.
@@ -69,16 +70,18 @@ def clifft_text_to_ir(
         t_mode=t_mode,
         coord_dims=coord_dims,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
     )
 
 
-def clifft_file_to_ir(
+def clifft_file_to_ir(  # ruff:ignore[too-many-arguments]
     path: str | Path,
     *,
     t_mode: Literal["measurement", "injection"] = "measurement",
     coord_dims: int = 2,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
 ) -> StimImportIR:
     """Import a Stim+T file without scheduling; see `clifft_text_to_ir`.
@@ -93,6 +96,7 @@ def clifft_file_to_ir(
         t_mode=t_mode,
         coord_dims=coord_dims,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
     )
 
@@ -104,14 +108,17 @@ def clifft_text_to_pattern(  # ruff:ignore[too-many-arguments]
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
+    sequence_mpp_legs: bool = False,
 ) -> StimImportResult:
     r"""Import Stim text extended with T and T_DAG into a GraphQOMB pattern.
 
     Import options are those of `clifft_text_to_ir`. schedule_config and
-    schedule_timeout select the pattern-level scheduler as in
+    schedule_timeout select the pattern-level scheduler, and
+    sequence_mpp_legs orders the legs of each product ancilla, as in
     `stim_circuit_to_pattern`. schedule_strategy is retained for compatibility
     and does not affect scheduling.
 
@@ -144,10 +151,12 @@ def clifft_text_to_pattern(  # ruff:ignore[too-many-arguments]
             t_mode=t_mode,
             coord_dims=coord_dims,
             y_foliation=y_foliation,
+            mpp_ancilla=mpp_ancilla,
             merge_safe_ticks=merge_safe_ticks,
         ),
         schedule_config=schedule_config,
         schedule_timeout=schedule_timeout,
+        sequence_mpp_legs=sequence_mpp_legs,
     )
 
 
@@ -158,9 +167,11 @@ def clifft_file_to_pattern(  # ruff:ignore[too-many-arguments]
     coord_dims: int = 2,
     schedule_strategy: CircuitScheduleStrategy = CircuitScheduleStrategy.PARALLEL,
     y_foliation: YFoliation = YFoliation.TYPE_I,
+    mpp_ancilla: Literal["single", "cat"] = "single",
     merge_safe_ticks: bool = False,
     schedule_config: ScheduleConfig | None = None,
     schedule_timeout: int = 60,
+    sequence_mpp_legs: bool = False,
 ) -> StimImportResult:
     """Import a Stim file extended with T and T_DAG; see `clifft_text_to_pattern`.
 
@@ -175,7 +186,9 @@ def clifft_file_to_pattern(  # ruff:ignore[too-many-arguments]
         coord_dims=coord_dims,
         schedule_strategy=schedule_strategy,
         y_foliation=y_foliation,
+        mpp_ancilla=mpp_ancilla,
         merge_safe_ticks=merge_safe_ticks,
         schedule_config=schedule_config,
         schedule_timeout=schedule_timeout,
+        sequence_mpp_legs=sequence_mpp_legs,
     )

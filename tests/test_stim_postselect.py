@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from graphqomb.stim_glue import (
+    CAT_FLAG_TAG,
     FLAG_DETECTOR_TAG,
     flag_detector_indices,
     flag_postselection_mask,
@@ -89,3 +90,39 @@ def test_flag_postselection_mask_on_compiled_pattern() -> None:
 
     assert flag_detector_indices(circuit) == (0,)
     assert flag_postselection_mask(circuit).tolist() == [1]
+
+
+def test_flag_helpers_select_the_requested_tag() -> None:
+    circuit = stim.Circuit(
+        """
+        RX 0 1 2
+        MX 0 1 2
+        DETECTOR[type=flag] rec[-3]
+        DETECTOR[other] rec[-2]
+        DETECTOR rec[-1]
+        DETECTOR[other] rec[-1]
+        """
+    )
+
+    assert flag_detector_indices(circuit, "other") == (1, 3)
+    assert flag_postselection_mask(circuit, "other").tolist() == [0b1010]
+    assert flag_detector_indices(circuit, tag=FLAG_DETECTOR_TAG) == flag_detector_indices(circuit) == (0,)
+
+
+def test_cat_flag_checks_are_selected_separately_from_source_flags() -> None:
+    result = stim_text_to_pattern(
+        """
+        RX 0 1 2
+        TICK
+        MPP X0*X1*X2
+        DETECTOR[type=flag] rec[-1]
+        """,
+        mpp_ancilla="cat",
+    )
+
+    circuit = stim.Circuit(stim_compile(result.pattern))
+
+    assert CAT_FLAG_TAG != FLAG_DETECTOR_TAG
+    assert flag_detector_indices(circuit) == (0,)
+    assert flag_detector_indices(circuit, CAT_FLAG_TAG) == (1,)
+    assert flag_postselection_mask(circuit, CAT_FLAG_TAG).tolist() == [2]

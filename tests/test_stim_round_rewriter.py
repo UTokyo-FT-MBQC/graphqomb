@@ -10,6 +10,7 @@ import pytest
 import stim
 
 from graphqomb.stim_glue import rewrite_syndrome_rounds, stim_circuit_to_pattern, stim_compile
+from graphqomb.stim_glue._t_gates import parse_t_circuit
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -279,3 +280,121 @@ def test_data_gate_moves_probe_support_before_phase_check_rejects_residual_phase
     assert result.rewritten_rounds == 0
     assert result.retained_reasons == ("residual phase between probes",)
     assert result.circuit == source
+
+
+def _assert_interacting_instrument(text: str, data: list[int]) -> None:
+    source = stim.Circuit(text)
+    result = rewrite_syndrome_rounds(source, interacting_probes=True)
+    assert result.rewritten_rounds == 1
+    expected = _instruments(source, source.num_qubits, data)
+    actual = _instruments(result.circuit, source.num_qubits, data)
+    actual = {tuple(record[i] for i in result.record_map): choi for record, choi in actual.items()}
+    assert expected.keys() == actual.keys()
+    for record in expected:
+        np.testing.assert_allclose(actual[record], expected[record], atol=2e-6, rtol=2e-6, err_msg=str(record))
+
+
+# A Bell pair of probes measures an X and a Z product of the same data qubits.
+_SUPERDENSE_PAIR = "RX 2\nR 3\nCX 2 3\nCX 0 2 1 3\nCX 2 0 3 1\nCX 2 3\nM 3\nMX 2"
+_SUPERDENSE_PLAQUETTE = "RX 4\nR 5\nCX 4 5\nCX 0 4 2 5\nCX 1 4 3 5\nCX 4 0 5 2\nCX 4 1 5 3\nCX 4 5\nM 5\nMX 4"
+
+
+def test_interacting_probes_are_retained_by_default() -> None:
+    source = stim.Circuit(_SUPERDENSE_PAIR)
+    result = rewrite_syndrome_rounds(source)
+    assert result.circuit == source
+    assert result.rewritten_rounds == 0
+
+
+@pytest.mark.parametrize(
+    ("text", "data"),
+    [
+        (_SUPERDENSE_PAIR, [0, 1]),
+        (_SUPERDENSE_PLAQUETTE, [0, 1, 2, 3]),
+        ("RX 2\nR 3\nCX 2 3\nCX 2 0 3 1\nCX 0 2 1 3\nCX 2 3\nM 3\nMX 2", [0, 1]),  # X products collected first
+        ("H 0\nCX 0 2\n" + _SUPERDENSE_PAIR, [0, 1]),  # probe reused after an earlier lifetime
+        ("RX 2\nR 3\nH 0 1\nCX 2 3\nCX 0 2 1 3\nCX 2 0 3 1\nS 1\nCX 2 3\nM !3\nMX !2", [0, 1]),  # data Cliffords, signs
+        ("RX 2\nR 3\nCX 2 3\nCX 0 2 1 3\nCX 2 0 3 1\nCZ 0 1\nCX 2 3\nM 3\nMX 2\nM 0", [0, 1]),  # retained readout
+    ],
+)
+def test_interacting_probes_preserve_arbitrary_input_instrument(text: str, data: list[int]) -> None:
+    _assert_interacting_instrument(text, data)
+
+
+def test_superdense_pair_becomes_products_with_pauli_feedback() -> None:
+    result = rewrite_syndrome_rounds(stim.Circuit(_SUPERDENSE_PAIR), interacting_probes=True)
+    assert result.eliminated_probes == 2
+    assert result.retained_reasons == ()
+    assert [str(inst) for inst in result.circuit if inst.name == "MPP"] == ["MPP Z0*Z1 X0*X1"]
+    # One probe per data qubit: the collected Z parity kicks back an X on one of them.
+    assert [str(inst) for inst in result.circuit if inst.name == "CX"] == ["CX rec[-2] 1"]
+    # Two data qubits per probe: the same record still kicks back an X on one probe's pair.
+    plaquette = rewrite_syndrome_rounds(stim.Circuit(_SUPERDENSE_PLAQUETTE), interacting_probes=True)
+    assert [str(inst) for inst in plaquette.circuit if inst.name != "TICK"] == [
+        "MPP Z0*Z1*Z2*Z3 X0*X1*X2*X3",
+        "CX rec[-2] 2 rec[-2] 3",
+    ]
+
+
+def test_superdense_hexagon_flows_match_source() -> None:
+    source = stim.Circuit(
+        "RX 6\nR 7\nCX 6 7\nCX 0 6 3 7\nCX 1 6 4 7\nCX 2 6 5 7\nCX 6 0 7 3\nCX 6 1 7 4\nCX 6 2 7 5\nCX 6 7\nM 7\nMX 6"
+    )
+    result = rewrite_syndrome_rounds(source, interacting_probes=True)
+    assert result.rewritten_rounds == 1
+    assert result.record_map == (0, 1)
+    flows = [
+        stim.Flow("ZZZZZZ -> rec[0]"),
+        stim.Flow("XXXXXX -> rec[1]"),
+        stim.Flow("1 -> XXXXXX xor rec[1]"),
+        # The Z record is removed from the output by the X kickback on three qubits.
+        stim.Flow("1 -> ZZZZZZ"),
+        stim.Flow("Z____Z -> _ZZZZ_ xor rec[0]"),
+    ]
+    assert source.has_all_flows(flows)
+    assert result.circuit.has_all_flows(flows)
+
+
+def test_interacting_readout_group_remaps_annotations_and_imports() -> None:
+    second = _SUPERDENSE_PAIR.replace("M 3\nMX 2", "M 3\nDETECTOR[z] rec[-1]\nMX 2\nDETECTOR[x] rec[-1] rec[-3]")
+    source = stim.Circuit(_SUPERDENSE_PAIR + "\n" + second)
+    result = rewrite_syndrome_rounds(source, interacting_probes=True)
+    assert result.rewritten_rounds == 2
+    assert result.record_map == (0, 1, 2, 3)
+    # Both annotations follow the two products of their readout group.
+    assert "DETECTOR[z] rec[-2]" in str(result.circuit)
+    assert "DETECTOR[x] rec[-1] rec[-3]" in str(result.circuit)
+    assert not np.asarray(result.circuit.compile_detector_sampler(seed=3).sample(32)).any()
+    exported = stim.Circuit(stim_compile(stim_circuit_to_pattern(result.circuit).pattern))
+    assert exported.num_detectors == source.num_detectors
+    assert exported.detector_error_model().num_errors == 0
+    assert not np.asarray(exported.compile_detector_sampler(seed=3).sample(32)).any()
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("R 0 1\nCX 0 1\nM 0 1", "probe has trivial or non-Hermitian data product"),
+        # Without the decoding CX each probe reads a random bit of the Bell pair.
+        (
+            "RX 2\nR 3\nCX 2 3\nCX 0 2 1 3\nCX 2 0 3 1\nM 3\nMX 2",
+            "probe record is not a Pauli product of the window input",
+        ),
+        # Data reset in the same window: its products are not functions of the window input.
+        ("RX 0 1\n" + _SUPERDENSE_PAIR, "probe record is not a Pauli product of the window input"),
+    ],
+)
+def test_interacting_probes_outside_the_accepted_form_are_retained(text: str, reason: str) -> None:
+    source = stim.Circuit(text)
+    result = rewrite_syndrome_rounds(source, interacting_probes=True)
+    assert result.circuit == source
+    assert result.retained_reasons == (reason,)
+
+
+@pytest.mark.parametrize("interacting_probes", [False, True])
+@pytest.mark.parametrize("text", ["RX 1\nCX 1 0\nT 0\nMX 1", "R 1\nCX 0 1\nT_DAG 0\nM 1"])
+def test_t_transport_gate_is_a_barrier(text: str, interacting_probes: bool) -> None:
+    source = parse_t_circuit(text)
+    result = rewrite_syndrome_rounds(source, interacting_probes=interacting_probes)
+    assert result.circuit == source
+    assert result.rewritten_rounds == 0
